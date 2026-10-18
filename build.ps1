@@ -19,6 +19,7 @@ if (-not $WinrtInclude -and -not (Test-Path -LiteralPath (Join-Path $headerDirec
     $expandedHeaderCache = $true
 }
 $engineIncludes = @()
+$controllerOptions = @()
 if (-not $WinrtInclude -and (Test-Path (Join-Path $buildDir 'winrt\include\winrt\Microsoft.UI.Xaml.h'))) { $WinrtInclude = Join-Path $buildDir 'winrt\include' }
 if ($WinrtInclude) { $engineIncludes = @('-I' + [IO.Path]::GetFullPath($WinrtInclude)) }
 $hookObjects = @()
@@ -45,10 +46,10 @@ try {
         if ($record) { $writer.Write([byte[]]$payload); while ($writer.BaseStream.Position % 4) { $writer.Write([byte]0) } }
     }
 } finally { $writer.Dispose() }
-& $Compiler --target=x86_64-w64-mingw32 -std=c++17 -Os -ffunction-sections -fdata-sections -Wall -Wextra -municode -mwindows -static '-Wl,--gc-sections,--strip-all' (Join-Path $PSScriptRoot 'src/main.cpp') (Join-Path $PSScriptRoot 'assets\icon.res') (Join-Path $outputDir 'engine.res') -o (Join-Path $outputDir $OutputName) -ldwmapi -lshell32 -luser32 -lgdi32 -ladvapi32 -lole32 -lcomctl32 -luxtheme -luuid
+& $Compiler --target=x86_64-w64-mingw32 -std=c++17 -Os -ffunction-sections -fdata-sections -Wall -Wextra -municode -mwindows -static '-Wl,--gc-sections,--strip-all' (Join-Path $PSScriptRoot 'src/main.cpp') (Join-Path $PSScriptRoot 'assets\icon.res') (Join-Path $outputDir 'engine.res') -o (Join-Path $outputDir $OutputName) -ldwmapi -lshell32 -luser32 -lgdi32 -ladvapi32 -lole32 -lcomctl32 -luxtheme -luuid @controllerOptions
 if ($LASTEXITCODE -ne 0) { throw 'Compilation failed.' }
 if ($BuildTests) {
-& $Compiler --target=x86_64-w64-mingw32 -std=c++17 -DLG_ENABLE_SELF_TEST -Os -ffunction-sections -fdata-sections -Wall -Wextra -municode -mwindows -static '-Wl,--gc-sections,--strip-all' (Join-Path $PSScriptRoot 'src/main.cpp') (Join-Path $PSScriptRoot 'assets\icon.res') (Join-Path $outputDir 'engine.res') -o (Join-Path $outputDir 'LiquidGlassTests.exe') -ldwmapi -lshell32 -luser32 -lgdi32 -ladvapi32 -lole32 -lcomctl32 -luxtheme -luuid
+& $Compiler --target=x86_64-w64-mingw32 -std=c++17 -DLG_ENABLE_SELF_TEST -Os -ffunction-sections -fdata-sections -Wall -Wextra -municode -mwindows -static '-Wl,--gc-sections,--strip-all' (Join-Path $PSScriptRoot 'src/main.cpp') (Join-Path $PSScriptRoot 'assets\icon.res') (Join-Path $outputDir 'engine.res') -o (Join-Path $outputDir 'LiquidGlassTests.exe') -ldwmapi -lshell32 -luser32 -lgdi32 -ladvapi32 -lole32 -lcomctl32 -luxtheme -luuid @controllerOptions
 if ($LASTEXITCODE -ne 0) { throw 'Compilation failed.' }
 }
 # Successful binaries are self-contained; do not retain duplicate resource/object files.

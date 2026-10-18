@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
-// The optional managed optical renderer stays outside Explorer. Only this
+// The optional optical renderer stays outside Explorer. Only this
 // controller's child process may acknowledge a preview window.
 namespace lgpreview {
 constexpr UINT Event = WM_APP + 16;
@@ -50,7 +50,9 @@ public:
         auto executable=dir+L"lgengine\\LiquidGlass.LGPreview.exe";
         std::wstring command=L"\""+executable+L"\" --owner "+std::to_wstring(reinterpret_cast<UINT_PTR>(owner))+L" --pid "+std::to_wstring(GetCurrentProcessId());
         job=CreateJobObjectW(nullptr,nullptr);
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // The app-owned adapter dies with us; a shared LGEngine host may break
+        // away explicitly so closing this app cannot kill other apps' glass.
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE|JOB_OBJECT_LIMIT_BREAKAWAY_OK;
         if(!job||!SetInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits))){error=GetLastError();stop();return false;}
         STARTUPINFOW startup{};startup.cb=sizeof(startup);startup.dwFlags=STARTF_USESHOWWINDOW;startup.wShowWindow=SW_SHOWNORMAL;
         PROCESS_INFORMATION child{};

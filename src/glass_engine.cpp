@@ -1,5 +1,6 @@
 // Original standalone material engine. Uses Windows XAML diagnostics, not the
 // Windhawk runtime, SDK, settings registry, theme parser, or bundled mod DLLs.
+#define _WIN32_WINNT 0x0A00
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #define UNICODE
@@ -26,6 +27,9 @@
 #include "xaml_property_watch.h"
 #include "capsule_clip.h"
 #include "capsule_layout.h"
+#include "lgengine_native_inspection.h"
+#include "native_capture_lane.h"
+#include <deque>
 #include "xaml_subscription.h"
 #include "windhawk_materials.h"
 namespace {
@@ -45,11 +49,12 @@ struct CacheRelease:IUnknown{virtual HRESULT STDMETHODCALLTYPE Unregister(Instan
 HMODULE selfModule{};HANDLE mapping{};glass::Config*shared{};HANDLE ownerHandle{},ownerWait{};DWORD ownerPid{};SRWLOCK configLock=SRWLOCK_INIT;
 HANDLE statusMapping{};glass::Status*sharedStatus{};
 void trace(const char*stage,HRESULT hr){static volatile LONG errors=0;if(SUCCEEDED(hr)||InterlockedIncrement(&errors)>32)return;wchar_t path[32768]{};GetModuleFileNameW(selfModule,path,32768);std::wstring file=path;file.resize(file.find_last_of(L"\\")+1);file+=L"glass-engine-"+std::to_wstring(GetCurrentProcessId())+L".log";HANDLE h=CreateFileW(file.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if(h!=INVALID_HANDLE_VALUE){char text[256]{};int n=snprintf(text,sizeof(text),"%s: 0x%08lx\r\n",stage,(unsigned long)hr);DWORD written=0;WriteFile(h,text,n,&written,nullptr);CloseHandle(h);}}
+std::atomic<bool> nativeInspectionOnly{false};
 UINT refreshMsg{};std::atomic<bool> injecting[2]{};
 // Name of the process hosting this engine copy, so logs show which shell host matched a surface.
 std::wstring hostExe(){wchar_t p[MAX_PATH]{};GetModuleFileNameW(nullptr,p,MAX_PATH);std::wstring s=p;return s.substr(s.find_last_of(L'\\')+1);}
 // Diagnostics: one line per distinct material decision, written once. Contains only surface ids, material path and numeric parameters.
-void note(const std::wstring&line){static std::set<size_t> seen;static SRWLOCK noteLock=SRWLOCK_INIT;AcquireSRWLockExclusive(&noteLock);bool fresh=seen.size()<512&&seen.insert(std::hash<std::wstring>{}(line)).second;ReleaseSRWLockExclusive(&noteLock);if(!fresh)return;wchar_t path[32768]{};GetModuleFileNameW(selfModule,path,32768);std::wstring file=path;file.resize(file.find_last_of(L"\\")+1);file+=L"glass-engine-"+std::to_wstring(GetCurrentProcessId())+L".log";HANDLE h=CreateFileW(file.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if(h!=INVALID_HANDLE_VALUE){std::string text(line.begin(),line.end());text+="\r\n";DWORD written=0;WriteFile(h,text.data(),(DWORD)text.size(),&written,nullptr);CloseHandle(h);}}
+void note(const std::wstring&line){static std::set<size_t> seen,probeSeen;static SRWLOCK noteLock=SRWLOCK_INIT;AcquireSRWLockExclusive(&noteLock);bool inspection=line.rfind(L"native-probe",0)==0;auto&budget=inspection?probeSeen:seen;bool fresh=budget.size()<(inspection?64u:512u)&&budget.insert(std::hash<std::wstring>{}(line)).second;ReleaseSRWLockExclusive(&noteLock);if(!fresh)return;wchar_t path[32768]{};GetModuleFileNameW(selfModule,path,32768);std::wstring file=path;file.resize(file.find_last_of(L"\\")+1);file+=L"glass-engine-"+std::to_wstring(GetCurrentProcessId())+L".log";HANDLE h=CreateFileW(file.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if(h!=INVALID_HANDLE_VALUE){std::string text(line.begin(),line.end());text+="\r\n";DWORD written=0;WriteFile(h,text.data(),(DWORD)text.size(),&written,nullptr);CloseHandle(h);}}
 const std::wstring&runtimePath(){static std::wstring path=[](){wchar_t value[32768]{};GetModuleFileNameW(selfModule,value,32768);return std::wstring(value);}();return path;}
 const std::wstring&threadClass(){static auto name=glass::threadClassName(runtimePath());return name;}
 class Session;SRWLOCK sessionsLock=SRWLOCK_INIT;std::vector<Session*> sessions;
@@ -64,7 +69,8 @@ Read snapshot(glass::Config&c){
 }
 void refreshWindows(){HWND h=nullptr;while((h=FindWindowExW(HWND_MESSAGE,h,threadClass().c_str(),nullptr))){DWORD pid=0;GetWindowThreadProcessId(h,&pid);if(pid==GetCurrentProcessId())PostMessageW(h,refreshMsg,0,0);}}
 void CALLBACK ownerEnded(void*,BOOLEAN){refreshWindows();}
-void report(HRESULT hr,DWORD feature=0){note(L"report feature="+std::to_wstring(feature)+L" hr="+std::to_wstring((long)hr)+L" exe="+hostExe());AcquireSRWLockShared(&configLock);if(sharedStatus&&feature){if(FAILED(hr)){InterlockedOr(&sharedStatus->failed,feature);InterlockedExchange(&sharedStatus->error,hr);InterlockedAnd(&sharedStatus->success,~feature);}else{InterlockedAnd(&sharedStatus->failed,~feature);InterlockedOr(&sharedStatus->success,feature);if(hr==S_FALSE)InterlockedOr(&sharedStatus->fallback,feature);else InterlockedAnd(&sharedStatus->fallback,~feature);}}ReleaseSRWLockShared(&configLock);auto h=FindWindowW(L"LiquidGlass.Control",nullptr);DWORD pid=0;if(h)GetWindowThreadProcessId(h,&pid);if(pid==ownerPid)PostMessageW(h,RegisterWindowMessageW(glass::StatusMessage),feature,(LPARAM)hr);}
+HWND ownerWindow(){auto h=FindWindowW(nativeInspectionOnly?L"LiquidGlass.Control.NativeProbe":L"LiquidGlass.Control",nullptr);DWORD pid=0;if(h)GetWindowThreadProcessId(h,&pid);return pid==ownerPid?h:nullptr;}
+void report(HRESULT hr,DWORD feature=0){note(L"report feature="+std::to_wstring(feature)+L" hr="+std::to_wstring((long)hr)+L" exe="+hostExe());AcquireSRWLockShared(&configLock);if(sharedStatus&&feature){if(FAILED(hr)){InterlockedOr(&sharedStatus->failed,feature);InterlockedExchange(&sharedStatus->error,hr);InterlockedAnd(&sharedStatus->success,~feature);}else{InterlockedAnd(&sharedStatus->failed,~feature);InterlockedOr(&sharedStatus->success,feature);if(hr==S_FALSE)InterlockedOr(&sharedStatus->fallback,feature);else InterlockedAnd(&sharedStatus->fallback,~feature);}}ReleaseSRWLockShared(&configLock);auto h=ownerWindow();if(h)PostMessageW(h,RegisterWindowMessageW(glass::StatusMessage),feature,(LPARAM)hr);}
 // Caller holds configLock exclusively. Releases every owner-scoped resource; safe on a partially connected state.
 void releaseOwnerLocked(){
     if(ownerWait){UnregisterWaitEx(ownerWait,INVALID_HANDLE_VALUE);ownerWait=nullptr;}
@@ -73,7 +79,7 @@ void releaseOwnerLocked(){
     if(mapping){CloseHandle(mapping);mapping=nullptr;}
     if(sharedStatus){UnmapViewOfFile(sharedStatus);sharedStatus=nullptr;}
     if(statusMapping){CloseHandle(statusMapping);statusMapping=nullptr;}
-    ownerPid=0;
+    ownerPid=0;nativeInspectionOnly=false;
 }
 bool connect(DWORD pid){
     AcquireSRWLockExclusive(&configLock);
@@ -81,7 +87,7 @@ bool connect(DWORD pid){
     if(shared&&((ownerHandle&&WaitForSingleObject(ownerHandle,0)==WAIT_TIMEOUT)||(!ownerHandle&&glass::alive(shared)))){bool same=ownerPid==pid;ReleaseSRWLockExclusive(&configLock);return same;}
     releaseOwnerLocked();
     // Acquire every resource first; publish the connection only after all succeed, so a failure leaves no half-connected state and a later attempt can retry.
-    auto name=glass::mappingName(pid);HANDLE m=OpenFileMappingW(FILE_MAP_READ,FALSE,name.c_str());
+    auto name=glass::mappingName(pid);HANDLE m=OpenFileMappingW(FILE_MAP_READ,FALSE,(name+L".Probe").c_str());bool inspection=m!=nullptr;if(!m)m=OpenFileMappingW(FILE_MAP_READ,FALSE,name.c_str());
     if(!m){ReleaseSRWLockExclusive(&configLock);return false;}
     auto view=(glass::Config*)MapViewOfFile(m,FILE_MAP_READ,0,0,sizeof(glass::Config));
     if(!view||view->magic!=glass::Magic||view->version!=glass::Version||view->owner!=pid){if(view)UnmapViewOfFile(view);CloseHandle(m);ReleaseSRWLockExclusive(&configLock);return false;}
@@ -89,7 +95,7 @@ bool connect(DWORD pid){
     bool watched=owner&&RegisterWaitForSingleObject(&wait,owner,ownerEnded,nullptr,INFINITE,WT_EXECUTEONLYONCE);
     // Restricted hosts use the read-only heartbeat; no process ACL is changed.
     if(!watched){if(owner)CloseHandle(owner);owner=nullptr;DWORD app=0,bytes=0;HANDLE token{};if(OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token)){GetTokenInformation(token,TokenIsAppContainer,&app,sizeof(app),&bytes);CloseHandle(token);}if(!app||!glass::alive(view)){UnmapViewOfFile(view);CloseHandle(m);ReleaseSRWLockExclusive(&configLock);return false;}}
-    mapping=m;shared=view;ownerHandle=owner;ownerWait=wait;ownerPid=pid;
+    mapping=m;shared=view;ownerHandle=owner;ownerWait=wait;ownerPid=pid;nativeInspectionOnly=inspection;
     statusMapping=OpenFileMappingW(FILE_MAP_READ|FILE_MAP_WRITE,FALSE,glass::statusName(pid).c_str());if(statusMapping){sharedStatus=(glass::Status*)MapViewOfFile(statusMapping,FILE_MAP_READ|FILE_MAP_WRITE,0,0,sizeof(glass::Status));if(sharedStatus&&(sharedStatus->magic!=glass::Magic||sharedStatus->version!=glass::Version||sharedStatus->owner!=pid)){UnmapViewOfFile(sharedStatus);sharedStatus=nullptr;}}
     refreshMsg=RegisterWindowMessageW(glass::RefreshMessage);
     // Diagnostics owns COM objects whose callbacks can outlive the hook.
@@ -99,10 +105,10 @@ bool connect(DWORD pid){
     ReleaseSRWLockExclusive(&configLock);return true;
 }
 struct Saved {unsigned index{};bool local=false;Ptr<IInspectable> value;winrt::Windows::UI::Xaml::DependencyProperty direct{nullptr};};
-struct Node {int notificationRoot=-1;std::vector<const wchar_t*> imported;Ptr<IWeakReference> weak;glass::Surface surface=glass::NoSurface;std::map<std::wstring,Saved> saved;std::map<std::wstring,std::function<void()>> watchers;std::wstring capsuleGeometry;std::shared_ptr<liquid::CapsuleLayout> capsuleLayout;DWORD appliedSignature=0;bool composition=false,fallback=false;HRESULT lastReport=S_FALSE;bool reported=false;HRESULT lastCapsule=E_NOINTERFACE;bool capsuleReported=false,capsuleDirty=true;};
+struct Node {bool nativeProbed=false;int notificationRoot=-1;std::vector<const wchar_t*> imported;Ptr<IWeakReference> weak;glass::Surface surface=glass::NoSurface;std::map<std::wstring,Saved> saved;std::map<std::wstring,std::function<void()>> watchers;std::wstring capsuleGeometry;std::shared_ptr<liquid::CapsuleLayout> capsuleLayout;DWORD appliedSignature=0;bool composition=false,fallback=false;HRESULT lastReport=S_FALSE;bool reported=false;HRESULT lastCapsule=E_NOINTERFACE;bool capsuleReported=false,capsuleDirty=true;};
 class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
     std::atomic<ULONG> refs{1};Ptr<IUnknown> site;Ptr<IXamlDiagnostics> diag;Ptr<IVisualTreeService2> service;Ptr<CacheRelease> cache;
-    struct Thread {Session*session{};HWND window{};std::map<InstanceHandle,Node> nodes;std::set<InstanceHandle> release;ULONGLONG lastMutation=0,releaseStarted=0;bool updating=false,updateQueued=false;bool taskbarPanel=false,unifiedCapsule=false;InstanceHandle notificationRoots[2]{};unsigned retries{};LONG observedSequence=-1;DWORD observedFeatures=0;bool heartbeatTimer=false;liquid::DockAnimation dock;~Thread(){for(auto&n:nodes)for(auto&w:n.second.watchers)w.second();}};
+    struct Thread {Session*session{};HWND window{};std::map<InstanceHandle,Node> nodes;std::set<InstanceHandle> release;ULONGLONG lastMutation=0,releaseStarted=0;std::deque<std::pair<winrt::weak_ref<winrt::Windows::UI::Xaml::FrameworkElement>,int>> nativeProbes;lghost::NativeCaptureLane nativeLane;std::shared_ptr<lghost::NativeInspectionControl> nativeControl;uint64_t nativeToken=0;bool updating=false,updateQueued=false;bool taskbarPanel=false,unifiedCapsule=false;InstanceHandle notificationRoots[2]{};unsigned retries{};LONG observedSequence=-1;DWORD observedFeatures=0;bool heartbeatTimer=false;liquid::DockAnimation dock;~Thread(){if(nativeControl)nativeControl->cancel();for(auto&n:nodes)for(auto&w:n.second.watchers)w.second();}};
     std::map<DWORD,Thread*> threads;SRWLOCK lock=SRWLOCK_INIT;bool modern=false;int host=0;std::atomic<HRESULT> lastError{S_OK};std::atomic<unsigned> writes{0};
     std::atomic<bool> subscribed{false},subscriptionWorker{false};
     std::atomic<unsigned> compatibilityReports{0};
@@ -119,6 +125,10 @@ class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
             if(msg==WM_TIMER&&w==10){if(!t->session->subscriptionWorker){KillTimer(h,10);t->session->update(*t);}return 0;}
             if(msg==WM_TIMER&&w==11){KillTimer(h,11);t->session->update(*t);return 0;}
             if(msg==WM_TIMER&&w==20){if(!t->session->subscriptionWorker){glass::Config c;if(snapshot(c)==Read::Ok&&(c.sequence!=t->observedSequence||c.features!=t->observedFeatures)){t->observedSequence=c.sequence;t->observedFeatures=c.features;t->session->update(*t);}for(auto root:t->notificationRoots){auto node=t->nodes.find(root);if(node!=t->nodes.end())t->session->recordRoot(node->second);}}return 0;}
+            if(msg==WM_TIMER&&w==21){if(t->nativeLane.expire(GetTickCount64())){KillTimer(h,21);t->nativeProbes.clear();if(t->nativeControl)t->nativeControl->cancel();note(L"native-probe timed out; awaiting cancellation acknowledgement");}return 0;}
+            if(msg==WM_APP+7){if(!t->nativeControl||uint64_t(w)!=t->nativeToken)return 0;KillTimer(h,21);t->nativeLane.complete(t->nativeToken);t->nativeControl.reset();if(!t->nativeProbes.empty())PostMessageW(h,WM_APP+6,0,0);return 0;}
+            if(msg==WM_APP+6){glass::Config config;if(!t->session->nativeProbeEnabled()||snapshot(config)!=Read::Ok||!config.features){t->nativeProbes.clear();KillTimer(h,21);t->nativeLane.cancel();if(t->nativeControl)t->nativeControl->cancel();return 0;}if(t->nativeControl||t->nativeProbes.empty())return 0;auto request=t->nativeProbes.front();t->nativeProbes.pop_front();t->nativeToken=t->nativeLane.begin(GetTickCount64());auto token=t->nativeToken;t->nativeControl=std::make_shared<lghost::NativeInspectionControl>();if(!SetTimer(h,21,1500,nullptr)){t->nativeLane.cancel();t->nativeControl.reset();t->nativeProbes.clear();return 0;}
+                if(auto e=request.first.get()){int surface=request.second;lghost::inspectNativeContent(e,[h,surface,token](HRESULT hr,lghost::NativeContentInfo info){note(L"native-probe surface="+std::to_wstring(surface)+L" hr="+std::to_wstring(long(hr))+L" stage="+std::wstring(info.stage)+L" pixelWidth="+std::to_wstring(info.pixelWidth)+L" pixelHeight="+std::to_wstring(info.pixelHeight)+L" bytes="+std::to_wstring(info.bytes)+L" geometry="+std::to_wstring(info.geometry)+L" width="+std::to_wstring(info.width)+L" height="+std::to_wstring(info.height)+L" rootWidth="+std::to_wstring(info.rootWidth)+L" rootHeight="+std::to_wstring(info.rootHeight)+L" ink="+std::to_wstring(info.ink)+L" opaque="+std::to_wstring(info.opaque)+L" unchanged="+std::to_wstring(info.unchanged));PostMessageW(h,WM_APP+7,WPARAM(token),0);},t->nativeControl);}else PostMessageW(h,WM_APP+7,WPARAM(token),0);return 0;}
             if(msg==WM_APP+2)return (LRESULT)t->session->writes.load();
             if(msg==WM_APP+3)return (LRESULT)t->session->lastError.load();
             if(msg==WM_NCDESTROY){auto s=t->session;AcquireSRWLockExclusive(&s->lock);s->threads.erase(GetCurrentThreadId());ReleaseSRWLockExclusive(&s->lock);SetWindowLongPtrW(h,GWLP_USERDATA,0);delete t;}
@@ -134,7 +144,7 @@ class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
     static void scheduleUpdate(Thread&t){if(!t.updateQueued){t.updateQueued=PostMessageW(t.window,WM_APP+4,0,0)!=FALSE;}}
     void releaseLater(Thread&t,InstanceHandle h){if(cache&&h){bool first=t.release.empty();t.release.insert(h);t.lastMutation=GetTickCount64();if(first){t.releaseStarted=t.lastMutation;SetTimer(t.window,9,250,nullptr);}}}
     Ptr<IInspectable> brush(const glass::Config&c,bool transparent,InstanceHandle handle,DWORD feature,bool&custom,bool&fallback){custom=false;fallback=false;
-        if(!transparent)try{auto target=from(handle);if(target){winrt::Windows::Foundation::IInspectable obj{nullptr};winrt::copy_from_abi(obj,target.p);Ptr<IInspectable> result;if(modern){auto element=obj.try_as<winrt::Microsoft::UI::Xaml::UIElement>();if(element){auto value=winrt::make<liquid::ModernBrush>(element,c,[feature](HRESULT hr){trace("composition material",hr);report(hr,feature);});winrt::get_unknown(value)->QueryInterface(__uuidof(IInspectable),(void**)result.put());}}else{auto element=obj.try_as<winrt::Windows::UI::Xaml::UIElement>();if(element){auto value=winrt::make<liquid::SystemBrush>(element,c,[feature](HRESULT hr){trace("composition material",hr);report(hr,feature);},feature==glass::Keyboard);winrt::get_unknown(value)->QueryInterface(__uuidof(IInspectable),(void**)result.put());}}if(result){custom=true;return result;}}}catch(...){fallback=true;trace("composition brush fallback",winrt::to_hresult());}
+        if(!transparent)try{auto target=from(handle);if(target){winrt::Windows::Foundation::IInspectable obj{nullptr};winrt::copy_from_abi(obj,target.p);Ptr<IInspectable> result;if(modern){auto element=obj.try_as<winrt::Microsoft::UI::Xaml::UIElement>();if(element){auto value=winrt::make<liquid::ModernBrush>(element,c,[feature](HRESULT hr){trace("composition material",hr);report(hr,feature);});winrt::get_unknown(value)->QueryInterface(__uuidof(IInspectable),(void**)result.put());}}else{auto element=obj.try_as<winrt::Windows::UI::Xaml::UIElement>();if(element){auto value=winrt::make<liquid::SystemBrush>(element,c,[feature](HRESULT hr){trace("composition material",hr);report(hr,feature);},feature==glass::Keyboard||c.tint==3);winrt::get_unknown(value)->QueryInterface(__uuidof(IInspectable),(void**)result.put());}}if(result){custom=true;return result;}}}catch(...){fallback=true;trace("composition brush fallback",winrt::to_hresult());}
         Ptr<XamlReader> reader;const wchar_t*cls=modern?L"Microsoft.UI.Xaml.Markup.XamlReader":L"Windows.UI.Xaml.Markup.XamlReader";
         HSTRING className{};WindowsCreateString(cls,(UINT32)wcslen(cls),&className);HRESULT hr=RoGetActivationFactory(className,ReaderIds[modern?1:0],reinterpret_cast<void**>(reader.put()));
         if(FAILED(hr)&&modern){auto mod=GetModuleHandleW(L"Microsoft.UI.Xaml.dll");auto fn=mod?reinterpret_cast<HRESULT(WINAPI*)(HSTRING,IActivationFactory**)>(GetProcAddress(mod,"DllGetActivationFactory")):nullptr;Ptr<IActivationFactory> factory;if(fn&&SUCCEEDED(fn(className,factory.put())))hr=factory->QueryInterface(ReaderIds[1],reinterpret_cast<void**>(reader.put()));}
@@ -205,7 +215,7 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         for(auto rule:n.imported){std::wstring property,value;if(!imported_glass::assignment(rule,property,value))continue;value=imported_glass::resolve(imported_glass::theme(host),value);
             if(property==L"Background"||property==L"Fill"||property==L"BorderBrush"||property==L"Stroke"){
                 bool background=property==L"Background"||property==L"Fill";Ptr<IInspectable> result;
-                if(value.find(L"<WindhawkBlur")==0){bool custom=false,fallback=false;result=brush(c,false,h,background?glass::feature(n.surface):0,custom,fallback);if(background){n.composition=custom;n.fallback=fallback;}}
+                if(value.find(L"<WindhawkBlur")==0||(c.tint==3&&background&&value.find(L"AcrylicBrush")!=std::wstring::npos)){bool custom=false,fallback=false;result=brush(c,false,h,background?glass::feature(n.surface):0,custom,fallback);if(background){n.composition=custom;n.fallback=fallback;}}
                 else if(value==L"Transparent"||value.empty()){bool custom=false,fallback=false;result=brush(c,true,h,glass::feature(n.surface),custom,fallback);}
                 else if(!value.empty()&&value.front()==L'<'){auto at=value.find(L' ');if(at!=value.npos)value.insert(at,L" xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"");result=markup(value);}
                 if(result){bool ok=set(n,h,property,result.p,background);applied=ok||applied;}
@@ -310,7 +320,15 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
             note(L"keyboard backing wrappers cleared="+std::to_wstring(cleared));
         }catch(...){trace("keyboard backing",winrt::to_hresult());}
     }
+    bool nativeProbeEnabled(){return nativeInspectionOnly.load();}
     void apply(Node&n,InstanceHandle h,const glass::Config&c){
+        if(nativeProbeEnabled()){
+            if(n.nativeProbed||!(n.surface==glass::TaskbarRoot||n.surface==glass::VolumePlate||n.surface==glass::BrightnessPlate||n.surface==glass::StartPlate||n.surface==glass::NotificationPlate||n.surface==glass::KeyboardPlate))return;
+            note(L"native-probe observed surface="+std::to_wstring(int(n.surface))+L" modern="+std::to_wstring(modern));
+            if(modern){n.nativeProbed=true;note(L"native-probe modern-unsupported surface="+std::to_wstring(int(n.surface)));return;}
+            try{auto p=from(h);if(!p)return;winrt::Windows::Foundation::IInspectable object{nullptr};winrt::copy_from_abi(object,p.p);auto e=object.try_as<winrt::Windows::UI::Xaml::FrameworkElement>();if(!e||!e.IsLoaded()||!e.XamlRoot()||!e.XamlRoot().IsHostVisible()||e.ActualWidth()<1||e.ActualHeight()<1)return;auto parent=e.as<winrt::Windows::UI::Xaml::DependencyObject>();for(unsigned i=0;parent&&i<128;++i){if(auto ui=parent.try_as<winrt::Windows::UI::Xaml::UIElement>();ui&&ui.Visibility()!=winrt::Windows::UI::Xaml::Visibility::Visible)return;parent=winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetParent(parent);}n.nativeProbed=true;auto&t=thread();t.nativeProbes.push_back({winrt::make_weak(e),int(n.surface)});note(L"native-probe queued surface="+std::to_wstring(int(n.surface)));PostMessageW(t.window,WM_APP+6,0,0);}catch(...){trace("native-probe",winrt::to_hresult());}return;
+        }
+
         if(n.surface==glass::DockRoot||n.surface==glass::DockIcon){auto&t=thread();if(!(c.features&glass::Dock)||c.economy){t.dock.stop();return;}auto p=from(h);if(p){if(n.surface==glass::DockRoot){if(!t.dock.attach(p.p))report(E_NOINTERFACE,glass::Dock);}else t.dock.add(p.p);if(t.dock.ready())report(S_OK,glass::Dock);}return;}
         if(!glass::active(n.surface,c.features)){restore(n,h);return;}
         if(n.surface==glass::KeyboardPlate&&!keyboardPanel(h))return;
@@ -361,6 +379,7 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         // A torn read keeps the current surfaces (no flicker while a slider is dragged). Retries are bounded; a controller that stays unreadable is treated as gone and effects are restored.
         if(state==Read::Transient){if(t.retries<4){++t.retries;SetTimer(t.window,11,25,nullptr);return;}state=Read::Invalid;}
         t.retries=0;if(state!=Read::Ok)c.features=0;
+        if(!c.features){t.nativeProbes.clear();KillTimer(t.window,21);t.nativeLane.cancel();if(t.nativeControl)t.nativeControl->cancel();}
         t.updating=true;if(!(c.features&glass::Capsule))t.unifiedCapsule=false;if(!(c.features&glass::Dock)||c.economy)t.dock.stop();
         for(auto i=t.nodes.begin();i!=t.nodes.end();){Ptr<IInspectable> p;if(i->second.weak) i->second.weak->Resolve(__uuidof(IInspectable),p.put());if(!p){for(auto&w:i->second.watchers)w.second();i=t.nodes.erase(i);continue;}
             InstanceHandle h=0;if(SUCCEEDED(diag->RegisterInstance(p.p,&h))){apply(i->second,h,c);releaseLater(t,h);}
@@ -441,6 +460,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI GlassGraphicsTest(){
         auto brush=liquid::makeGlass(compositor,config);if(!brush)return E_FAIL;
         config.blur=0;config.opacity=5;auto clear=liquid::makeGlass(compositor,config);if(!clear)return E_FAIL;
         config.blur=40;config.opacity=90;config.tint=2;auto dark=liquid::makeGlass(compositor,config);if(!dark)return E_FAIL;
+        config.tint=3;auto adaptive=liquid::makeGlass(compositor,config,true);if(!adaptive)return E_FAIL;
         return S_OK;
     }catch(...){return winrt::to_hresult();}
 }
@@ -463,7 +483,7 @@ void bootstrap(DWORD owner){if(connect(owner)){
         AcquireSRWLockShared(&sessionsLock);for(auto s:sessions)s->ensureSubscription();ReleaseSRWLockShared(&sessionsLock);
         for(int modern=0;modern<2;++modern)if(GetModuleHandleW(modern?L"Microsoft.Internal.FrameworkUdk.dll":L"Windows.UI.Xaml.dll")&&!injecting[modern].exchange(true)){HANDLE t=CreateThread(nullptr,0,attachFramework,(void*)(INT_PTR)modern,0,nullptr);if(t)CloseHandle(t);else injecting[modern]=false;}
         refreshWindows();
-    auto controller=FindWindowW(L"LiquidGlass.Control",nullptr);if(controller)PostMessageW(controller,RegisterWindowMessageW(glass::AttachAckMessage),GetCurrentThreadId(),0);
+    auto controller=ownerWindow();if(controller)PostMessageW(controller,RegisterWindowMessageW(glass::AttachAckMessage),GetCurrentThreadId(),0);
 }}
 extern "C" __declspec(dllexport) LRESULT CALLBACK GlassHook(int code,WPARAM w,LPARAM l){
     if(code>=0){auto m=(CWPSTRUCT*)l;if(m->message==RegisterWindowMessageW(glass::AttachMessage))bootstrap((DWORD)m->wParam);}return CallNextHookEx(nullptr,code,w,l);

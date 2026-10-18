@@ -27,6 +27,15 @@ function Invoke-Check([string]$Name, [string]$Executable, [string]$Report) {
 }
 Invoke-Check 'native' (Join-Path $candidate 'LiquidGlassTests.exe') (Join-Path $candidate 'self-test.txt')
 Invoke-Check 'adapter' (Join-Path $candidate 'lgengine/LiquidGlass.LGPreview.exe') ''
+if (Test-Path -LiteralPath (Join-Path $candidate 'lgengine/LGEngineExample.exe')) {
+    $started = [DateTime]::UtcNow
+    try {
+        & (Join-Path $PSScriptRoot 'test-client-sdk.ps1') -CandidateDirectory $candidate
+        $checks.Add([pscustomobject]@{name='external_cpp_consumers'; status='passed'; startedUtc=$started.ToString('o'); report=[IO.File]::ReadAllText((Join-Path $candidate 'sdk-test.txt'))})
+    } catch {
+        $checks.Add([pscustomobject]@{name='external_cpp_consumers'; status='failed'; startedUtc=$started.ToString('o'); error=$_.Exception.Message})
+    }
+}
 if ($Integration) {
     $exe = Join-Path $candidate 'LGEngineBridgeTests.exe'
     $started = [DateTime]::UtcNow

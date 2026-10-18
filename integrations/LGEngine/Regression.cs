@@ -66,6 +66,30 @@ static class Regression
         Check(!presenter.LightGoal, "explicit dark overrides light");
         presenter.Adapt(false);
         Check(!presenter.LightGoal, "default appearance preserves original dark fallback");
+        // Synthetic backdrop statistics need no desktop capture or window.
+        {
+            GlassPeek peek = new GlassPeek(delegate { });
+            GlassPresenter adaptive = new GlassPresenter(peek);
+            peek.Backdrop.MidLuma = 240;
+            adaptive.Adapt(true, -1);
+            Check(adaptive.LightGoal, "bright background selects light glass");
+            peek.Backdrop.MidLuma = 135;
+            adaptive.Adapt(true, -1);
+            Check(adaptive.LightGoal, "neutral background retains light to avoid flicker");
+            peek.Backdrop.MidLuma = 20;
+            adaptive.Adapt(true, -1);
+            Check(!adaptive.LightGoal, "dark background selects dark glass");
+            peek.Backdrop.MidLuma = 135;
+            adaptive.Adapt(true, -1);
+            Check(!adaptive.LightGoal, "neutral background retains dark to avoid flicker");
+            adaptive.Adapt(false, 1);
+            Check(adaptive.LightGoal, "manual light overrides dark background");
+            peek.Backdrop.MidLuma = 240;
+            adaptive.Adapt(false, 0);
+            Check(!adaptive.LightGoal, "manual dark overrides bright background");
+            adaptive.Adapt(true, -1);
+            Check(adaptive.LightGoal, "returning to automatic resumes background adaptation");
+        }
         Console.WriteLine("regression: {0}/{1} checks OK", checks - failures, checks);
         return failures == 0 ? 0 : 1;
     }

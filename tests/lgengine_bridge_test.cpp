@@ -41,14 +41,14 @@ int main(int argc,char**argv){
         DWORD pid=bridge.processId(),written=0;
         WriteFile(GetStdHandle(STD_OUTPUT_HANDLE),&pid,sizeof(pid),&written,nullptr);
         WaitForSingleObject(release,5000);
-        // Deliberately bypass C++ destructors. The job and managed parent-exit
+        // Deliberately bypass C++ destructors. The job and adapter parent-exit
         // observer must clean up without Controller::stop being called.
         ExitProcess(0);
     }
     check(owner!=nullptr,"create isolated message owner");
     lgpreview::Settings settings;settings.opacity=46;settings.blur=23;settings.radius=19;settings.tint=2;settings.language=1;
     check(!bridge.publish(settings),"settings before startup are retained but not acknowledged");
-    check(bridge.start(owner),"launch real managed adapter");
+    check(bridge.start(owner),"launch real optical adapter");
     if(!bridge.running())printf("Launch Win32 error: %lu\n",(unsigned long)bridge.lastError());
     bool connected=bridge.running()&&pumpUntil([]{return bridge.connected();});
     check(connected,"adapter authenticates owner and sends handshake");
@@ -67,7 +67,7 @@ int main(int argc,char**argv){
         // Let the shader run after coalescing; a transport acknowledgement alone
         // does not prove that creating or updating a glass surface succeeded.
         auto wait=GetTickCount64()+1000;pumpUntil([&]{return GetTickCount64()>=wait;},1500);
-        check(!renderFailed,"no managed surface failure during updates");
+        check(!renderFailed,"no optical surface failure during updates");
         HANDLE child=OpenProcess(SYNCHRONIZE,FALSE,pid);bridge.stop();
         check(child&&WaitForSingleObject(child,3000)==WAIT_OBJECT_0,"stop terminates the child and releases its windows");
         if(child)CloseHandle(child);
@@ -94,7 +94,7 @@ int main(int argc,char**argv){
             check(child!=nullptr,"observe child before simulated owner crash");
             SetEvent(release);
             check(WaitForSingleObject(helper.hProcess,5000)==WAIT_OBJECT_0,"crash fixture exits without controller destructor");
-            check(child&&WaitForSingleObject(child,5000)==WAIT_OBJECT_0,"abrupt owner exit leaves no managed child");
+            check(child&&WaitForSingleObject(child,5000)==WAIT_OBJECT_0,"abrupt owner exit leaves no adapter child");
             if(child)CloseHandle(child);CloseHandle(helper.hThread);CloseHandle(helper.hProcess);
         }
         if(read)CloseHandle(read);if(release)CloseHandle(release);

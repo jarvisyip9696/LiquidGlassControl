@@ -9,6 +9,11 @@ void fitTabItems(HWND tab){
     }
     InvalidateRect(tab,nullptr,TRUE);
 }
+void labelSectionTabs(){
+    const wchar_t*systemNames[5][2]={{L"Effects",L"Material"},{L"效果开关",L"材质调节"},{L"效果開關",L"材質調整"},{L"Efekty",L"Materiał"},{L"Hiệu ứng",L"Chất liệu"}};
+    const wchar_t*settingsNames[]={tr(L"常规",L"General"),tr(L"关于",L"About")};
+    for(int i=0;i<2;++i){TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=const_cast<wchar_t*>(systemNames[int(l10n::current)][i]);TabCtrl_SetItem(systemTabs,i,&item);item.pszText=const_cast<wchar_t*>(settingsNames[i]);TabCtrl_SetItem(settingsTabs,i,&item);}
+}
 void localize(){
     SetWindowTextW(mainWindow,L"Liquid Glass · v" LG_VERSION_W);
     struct Text{int id;const wchar_t*zh;const wchar_t*en;};
@@ -34,18 +39,19 @@ void localize(){
       {ExitApp,L"还原并退出",L"Restore and exit"}
     };
     for(auto&t:texts)SetWindowTextW(GetDlgItem(mainWindow,t.id),tr(t.zh,t.en));
+    {const wchar_t*fade[]={L"Smooth fade at startup",L"启动时平滑淡入",L"啟動時平順淡入",L"Płynne pojawianie przy starcie",L"Hiện dần mượt khi khởi động"};SetWindowTextW(GetDlgItem(mainWindow,StartupAnimation),fade[int(l10n::current)]);}
     const wchar_t*names[]={tr(L"应用玻璃",L"App glass"),tr(L"系统玻璃",L"System glass"),tr(L"设置",L"Settings")};
     for(int i=0;i<3;++i){TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=const_cast<wchar_t*>(names[i]);TabCtrl_SetItem(tabs,i,&item);}
-    const wchar_t*subnames[]={tr(L"常规",L"General"),tr(L"玻璃效果",L"Glass"),tr(L"关于",L"About")};
-    for(int i=0;i<3;++i){TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=const_cast<wchar_t*>(subnames[i]);TabCtrl_SetItem(settingsTabs,i,&item);}
+    labelSectionTabs();
     int s=selection(scope),m=selection(material),c=selection(corners);
     combo(scope,{tr(L"所选应用（按进程名）",L"Selected app (by executable name)"),tr(L"资源管理器窗口",L"File Explorer windows"),tr(L"全部应用（内容区不保证）",L"All apps (content not guaranteed)")},s);
     combo(material,{L"Acrylic",L"Mica",L"Mica Alt",tr(L"关闭背景材质",L"No backdrop")},m);combo(corners,{tr(L"圆角",L"Rounded"),tr(L"小圆角",L"Small rounded"),tr(L"直角",L"Square")},c);
     combo(GetDlgItem(mainWindow,ColorTheme),{tr(L"经典蓝",L"Classic blue"),tr(L"流光紫",L"Violet"),tr(L"青绿",L"Jade"),tr(L"暖橙",L"Warm orange"),tr(L"玫瑰",L"Rose"),tr(L"湖蓝",L"Lake blue"),tr(L"石墨灰",L"Graphite")},colorTheme);
-    combo(GetDlgItem(mainWindow,TintCombo),{tr(L"跟随系统",L"Follow system"),tr(L"浅色",L"Light"),tr(L"深色",L"Dark")},(int)glassConfig.tint);updateEffectLabels();
+    {const wchar_t*background[]={L"Adapt to background",L"根据背景自适应",L"依背景自動調整",L"Dopasuj do tła",L"Tự điều chỉnh theo nền"};combo(GetDlgItem(mainWindow,TintCombo),{tr(L"跟随系统",L"Follow system"),tr(L"浅色",L"Light"),tr(L"深色",L"Dark"),background[int(l10n::current)]},(int)glassConfig.tint);}updateEffectLabels();
+    {const wchar_t*note[]={L"Applies to enabled system glass surfaces. Background mode adjusts tint from the pixels behind the glass. Battery saving may use a solid fallback.",L"作用于已开启的系统玻璃。背景模式根据玻璃背后的画面调整色调；省电时可能使用纯色回退。",L"套用至已啟用的系統玻璃。背景模式依玻璃背後的畫面調整色調；省電時可能使用純色替代。",L"Dotyczy włączonego szkła systemowego. Tryb tła dopasowuje odcień do obrazu za szkłem. Oszczędzanie energii może użyć jednolitego koloru.",L"Áp dụng cho kính hệ thống đã bật. Chế độ nền điều chỉnh màu theo hình ảnh phía sau. Tiết kiệm pin có thể dùng màu đặc."};SetWindowTextW(GetDlgItem(mainWindow,EffectNote),note[int(l10n::current)]);}
     lstrcpynW(tray.szTip,tr(L"Liquid Glass · 原生提示条",L"Liquid Glass · Native indicators"),128);if(tray.hWnd)Shell_NotifyIconW(NIM_MODIFY,&tray);
-    combo(language,{l10n::names[0],l10n::names[1],l10n::names[2],l10n::names[3],l10n::names[4]},int(l10n::current));createFonts();fitTabItems(tabs);fitTabItems(settingsTabs);refresh(entries.empty());updateNativeInfo();
-    message(migrationJob?tr(L"正在恢复旧主题……",L"Restoring the old theme..."):tr(L"选择应用或切换分页。语言在设置 → 常规；材质在玻璃效果。",L"Choose an app or a page. Language: Settings > General. Materials: Glass."));
+    combo(language,{l10n::names[0],l10n::names[1],l10n::names[2],l10n::names[3],l10n::names[4]},int(l10n::current));createFonts();fitTabItems(tabs);fitTabItems(settingsTabs);fitTabItems(systemTabs);refresh(entries.empty());updateNativeInfo();
+    message(migrationJob?tr(L"正在恢复旧主题……",L"Restoring the old theme..."):tr(L"选择应用或切换分页。语言在设置 → 常规；材质在系统玻璃 → 材质调节。",L"Choose an app or a page. Language: Settings > General. Materials: System glass > Material."));
 }
 HWND control(const wchar_t*cls,const wchar_t*text,DWORD style,int id,int x,int y,int w,int h){
     bool isSwitch=_wcsicmp(cls,L"BUTTON")==0&&(style&BS_TYPEMASK)==BS_AUTOCHECKBOX;if(isSwitch)style=(style&~BS_TYPEMASK)|BS_OWNERDRAW;
@@ -56,7 +62,7 @@ HWND control(const wchar_t*cls,const wchar_t*text,DWORD style,int id,int x,int y
     SendMessageW(result,WM_SETFONT,reinterpret_cast<WPARAM>(id==Header?headingFont:font),TRUE);SetWindowTheme(result,L"Explorer",nullptr);if(isSwitch){SetPropW(result,L"LG.IsSwitch",(HANDLE)1);SetWindowSubclass(result,compactSwitch,3,0);}if(_wcsicmp(cls,TRACKBAR_CLASSW)==0)SetWindowSubclass(result,modernSlider,4,0);if(_wcsicmp(cls,L"COMBOBOX")==0){SetWindowSubclass(result,themedControl,2,1);SendMessageW(result,CB_SETITEMHEIGHT,static_cast<WPARAM>(-1),px(23));SendMessageW(result,CB_SETITEMHEIGHT,0,px(26));}if(_wcsicmp(cls,WC_TABCONTROLW)==0)SetWindowSubclass(result,themedControl,2,0);if(!isSwitch&&_wcsicmp(cls,L"BUTTON")==0&&(style&BS_TYPEMASK)==BS_OWNERDRAW)SetWindowSubclass(result,buttonHover,1,0);if(buildingPage>=0)pageControls[buildingPage].push_back(result);if(buildingSettings>=0)settingsControls[buildingSettings].push_back(result);return result;
 }
 void tabItem(HWND tab,int count,int){for(int i=0;i<count;++i){TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=const_cast<wchar_t*>(L" ");TabCtrl_InsertItem(tab,i,&item);}fitTabItems(tab);}
-void resizeControls(){auto px=[](int n){return MulDiv(n,dpi,96);};for(auto&entry:controlLayout){auto h=entry.first;auto&r=entry.second;SetWindowPos(h,nullptr,px(r.left),px(r.top),px(r.right-r.left),px(r.bottom-r.top),SWP_NOZORDER|SWP_NOACTIVATE);wchar_t cls[64]{};GetClassNameW(h,cls,64);if(!_wcsicmp(cls,L"COMBOBOX")){SendMessageW(h,CB_SETITEMHEIGHT,static_cast<WPARAM>(-1),px(23));SendMessageW(h,CB_SETITEMHEIGHT,0,px(26));}if(h==list)SendMessageW(h,LB_SETITEMHEIGHT,0,px(48));}fontLanguage=-1;createFonts();RemovePropW(tabs,L"LG.Sel");RemovePropW(settingsTabs,L"LG.Sel");fitTabItems(tabs);fitTabItems(settingsTabs);RedrawWindow(mainWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);}
+void resizeControls(){auto px=[](int n){return MulDiv(n,dpi,96);};for(auto&entry:controlLayout){auto h=entry.first;auto&r=entry.second;SetWindowPos(h,nullptr,px(r.left),px(r.top),px(r.right-r.left),px(r.bottom-r.top),SWP_NOZORDER|SWP_NOACTIVATE);wchar_t cls[64]{};GetClassNameW(h,cls,64);if(!_wcsicmp(cls,L"COMBOBOX")){SendMessageW(h,CB_SETITEMHEIGHT,static_cast<WPARAM>(-1),px(23));SendMessageW(h,CB_SETITEMHEIGHT,0,px(26));}if(h==list)SendMessageW(h,LB_SETITEMHEIGHT,0,px(48));}fontLanguage=-1;createFonts();RemovePropW(tabs,L"LG.Sel");RemovePropW(settingsTabs,L"LG.Sel");fitTabItems(tabs);fitTabItems(settingsTabs);fitTabItems(systemTabs);RedrawWindow(mainWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);}
 void buildUI(){
     createFonts();control(L"STATIC",L"",0,Header,68,14,450,38);
     DWORD tabStyle=WS_TABSTOP|TCS_OWNERDRAWFIXED|TCS_FIXEDWIDTH|TCS_BUTTONS|TCS_FLATBUTTONS;
@@ -67,22 +73,23 @@ void buildUI(){
     compatibility=control(L"STATIC",L"",0,Compatibility,24,346,742,42);
     control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Refresh,24,398,212,36);control(L"BUTTON",L"",BS_DEFPUSHBUTTON|WS_TABSTOP,Apply,250,398,250,36);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Restore,514,398,252,36);note=control(L"STATIC",L"",0,Note,24,454,742,82);
     buildingPage=1;
+    systemTabs=control(WC_TABCONTROLW,L"",tabStyle,SettingsPages+1000,32,112,720,38);tabItem(systemTabs,2,340);
     int headings[]={VolumeHeading,BrightnessHeading,TaskbarHeading,StartHeading,NotificationHeading,ExplorerHeading,DockHeading,KeyboardHeading};int switches[]={VolumeOn,BrightnessOn,TaskbarToggle,StartToggle,NotificationToggle,ExplorerToggle,DockToggle,KeyboardToggle};
     // Seven system-effect rows; taskbar includes the capsule appearance.
-    for(int i=0;i<8;++i){int y=108+i*38;control(L"STATIC",L"",0,headings[i],40,y,590,28);HWND toggle=control(L"BUTTON",L"",BS_OWNERDRAW|WS_TABSTOP,switches[i],650,y,100,36);RemoveWindowSubclass(toggle,buttonHover,1);SetPropW(toggle,L"LG.IsSwitch",(HANDLE)1);SetWindowSubclass(toggle,compactSwitch,3,0);}
+    for(int i=0;i<8;++i){int y=164+i*36;control(L"STATIC",L"",0,headings[i],40,y,590,28);HWND toggle=control(L"BUTTON",L"",BS_OWNERDRAW|WS_TABSTOP,switches[i],650,y,100,32);RemoveWindowSubclass(toggle,buttonHover,1);SetPropW(toggle,L"LG.IsSwitch",(HANDLE)1);SetWindowSubclass(toggle,compactSwitch,3,0);}
     nativeInfo=control(L"STATIC",L"",0,NativeInfo,40,458,710,72);
     buildingPage=2;
-    settingsTabs=control(WC_TABCONTROLW,L"",tabStyle,SettingsPages,32,112,720,38);tabItem(settingsTabs,3,224);
+    settingsTabs=control(WC_TABCONTROLW,L"",tabStyle,SettingsPages,32,112,720,38);tabItem(settingsTabs,2,340);
     buildingSettings=0;control(L"STATIC",L"",0,LanguageLabel,40,184,210,28);language=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,Language,272,178,440,220);combo(language,{l10n::names[0],l10n::names[1],l10n::names[2],l10n::names[3],l10n::names[4]},int(l10n::current));
     control(L"STATIC",L"",0,ColorThemeLabel,40,244,210,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP|WS_VSCROLL,ColorTheme,272,238,440,260);
     control(L"BUTTON",L"",BS_AUTOCHECKBOX|WS_TABSTOP,StartupAnimation,40,304,690,34);SendMessageW(GetDlgItem(mainWindow,StartupAnimation),BM_SETCHECK,startupAnimation?BST_CHECKED:BST_UNCHECKED,0);control(L"STATIC",L"",0,SettingsNote,40,368,680,110);
-    buildingSettings=1;control(L"STATIC",L"",0,OpacityLabel,40,166,620,28);HWND opacity=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,OpacitySlider,40,196,680,32);SendMessageW(opacity,TBM_SETRANGE,TRUE,MAKELPARAM(5,90));SendMessageW(opacity,TBM_SETPOS,TRUE,glassConfig.opacity);
+    buildingPage=1;buildingSettings=1;control(L"STATIC",L"",0,OpacityLabel,40,166,620,28);HWND opacity=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,OpacitySlider,40,196,680,32);SendMessageW(opacity,TBM_SETRANGE,TRUE,MAKELPARAM(5,90));SendMessageW(opacity,TBM_SETPOS,TRUE,glassConfig.opacity);
     control(L"STATIC",L"",0,BlurLabel,40,226,620,28);HWND blur=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,BlurSlider,40,256,680,32);SendMessageW(blur,TBM_SETRANGE,TRUE,MAKELPARAM(0,40));SendMessageW(blur,TBM_SETPOS,TRUE,glassConfig.blur);
-    control(L"STATIC",L"",0,RadiusLabel,40,286,620,28);HWND radius=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,RadiusSlider,40,316,680,32);SendMessageW(radius,TBM_SETRANGE,TRUE,MAKELPARAM(0,28));SendMessageW(radius,TBM_SETPOS,TRUE,glassConfig.radius);control(L"STATIC",L"",0,EffectValue,480,286,240,28);
+    control(L"STATIC",L"",0,RadiusLabel,40,286,430,28);HWND radius=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,RadiusSlider,40,316,680,32);SendMessageW(radius,TBM_SETRANGE,TRUE,MAKELPARAM(0,28));SendMessageW(radius,TBM_SETPOS,TRUE,glassConfig.radius);control(L"STATIC",L"",0,EffectValue,480,286,240,28);
     control(L"STATIC",L"",0,TintLabel,40,362,220,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,TintCombo,272,356,440,150);
     control(L"BUTTON",L"",BS_AUTOCHECKBOX|WS_TABSTOP,BatteryFriendly,40,404,680,34);SendMessageW(GetDlgItem(mainWindow,BatteryFriendly),BM_SETCHECK,batteryFriendly?BST_CHECKED:BST_UNCHECKED,0);control(L"STATIC",L"",0,EffectNote,40,444,680,54);
-    control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,OpticalPreview,40,504,330,30);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,RestoreOriginal,390,504,330,30);
-    buildingSettings=2;control(L"STATIC",L"",0,AboutText,40,182,680,230);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,ExitApp,40,446,460,42);
+    control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,RestoreOriginal,40,504,680,30);
+    buildingPage=2;buildingSettings=2;control(L"STATIC",L"",0,AboutText,40,182,680,230);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,ExitApp,40,446,460,42);
     buildingSettings=-1;buildingPage=-1;
     status=control(L"STATIC",L"",0,Status,24,552,570,64);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Pause,614,570,152,36);localize();selectPage(0);
 }

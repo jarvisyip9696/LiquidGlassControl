@@ -1,12 +1,22 @@
 // Small GDI renderer: no continuous UI animation loop, GPU polling or web runtime.
+#include <functional>
+#include "smooth_motion.h"
+std::function<void()> controlPainted;
+// WM_PRINTCLIENT must use the same renderer as normal painting. The DC belongs
+// to the caller; no screen pixels or glass windows are accessed here.
+inline void printControlClient(HWND h,HDC dc){
+    auto previous=GetPropW(h,L"LG.PrintDC");int saved=SaveDC(dc);SetPropW(h,L"LG.PrintDC",dc);
+    SendMessageW(h,WM_PAINT,0,0);
+    if(previous)SetPropW(h,L"LG.PrintDC",previous);else RemovePropW(h,L"LG.PrintDC");RestoreDC(dc,saved);
+}
 // Each custom control presents one complete frame, including its background.
 // Fall back to the paint DC if a compatible buffer cannot be allocated.
 class ControlPaint {
-    HWND window;PAINTSTRUCT ps{};HDC output{},buffer{};HBITMAP bitmap{};HGDIOBJ previous{};RECT bounds{};
+    HWND window;PAINTSTRUCT ps{};HDC output{},buffer{};HBITMAP bitmap{};HGDIOBJ previous{};RECT bounds{};bool printing=false;
 public:
     HDC dc{};
-    explicit ControlPaint(HWND h):window(h){output=BeginPaint(h,&ps);dc=output;bounds=ps.rcPaint;int width=bounds.right-bounds.left,height=bounds.bottom-bounds.top;if(!output||width<=0||height<=0)return;buffer=CreateCompatibleDC(output);if(!buffer)return;bitmap=CreateCompatibleBitmap(output,width,height);if(!bitmap){DeleteDC(buffer);buffer=nullptr;return;}previous=SelectObject(buffer,bitmap);SetViewportOrgEx(buffer,-bounds.left,-bounds.top,nullptr);dc=buffer;}
-    ~ControlPaint(){if(buffer){if(GetGraphicsMode(buffer)==GM_ADVANCED)ModifyWorldTransform(buffer,nullptr,MWT_IDENTITY);BitBlt(output,bounds.left,bounds.top,bounds.right-bounds.left,bounds.bottom-bounds.top,buffer,bounds.left,bounds.top,SRCCOPY);SelectObject(buffer,previous);DeleteObject(bitmap);DeleteDC(buffer);}EndPaint(window,&ps);}
+    explicit ControlPaint(HWND h):window(h){if(auto supplied=GetPropW(h,L"LG.PrintDC")){printing=true;dc=static_cast<HDC>(supplied);GetClientRect(h,&bounds);return;}output=BeginPaint(h,&ps);dc=output;bounds=ps.rcPaint;int width=bounds.right-bounds.left,height=bounds.bottom-bounds.top;if(!output||width<=0||height<=0)return;buffer=CreateCompatibleDC(output);if(!buffer)return;bitmap=CreateCompatibleBitmap(output,width,height);if(!bitmap){DeleteDC(buffer);buffer=nullptr;return;}previous=SelectObject(buffer,bitmap);SetViewportOrgEx(buffer,-bounds.left,-bounds.top,nullptr);dc=buffer;}
+    ~ControlPaint(){if(printing)return;if(buffer){if(GetGraphicsMode(buffer)==GM_ADVANCED)ModifyWorldTransform(buffer,nullptr,MWT_IDENTITY);BitBlt(output,bounds.left,bounds.top,bounds.right-bounds.left,bounds.bottom-bounds.top,buffer,bounds.left,bounds.top,SRCCOPY);SelectObject(buffer,previous);DeleteObject(bitmap);DeleteDC(buffer);}EndPaint(window,&ps);if(controlPainted)controlPainted();}
     ControlPaint(const ControlPaint&)=delete;ControlPaint&operator=(const ControlPaint&)=delete;
 };
 bool showFocus(HWND h){return GetFocus()==h&&!(SendMessageW(h,WM_QUERYUISTATE,0,0)&UISF_HIDEFOCUS);}
@@ -59,7 +69,7 @@ void movePageControls(int offset){
     pageOffset=offset;
 }
 void finishPageMotion(){KillTimer(mainWindow,13);movePageControls(0);pagePositions.clear();}
-void beginPageMotion(){finishPageMotion();if(!IsWindowVisible(mainWindow)||reducedMotion())return;for(HWND h:pageControls[currentPage]){if(!IsWindowVisible(h)||h==settingsTabs)continue;RECT r{};GetWindowRect(h,&r);MapWindowPoints(nullptr,mainWindow,reinterpret_cast<POINT*>(&r),2);pagePositions.push_back({h,r});}movePageControls(MulDiv(8,dpi,96));pageStart=GetTickCount64();if(!pagePositions.empty()&&!SetTimer(mainWindow,13,uiFrameInterval(),nullptr))finishPageMotion();}
+void beginPageMotion(){finishPageMotion();} // Stable layout; only control emphasis animates.
 void tickPageMotion(){float t=std::min(1.f,(GetTickCount64()-pageStart)/160.f);int offset=(int)(MulDiv(8,dpi,96)*std::pow(1-t,3));if(t>=1||offset==0||reducedMotion()||!IsWindowVisible(mainWindow)){finishPageMotion();return;}movePageControls(offset);}
 void createFonts(){
     if(fontLanguage==int(l10n::current)&&font)return;
@@ -79,7 +89,8 @@ enum MotionChannel {kCheck=0,kPress=1,kHover=2,kSelect=3,kTabHover0=4};
 constexpr int kMotionChannels=7;
 const UINT_PTR kMotionTimer=0x5A1;
 // Each channel moves from the value it had when its target changed, over its own duration, with an ease-in-out curve. Progress is measured from real time, so the motion does not depend on frame rate.
-struct Motion {float v[kMotionChannels]{},t[kMotionChannels]{},from[kMotionChannels]{};LONGLONG started[kMotionChannels]{};float tabWeights[3]{},tabFromWeights[3]{};int hotTab=-1;bool running=false,painted=false;};
+struct Motion {float v[kMotionChannels]{},t[kMotionChannels]{},velocity[kMotionChannels]{};LONGLONG lastTick=0;float tabWeights[3]{},tabFromWeights[3]{};int hotTab=-1;bool running=false,painted=false;};
+std::set<HWND> animatedControls;
 inline float channelDuration(int channel){return (channel==kHover||channel>=kTabHover0)?0.16f:channel==kPress?0.11f:channel==kSelect?0.18f:0.26f;}
 inline float easeInOut(float p){return p<0.5f?4*p*p*p:1-(float)std::pow(-2*p+2,3)/2;}
 inline Motion* motionOf(HWND h){auto mo=(Motion*)GetPropW(h,L"LG.Motion");if(!mo){mo=new Motion();SetPropW(h,L"LG.Motion",(HANDLE)mo);}return mo;}
@@ -93,31 +104,30 @@ inline double motionFrequency(){static const double frequency=[] {LARGE_INTEGER 
 inline void setMotion(HWND h,int channel,float target){
     auto mo=motionOf(h);if(mo->t[channel]==target)return;
     if(mo->running)stepMotion(h);
-    if(reducedMotion()||!mo->painted||!IsWindowVisible(h)){mo->t[channel]=mo->v[channel]=target;InvalidateRect(h,nullptr,FALSE);return;}
-    mo->from[channel]=mo->v[channel];mo->started[channel]=motionNow();mo->t[channel]=target;
-    if(!mo->running){mo->running=SetTimer(h,kMotionTimer,uiFrameInterval(),nullptr)!=0;if(!mo->running){for(int i=0;i<kMotionChannels;++i)mo->v[i]=mo->t[i];InvalidateRect(h,nullptr,FALSE);}}
+    if(reducedMotion()||!mo->painted||!IsWindowVisible(h)||IsIconic(mainWindow)){mo->t[channel]=mo->v[channel]=target;mo->velocity[channel]=0;InvalidateRect(h,nullptr,FALSE);return;}
+    mo->t[channel]=target;
+    if(!mo->running){mo->lastTick=motionNow();bool needsTimer=animatedControls.empty();animatedControls.insert(h);mo->running=!needsTimer||SetTimer(mainWindow,kMotionTimer,uiFrameInterval(),nullptr)!=0;if(!mo->running){animatedControls.erase(h);for(int i=0;i<kMotionChannels;++i)mo->v[i]=mo->t[i];InvalidateRect(h,nullptr,FALSE);}}
 }
 // Returns true while any channel is still moving. Uses real elapsed time, so a slow frame does not slow the animation down.
 inline bool stepMotion(HWND h){
-    auto mo=motionOf(h);LONGLONG now=motionNow();double freq=motionFrequency();bool moving=false;
+    auto mo=motionOf(h);LONGLONG now=motionNow();float dt=mo->lastTick?float((now-mo->lastTick)/motionFrequency()):0;mo->lastTick=now;dt=std::min(.1f,std::max(0.f,dt));bool moving=false;
     for(int i=0;i<kMotionChannels;++i){
-        if(mo->v[i]==mo->t[i])continue;
-        float progress=(float)((double)(now-mo->started[i])/freq/channelDuration(i));
-        if(progress>=1.f){mo->v[i]=mo->t[i];continue;}
-        mo->v[i]=mo->from[i]+(mo->t[i]-mo->from[i])*easeInOut(progress<0?0:progress);moving=true;
+        if(mo->v[i]==mo->t[i]&&mo->velocity[i]==0)continue;
+        moving=uiMotion::advance(mo->v[i],mo->velocity[i],mo->t[i],dt,channelDuration(i))||moving;
     }
     return moving;
 }
 inline void motionTick(HWND h){
     auto mo=motionOf(h);
     float before[kMotionChannels];std::copy(mo->v,mo->v+kMotionChannels,before);
-    if(!IsWindowVisible(h)||reducedMotion()){for(int i=0;i<kMotionChannels;++i)mo->v[i]=mo->t[i];}
+    if(!IsWindowVisible(h)||IsIconic(mainWindow)||reducedMotion()){for(int i=0;i<kMotionChannels;++i){mo->v[i]=mo->t[i];mo->velocity[i]=0;}}
     bool moving=stepMotion(h)&&IsWindowVisible(h);bool changed=false;for(int i=0;i<kMotionChannels;++i)if(int(before[i]*255+.5f)!=int(mo->v[i]*255+.5f))changed=true;if(changed)InvalidateRect(h,nullptr,FALSE);
-    if(!moving){KillTimer(h,kMotionTimer);mo->running=false;}
+    if(!moving){animatedControls.erase(h);mo->running=false;}
 }
-inline void motionRelease(HWND h){KillTimer(h,kMotionTimer);if(auto mo=(Motion*)GetPropW(h,L"LG.Motion")){delete mo;RemovePropW(h,L"LG.Motion");}}
-inline void motionFinish(HWND h){if(auto mo=(Motion*)GetPropW(h,L"LG.Motion")){for(int i=0;i<kMotionChannels;++i)mo->v[i]=mo->t[i];mo->running=false;KillTimer(h,kMotionTimer);}}
-inline void resetInteraction(HWND h){RemovePropW(h,L"LG.Hover");TRACKMOUSEEVENT tracking{};tracking.cbSize=sizeof(tracking);tracking.dwFlags=TME_CANCEL|TME_LEAVE;tracking.hwndTrack=h;TrackMouseEvent(&tracking);if(auto mo=(Motion*)GetPropW(h,L"LG.Motion")){mo->hotTab=-1;mo->v[kHover]=mo->t[kHover]=0;mo->v[kPress]=mo->t[kPress]=0;for(int i=kTabHover0;i<kMotionChannels;++i)mo->v[i]=mo->t[i]=0;}InvalidateRect(h,nullptr,FALSE);}
+inline void tickControlMotion(){for(auto i=animatedControls.begin();i!=animatedControls.end();){HWND h=*i++;if(IsWindow(h))motionTick(h);else animatedControls.erase(h);}if(animatedControls.empty())KillTimer(mainWindow,kMotionTimer);}
+inline void motionRelease(HWND h){animatedControls.erase(h);if(animatedControls.empty())KillTimer(mainWindow,kMotionTimer);if(auto mo=(Motion*)GetPropW(h,L"LG.Motion")){delete mo;RemovePropW(h,L"LG.Motion");}}
+inline void motionFinish(HWND h){animatedControls.erase(h);if(animatedControls.empty())KillTimer(mainWindow,kMotionTimer);if(auto mo=(Motion*)GetPropW(h,L"LG.Motion")){for(int i=0;i<kMotionChannels;++i){mo->v[i]=mo->t[i];mo->velocity[i]=0;}mo->running=false;}}
+inline void resetInteraction(HWND h){RemovePropW(h,L"LG.Hover");TRACKMOUSEEVENT tracking{};tracking.cbSize=sizeof(tracking);tracking.dwFlags=TME_CANCEL|TME_LEAVE;tracking.hwndTrack=h;TrackMouseEvent(&tracking);if(auto mo=(Motion*)GetPropW(h,L"LG.Motion")){mo->hotTab=-1;for(int i=0;i<kMotionChannels;++i)if(i==kHover||i==kPress||i>=kTabHover0){mo->v[i]=mo->t[i]=0;mo->velocity[i]=0;}}InvalidateRect(h,nullptr,FALSE);}
 inline void trackHover(HWND h){if(GetPropW(h,L"LG.Hover"))return;SetPropW(h,L"LG.Hover",(HANDLE)1);TRACKMOUSEEVENT tracking{};tracking.cbSize=sizeof(tracking);tracking.dwFlags=TME_LEAVE;tracking.hwndTrack=h;TrackMouseEvent(&tracking);}
 inline COLORREF mix(COLORREF a,COLORREF b,float t){t=t<0?0:t>1?1:t;auto c=[&](int x,int y){return (int)(x+(y-x)*t+0.5f);};return RGB(c(GetRValue(a),GetRValue(b)),c(GetGValue(a),GetGValue(b)),c(GetBValue(a),GetBValue(b)));}
 LRESULT CALLBACK buttonHover(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR){
@@ -142,22 +152,42 @@ void roundFill(HDC dc,RECT r,COLORREF fill,COLORREF edge,int radius,int stroke=1
     if(r.right<=r.left||r.bottom<=r.top)return;
     HBRUSH b=CreateSolidBrush(fill);HPEN p=CreatePen(PS_SOLID,stroke,edge);auto oldBrush=SelectObject(dc,b),oldPen=SelectObject(dc,p);RoundRect(dc,r.left,r.top,r.right,r.bottom,radius,radius);SelectObject(dc,oldBrush);SelectObject(dc,oldPen);DeleteObject(b);DeleteObject(p);
 }
+void drawFocusRing(HDC dc,RECT r){
+    InflateRect(&r,-2,-2);if(r.right<=r.left||r.bottom<=r.top)return;
+    HPEN pen=CreatePen(PS_SOLID,std::max(1,MulDiv(2,dpi,96)),highContrast()?GetSysColor(COLOR_HIGHLIGHT):palette().accent);
+    auto oldPen=SelectObject(dc,pen),oldBrush=SelectObject(dc,GetStockObject(HOLLOW_BRUSH));int radius=MulDiv(10,dpi,96);RoundRect(dc,r.left,r.top,r.right,r.bottom,radius,radius);SelectObject(dc,oldBrush);SelectObject(dc,oldPen);DeleteObject(pen);
+}
 void drawChevron(HDC dc,RECT r,COLORREF color,bool open){int cx=(r.left+r.right)/2,cy=(r.top+r.bottom)/2,half=std::max(2,MulDiv(4,dpi,96)),rise=std::max(1,MulDiv(2,dpi,96));HPEN pen=CreatePen(PS_SOLID,std::max(1,MulDiv(2,dpi,96)),color);auto old=SelectObject(dc,pen);MoveToEx(dc,cx-half,cy+(open?rise:-rise),nullptr);LineTo(dc,cx,cy+(open?-rise:rise));LineTo(dc,cx+half,cy+(open?rise:-rise));SelectObject(dc,old);DeleteObject(pen);}
 void drawThemeSwatch(HDC dc,RECT&text,int index){if(index<0||index>=7)return;int size=MulDiv(12,dpi,96),cy=(text.top+text.bottom)/2;RECT swatch{text.left,cy-size/2,text.left+size,cy+(size+1)/2};roundFill(dc,swatch,palettes[index].accent,highContrast()?GetSysColor(COLOR_WINDOWTEXT):tint(palettes[index].pressed,70),size);text.left+=MulDiv(24,dpi,96);}
-void hoverTransform(HDC dc,RECT r,float scale){if(highContrast())return;float cx=(r.left+r.right)/2.f,cy=(r.top+r.bottom)/2.f;XFORM transform{scale,0,0,scale,cx*(1-scale),cy*(1-scale)};SetGraphicsMode(dc,GM_ADVANCED);SetWorldTransform(dc,&transform);}
 void paintCompactSwitch(HWND h,HDC dc){RECT r{};GetClientRect(h,&r);FillRect(dc,&r,cardBrush);
-        auto px=[](int n){return MulDiv(n,dpi,96);};bool active=IsWindowEnabled(h);Motion*mo=motionOf(h);mo->painted=true;
+        auto px=[](int n){return MulDiv(n,dpi,96);};bool active=IsWindowEnabled(h),focused=showFocus(h);Motion*mo=motionOf(h);mo->painted=true;
         float check=mo->v[kCheck],press=active?mo->v[kPress]:0.f,hover=active?mo->v[kHover]:0.f;bool on=SendMessageW(h,BM_GETCHECK,0,0)==BST_CHECKED;
-        int trackState=SaveDC(dc);hoverTransform(dc,RECT{px(2),px(4),px(54),px(32)},1.f+.06f*hover-.035f*press);
-        RECT track={px(2),px(4),px(54),px(32)};COLORREF rest=active?RGB(155,165,181):RGB(200,206,215);COLORREF fill=mix(rest,palette().accent,active?check:0.f);
-        roundFill(dc,track,fill,mix(fill,active?palette().accent:GetSysColor(COLOR_GRAYTEXT),active?hover:0.f),px(28),std::max(1,px(1)));
-        // The thumb slides along the track and narrows slightly while the pointer is pressed.
-        int width=px(22)-(int)(px(3)*press+0.5f),thumbLeft=(int)(px(5)+(px(29)-px(5))*check+0.5f)+(px(22)-width)/2;
-        HBRUSH thumb=CreateSolidBrush(RGB(255,255,255));auto oldBrush=SelectObject(dc,thumb);auto oldPen=SelectObject(dc,GetStockObject(NULL_PEN));Ellipse(dc,thumbLeft,px(7),thumbLeft+width,px(29));SelectObject(dc,oldPen);SelectObject(dc,oldBrush);DeleteObject(thumb);
-        RestoreDC(dc,trackState);RECT caption=r;caption.left=px(62);wchar_t label[512]{};if(r.right>px(150))GetWindowTextW(h,label,512);SelectObject(dc,font);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,active?textColor():GetSysColor(COLOR_GRAYTEXT));DrawTextW(dc,*label?label:on?tr(L"开",L"On"):tr(L"关",L"Off"),-1,&caption,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS|DT_NOPREFIX);
-        if(showFocus(h)){InflateRect(&r,-1,-1);DrawFocusRect(dc,&r);}
+        // Rasterize the small track with fractional edge coverage. GDI's
+        // integer RoundRect/Ellipse otherwise produces jagged outlines at DPI
+        // scaling, especially while the thumb moves between physical pixels.
+        int w=std::min(px(58),int(r.right)),hgt=std::min(px(36),int(r.bottom));if(w<1||hgt<1)return;BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=w;info.bmiHeader.biHeight=-hgt;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
+        std::vector<unsigned long> pixels(size_t(w)*hgt);
+        float unit=dpi/96.f,scale=1.f+.06f*hover-.035f*press,cx=28*unit,cy=hgt/2.f;
+        COLORREF rest=active?RGB(155,165,181):RGB(200,206,215),fill=mix(rest,palette().accent,active?check:0.f);
+        float thumbWidth=(22-3*press)*unit,thumbX=(5+24*check)*unit+(22*unit-thumbWidth)/2;
+        auto coverage=[](float distance){return std::max(0.f,std::min(1.f,.5f-distance));};
+        auto rgb=[](COLORREF c){return (unsigned long)((GetRValue(c)<<16)|(GetGValue(c)<<8)|GetBValue(c));};
+        for(int y=0;y<hgt;++y)for(int x=0;x<w;++x){
+            float xx=cx+(x+.5f-cx)/scale,yy=cy+(y+.5f-cy)/scale;
+            float nearest=std::max(16*unit,std::min(40*unit,xx));
+            float dx=xx-nearest,dy=yy-cy;
+            float track=(std::sqrt(dx*dx+dy*dy)-14*unit)*scale;
+            COLORREF color=mix(cardColor(),fill,coverage(track));
+            if(focused)color=mix(color,highContrast()?GetSysColor(COLOR_HIGHLIGHT):palette().accent,coverage(track)-coverage(track+2*unit));
+            float tx=(xx-(thumbX+thumbWidth/2))/(thumbWidth/2),ty=(yy-cy)/(11*unit);
+            float thumb=(std::sqrt(tx*tx+ty*ty)-1)*std::min(thumbWidth/2,11*unit)*scale;
+            color=mix(color,RGB(255,255,255),coverage(thumb));pixels[size_t(y)*w+x]=rgb(color);
+        }
+        SetDIBitsToDevice(dc,0,0,w,hgt,0,0,0,hgt,pixels.data(),&info,DIB_RGB_COLORS);
+        RECT caption=r;caption.left=px(62);wchar_t label[512]{};if(r.right>px(150))GetWindowTextW(h,label,512);SelectObject(dc,font);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,active?textColor():GetSysColor(COLOR_GRAYTEXT));DrawTextW(dc,*label?label:on?tr(L"开",L"On"):tr(L"关",L"Off"),-1,&caption,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS|DT_NOPREFIX);
 }
 LRESULT CALLBACK compactSwitch(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR){
+    if(m==WM_PRINTCLIENT){printControlClient(h,reinterpret_cast<HDC>(w));return 0;}
     if((m==WM_ENABLE&&!w)||(m==WM_SHOWWINDOW&&!w)||m==WM_CANCELMODE)resetInteraction(h);
     if(m==WM_SHOWWINDOW&&!w)motionFinish(h);
     if(m==WM_TIMER&&w==kMotionTimer){motionTick(h);return 0;}
@@ -179,6 +209,7 @@ LRESULT CALLBACK compactSwitch(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
 }
 bool drawModernControl(DRAWITEMSTRUCT* item);
 LRESULT CALLBACK themedControl(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR comboControl){
+    if(m==WM_PRINTCLIENT){printControlClient(h,reinterpret_cast<HDC>(w));return 0;}
     if((m==WM_ENABLE&&!w)||(m==WM_SHOWWINDOW&&!w)||m==WM_CANCELMODE)resetInteraction(h);
     if(m==WM_SHOWWINDOW&&!w)motionFinish(h);
     if(m==WM_TIMER&&w==kMotionTimer){motionTick(h);return 0;}
@@ -190,7 +221,7 @@ LRESULT CALLBACK themedControl(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
         if((m==WM_MOUSEMOVE||m==WM_LBUTTONDOWN||m==WM_LBUTTONUP)&&IsWindowEnabled(h)){trackHover(h);TCHITTESTINFO hit{};hit.pt={static_cast<short>(LOWORD(l)),static_cast<short>(HIWORD(l))};int index=TabCtrl_HitTest(h,&hit);auto mo=motionOf(h);if(mo->hotTab!=index){mo->hotTab=index;InvalidateRect(h,nullptr,FALSE);}for(int i=0;i<3;++i)setMotion(h,kTabHover0+i,index==i?1.f:0.f);}
         if(m==WM_MOUSELEAVE){RemovePropW(h,L"LG.Hover");motionOf(h)->hotTab=-1;for(int i=0;i<3;++i)setMotion(h,kTabHover0+i,0.f);InvalidateRect(h,nullptr,FALSE);}
     }
-    if(!comboControl&&m==WM_PAINT){ControlPaint paint(h);HDC dc=paint.dc;RECT r;GetClientRect(h,&r);FillRect(dc,&r,h==settingsTabs?cardBrush:background);for(int i=0;i<TabCtrl_GetItemCount(h);++i){DRAWITEMSTRUCT item{};item.CtlType=ODT_TAB;item.CtlID=GetDlgCtrlID(h);item.itemID=i;item.hwndItem=h;item.hDC=dc;item.itemAction=ODA_DRAWENTIRE;if(showFocus(h)&&TabCtrl_GetCurFocus(h)==i)item.itemState=ODS_FOCUS;TabCtrl_GetItemRect(h,i,&item.rcItem);drawModernControl(&item);}return 0;}
+    if(!comboControl&&m==WM_PAINT){ControlPaint paint(h);HDC dc=paint.dc;RECT r;GetClientRect(h,&r);FillRect(dc,&r,(h==settingsTabs||h==systemTabs)?cardBrush:background);for(int i=0;i<TabCtrl_GetItemCount(h);++i){DRAWITEMSTRUCT item{};item.CtlType=ODT_TAB;item.CtlID=GetDlgCtrlID(h);item.itemID=i;item.hwndItem=h;item.hDC=dc;item.itemAction=ODA_DRAWENTIRE;if(showFocus(h)&&TabCtrl_GetCurFocus(h)==i)item.itemState=ODS_FOCUS;TabCtrl_GetItemRect(h,i,&item.rcItem);drawModernControl(&item);}return 0;}
     if(m==WM_ERASEBKGND){RECT r;GetClientRect(h,&r);FillRect(reinterpret_cast<HDC>(w),&r,background);return 1;}
     if(m==WM_PAINT&&comboControl){
         ControlPaint paint(h);HDC dc=paint.dc;RECT r;GetClientRect(h,&r);
@@ -199,13 +230,13 @@ LRESULT CALLBACK themedControl(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
         // Uninitialized corner pixels were the black triangles in the dropdowns.
         FillRect(dc,&r,cardBrush);float hover=IsWindowEnabled(h)?motionOf(h)->v[kHover]:0.f;motionOf(h)->painted=true;
         int inset=MulDiv(2,dpi,96)-(int)(MulDiv(1,dpi,96)*hover);InflateRect(&r,-inset,-inset);
-        COLORREF fill=mix(cardColor(),palette().selection,hover);roundFill(dc,r,fill,mix(fill,palette().accent,hover),MulDiv(8,dpi,96),std::max(1,MulDiv(1,dpi,96)));hoverTransform(dc,r,1.f+.003f*hover);
+        COLORREF fill=mix(cardColor(),palette().selection,hover);roundFill(dc,r,fill,mix(fill,palette().accent,hover),MulDiv(8,dpi,96),std::max(1,MulDiv(1,dpi,96)));
         RECT text=r;text.left+=MulDiv(8,dpi,96);text.right-=MulDiv(25,dpi,96);
         if(GetDlgCtrlID(h)==ColorTheme)drawThemeSwatch(dc,text,selection(h));
         wchar_t label[256]{};GetWindowTextW(h,label,256);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,IsWindowEnabled(h)?textColor():GetSysColor(COLOR_GRAYTEXT));auto oldFont=SelectObject(dc,font);
         DrawTextW(dc,label,-1,&text,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS|DT_NOPREFIX);
         RECT arrow=r;arrow.left=arrow.right-MulDiv(24,dpi,96);drawChevron(dc,arrow,IsWindowEnabled(h)?textColor():GetSysColor(COLOR_GRAYTEXT),SendMessageW(h,CB_GETDROPPEDSTATE,0,0)!=0);
-        if(showFocus(h)){InflateRect(&text,-2,-2);DrawFocusRect(dc,&text);}SelectObject(dc,oldFont);return 0;
+        if(showFocus(h))drawFocusRing(dc,r);SelectObject(dc,oldFont);return 0;
     }
     auto result=DefSubclassProc(h,m,w,l);
     if(comboControl&&(m==WM_SETFOCUS||m==WM_KILLFOCUS||m==CB_SETCURSEL||m==CB_SHOWDROPDOWN||m==WM_KEYUP||m==WM_LBUTTONUP||m==WM_ENABLE||m==WM_UPDATEUISTATE))InvalidateRect(h,nullptr,FALSE);
@@ -214,6 +245,7 @@ LRESULT CALLBACK themedControl(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
 // Retain the native trackbar's keyboard, accessibility and hit testing. Only
 // drawing is replaced; dragging follows the pointer, keyboard changes ease.
 LRESULT CALLBACK modernSlider(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR){
+    if(m==WM_PRINTCLIENT){printControlClient(h,reinterpret_cast<HDC>(w));return 0;}
     if((m==WM_ENABLE&&!w)||(m==WM_SHOWWINDOW&&!w)||m==WM_CANCELMODE)resetInteraction(h);
     if(m==WM_SHOWWINDOW&&!w)motionFinish(h);
     if(m==WM_TIMER&&w==kMotionTimer){motionTick(h);return 0;}
@@ -230,23 +262,23 @@ LRESULT CALLBACK modernSlider(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR
         int left=track.left+half,right=track.right-half,x=left+(int)((right-left)*mo->v[kCheck]);int thickness=std::max(2,MulDiv(4,dpi,96));
         RECT rail{left,cy-thickness/2,right,cy+thickness/2};roundFill(dc,rail,palette().edge,palette().edge,thickness);RECT fill=rail;fill.right=x;COLORREF accent=IsWindowEnabled(h)?palette().accent:GetSysColor(COLOR_GRAYTEXT);roundFill(dc,fill,accent,accent,thickness);
         int radius=MulDiv(8,dpi,96)+(int)(MulDiv(2,dpi,96)*mo->v[kHover])-(int)(MulDiv(1,dpi,96)*mo->v[kPress]);RECT knob{x-radius,cy-radius,x+radius,cy+radius};roundFill(dc,knob,highContrast()?GetSysColor(COLOR_WINDOW):RGB(255,255,255),accent,2*radius);
-        if(showFocus(h)){InflateRect(&r,-1,-1);DrawFocusRect(dc,&r);}return 0;}
+        if(showFocus(h)){InflateRect(&r,-1,-1);drawFocusRing(dc,r);}return 0;}
     auto result=DefSubclassProc(h,m,w,l);if(m==TBM_SETPOS||m==WM_KEYDOWN||m==WM_MOUSEMOVE||m==WM_SETFOCUS||m==WM_KILLFOCUS||m==WM_UPDATEUISTATE||m==WM_ENABLE)InvalidateRect(h,nullptr,FALSE);return result;
 }
 bool drawModernControl(DRAWITEMSTRUCT* item){
     if(!item)return false;HDC dc=item->hDC;RECT r=item->rcItem;if(item->CtlType==ODT_BUTTON&&GetPropW(item->hwndItem,L"LG.IsSwitch")){int saved=SaveDC(dc);paintCompactSwitch(item->hwndItem,dc);RestoreDC(dc,saved);return true;}
     if(item->CtlType==ODT_COMBOBOX){int saved=SaveDC(dc);bool selected=(item->itemState&ODS_SELECTED)!=0;HBRUSH brush=CreateSolidBrush(selected?palette().selection:cardColor());FillRect(dc,&r,brush);DeleteObject(brush);if(item->itemID!=static_cast<UINT>(-1)){wchar_t label[512]{};SendMessageW(item->hwndItem,CB_GETLBTEXT,item->itemID,reinterpret_cast<LPARAM>(label));r.left+=MulDiv(8,dpi,96);if(GetDlgCtrlID(item->hwndItem)==ColorTheme)drawThemeSwatch(dc,r,(int)item->itemID);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,textColor());SelectObject(dc,font);DrawTextW(dc,label,-1,&r,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS|DT_NOPREFIX);}RestoreDC(dc,saved);return true;}
-    if(item->CtlType==ODT_LISTBOX){int saved=SaveDC(dc);bool selected=(item->itemState&ODS_SELECTED)!=0;auto mo=motionOf(item->hwndItem);mo->painted=true;bool hot=(INT_PTR)GetPropW(item->hwndItem,L"LG.HotRow")==INT_PTR(item->itemID)+1;HBRUSH b=CreateSolidBrush(selected?palette().selection:mix(cardColor(),palette().selection,hot?mo->v[kHover]:0));FillRect(dc,&r,b);DeleteObject(b);if(item->itemID<entries.size()){auto&e=entries[item->itemID];int iconSize=MulDiv(28,dpi,96),gap=MulDiv(10,dpi,96);if(e.icon)DrawIconEx(dc,r.left+gap,r.top+(r.bottom-r.top-iconSize)/2,e.icon,iconSize,iconSize,0,nullptr,DI_NORMAL);RECT text=r;text.left+=iconSize+2*gap;text.top+=MulDiv(3,dpi,96);text.bottom=text.top+MulDiv(23,dpi,96);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,textColor());SelectObject(dc,actionFont);DrawTextW(dc,e.exe.c_str(),-1,&text,DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);text.top+=MulDiv(21,dpi,96);text.bottom=r.bottom;SetTextColor(dc,palette().pressed);SelectObject(dc,font);DrawTextW(dc,e.title.c_str(),-1,&text,DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);}if((item->itemState&ODS_FOCUS)&&!(item->itemState&ODS_NOFOCUSRECT)){InflateRect(&r,-2,-2);DrawFocusRect(dc,&r);}RestoreDC(dc,saved);return true;}
+    if(item->CtlType==ODT_LISTBOX){int saved=SaveDC(dc);bool selected=(item->itemState&ODS_SELECTED)!=0;auto mo=motionOf(item->hwndItem);mo->painted=true;bool hot=(INT_PTR)GetPropW(item->hwndItem,L"LG.HotRow")==INT_PTR(item->itemID)+1;HBRUSH b=CreateSolidBrush(selected?palette().selection:mix(cardColor(),palette().selection,hot?mo->v[kHover]:0));FillRect(dc,&r,b);DeleteObject(b);if(item->itemID<entries.size()){auto&e=entries[item->itemID];int iconSize=MulDiv(28,dpi,96),gap=MulDiv(10,dpi,96);if(e.icon)DrawIconEx(dc,r.left+gap,r.top+(r.bottom-r.top-iconSize)/2,e.icon,iconSize,iconSize,0,nullptr,DI_NORMAL);RECT text=r;text.left+=iconSize+2*gap;text.top+=MulDiv(3,dpi,96);text.bottom=text.top+MulDiv(23,dpi,96);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,textColor());SelectObject(dc,actionFont);DrawTextW(dc,e.exe.c_str(),-1,&text,DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);text.top+=MulDiv(21,dpi,96);text.bottom=r.bottom;SetTextColor(dc,palette().pressed);SelectObject(dc,font);DrawTextW(dc,e.title.c_str(),-1,&text,DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);}if((item->itemState&ODS_FOCUS)&&!(item->itemState&ODS_NOFOCUSRECT)){InflateRect(&r,-2,-2);drawFocusRing(dc,r);}RestoreDC(dc,saved);return true;}
     bool tab=item->CtlType==ODT_TAB;if(!tab&&item->CtlType!=ODT_BUTTON)return false;int saved=SaveDC(dc);
     bool primary=tab?(int)item->itemID==(item->hwndItem==settingsTabs?settingsPage:currentPage):(item->CtlID==Apply||item->CtlID==RestoreOriginal);
     if(!tab){if(item->CtlID==VolumeOn)primary=volumeOn;if(item->CtlID==BrightnessOn)primary=brightnessOn;}
-    bool disabled=(item->itemState&ODS_DISABLED)!=0,pressed=(item->itemState&ODS_SELECTED)!=0;
+    bool disabled=(item->itemState&ODS_DISABLED)!=0;
     Motion*mo=motionOf(item->hwndItem);mo->painted=true;float hoverAmount=disabled?0.f:mo->v[kHover],pressAmount=disabled?0.f:mo->v[kPress];
     // Fade selection between the old and new tabs. Spatial overlap used to
     // light up an unrelated middle tab when jumping across two positions.
     float tabCover=0.f;
     if(tab){
-        int selected=item->hwndItem==settingsTabs?settingsPage:currentPage;
+        int selected=item->hwndItem==systemTabs?systemSection:item->hwndItem==settingsTabs?(settingsPage==2?1:0):currentPage;
         int last=(int)(INT_PTR)GetPropW(item->hwndItem,L"LG.Sel")-1;
         if(last!=selected){
             if(last>=0){stepMotion(item->hwndItem);float progress=mo->v[kSelect];for(int i=0;i<3;++i)mo->tabWeights[i]=mo->tabFromWeights[i]+((i==last?1.f:0.f)-mo->tabFromWeights[i])*progress;}
@@ -259,21 +291,15 @@ bool drawModernControl(DRAWITEMSTRUCT* item){
         tabCover=mo->tabFromWeights[index]+((index==selected?1.f:0.f)-mo->tabFromWeights[index])*mo->v[kSelect];
         mo->tabWeights[index]=tabCover;
     }
-    HBRUSH base=CreateSolidBrush(tab?(item->hwndItem==settingsTabs?cardColor():highContrast()?GetSysColor(COLOR_WINDOW):tint(palette().accent,18)):cardColor());FillRect(dc,&r,base);DeleteObject(base);
-    if(tab){hoverAmount=disabled?0.f:mo->v[kTabHover0+(int)item->itemID];int inset=MulDiv(3,dpi,96)-(int)(MulDiv(2,dpi,96)*hoverAmount);InflateRect(&r,-inset,-inset);}
-    else {
-        // Grow the painted button inside its own bounds. The native hit target
-        // and surrounding layout stay stable throughout pointer movement.
-        int inset=MulDiv(3,dpi,96)-(int)(MulDiv(2,dpi,96)*hoverAmount)+(int)(MulDiv(1,dpi,96)*pressAmount);
-        InflateRect(&r,-inset,-inset);
-        // Keep the outline in device coordinates. Scaling the entire wide
-        // rectangle made its side strokes exceed the control's clip region.
-    }
+    HBRUSH base=CreateSolidBrush(tab?((item->hwndItem==settingsTabs||item->hwndItem==systemTabs)?cardColor():highContrast()?GetSysColor(COLOR_WINDOW):tint(palette().accent,18)):cardColor());FillRect(dc,&r,base);DeleteObject(base);
+    if(tab)hoverAmount=disabled?0.f:mo->v[kTabHover0+(int)item->itemID];
+    // Stable geometry keeps text and edges crisp while colors ease.
+    int inset=MulDiv(2,dpi,96);InflateRect(&r,-inset,-inset);
     COLORREF fill=primary?palette().accent:palette().surface,edge=primary?palette().accent:mix(palette().edge,palette().accent,.25f);
     if(tab&&!disabled){fill=mix(palette().surface,palette().accent,tabCover);fill=mix(fill,tabCover>.5f?palette().hover:palette().selection,hoverAmount*.25f);}
     if(tab)edge=fill;
     if(!tab&&!disabled){COLORREF hot=primary?palette().hover:palette().selection,hotEdge=primary?hot:palette().accent;fill=mix(fill,hot,hoverAmount);edge=mix(edge,hotEdge,hoverAmount);}
-    if(!tab&&!disabled&&(pressed||pressAmount>0.f))fill=mix(fill,primary?palette().pressed:palette().selection,pressed?1.f:pressAmount);
+    if(!tab&&!disabled&&pressAmount>0.f)fill=mix(fill,primary?palette().pressed:palette().selection,pressAmount);
     // The one-DIP palette outline fades in only while this control is hovered.
     // Matching the fill at rest removes the border without changing geometry.
     // The old tab may still ease back to its resting size, but its outline
@@ -281,11 +307,10 @@ bool drawModernControl(DRAWITEMSTRUCT* item){
     float outlineAmount=tab&&mo->hotTab!=(int)item->itemID?0.f:hoverAmount;
     edge=mix(fill,palette().accent,outlineAmount);
     if(disabled){fill=highContrast()?GetSysColor(COLOR_BTNFACE):RGB(239,241,245);edge=fill;}
-    roundFill(dc,r,fill,edge,MulDiv(14,dpi,96),std::max(1,MulDiv(1,dpi,96)));if(!disabled)hoverTransform(dc,r,tab?1.f+.006f*hoverAmount:1.f+.015f*hoverAmount-.01f*pressAmount);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,disabled?GetSysColor(COLOR_GRAYTEXT):tab?mix(textColor(),highContrast()?GetSysColor(COLOR_HIGHLIGHTTEXT):RGB(255,255,255),tabCover):primary?(highContrast()?GetSysColor(COLOR_HIGHLIGHTTEXT):RGB(255,255,255)):textColor());SelectObject(dc,actionFont?actionFont:font);
+    roundFill(dc,r,fill,edge,MulDiv(14,dpi,96),std::max(1,MulDiv(1,dpi,96)));SetBkMode(dc,TRANSPARENT);SetTextColor(dc,disabled?GetSysColor(COLOR_GRAYTEXT):tab?mix(textColor(),highContrast()?GetSysColor(COLOR_HIGHLIGHTTEXT):RGB(255,255,255),tabCover):primary?(highContrast()?GetSysColor(COLOR_HIGHLIGHTTEXT):RGB(255,255,255)):textColor());SelectObject(dc,actionFont?actionFont:font);
     wchar_t text[256]{};if(tab){TCITEMW entry{};entry.mask=TCIF_TEXT;entry.pszText=text;entry.cchTextMax=256;TabCtrl_GetItem(item->hwndItem,(int)item->itemID,&entry);}else GetWindowTextW(item->hwndItem,text,256);
-    HFONT fitted=nullptr;if(tab){SIZE extent{};GetTextExtentPoint32W(dc,text,lstrlenW(text),&extent);if(extent.cx>r.right-r.left-MulDiv(8,dpi,96)){LOGFONTW lf{};GetObjectW(actionFont,sizeof(lf),&lf);int size=MulDiv(14,dpi,96),minimum=MulDiv(11,dpi,96);for(;size>=minimum;--size){lf.lfHeight=-size;HFONT next=CreateFontIndirectW(&lf);SelectObject(dc,next);if(fitted)DeleteObject(fitted);fitted=next;GetTextExtentPoint32W(dc,text,lstrlenW(text),&extent);if(extent.cx<=r.right-r.left-MulDiv(8,dpi,96))break;}}}
-    if(!tab&&pressAmount>0.f)OffsetRect(&r,0,(int)(pressAmount*MulDiv(1,dpi,96)+0.5f));else if(pressed&&!tab)OffsetRect(&r,0,1);DrawTextW(dc,text,-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);
-    if((item->itemState&ODS_FOCUS)&&!(item->itemState&ODS_NOFOCUSRECT)){InflateRect(&r,-5,-5);DrawFocusRect(dc,&r);}RestoreDC(dc,saved);if(fitted)DeleteObject(fitted);return true;
+    DrawTextW(dc,text,-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);
+    if((item->itemState&ODS_FOCUS)&&!(item->itemState&ODS_NOFOCUSRECT))drawFocusRing(dc,r);RestoreDC(dc,saved);return true;
 }
 void paintChrome(HWND h){
     ControlPaint paint(h);HDC dc=paint.dc;RECT r;GetClientRect(h,&r);if(r.right<=0||r.bottom<=0)return;FillRect(dc,&r,background);

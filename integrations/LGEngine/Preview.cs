@@ -35,6 +35,9 @@ namespace LiquidGlassOptical
     {
         public int Opacity = 35, Blur = 12, Radius = 12, Tint, Language;
         public bool SavePower = true, ReducedMotion;
+        // Automatic tint follows the pixels behind the glass, not the Windows theme.
+        public bool AdaptToBackground { get { return Tint == 0; } }
+        public int Appearance { get { return Tint == 0 ? -1 : (Tint == 1 ? 1 : 0); } }
         public static Settings Read(int[] w)
         {
             if (w == null || w.Length != 8 || w[0] != 2 ||
@@ -268,11 +271,11 @@ namespace LiquidGlassOptical
             for (int i = 0; i < 3; i++) labels[i].Text = names[i] + ": " + values[i];
             replay.Text = TextFor("Replay", "重播动画", "重播動畫", "Odtwórz", "Phát lại");
             close.Text = TextFor("Close", "关闭", "關閉", "Zamknij", "Đóng");
-            status.Text = failed ?? TextFor("Live LGEngine preview. Tint, blur and corners follow the controller. Optical controls affect this preview only.",
-                "LGEngine 实时预览。着色、模糊和圆角跟随主程序；此处光学参数只影响预览。",
-                "LGEngine 即時預覽。著色、模糊和圓角跟隨主程式；此處光學參數只影響預覽。",
-                "Podgląd LGEngine. Barwa, rozmycie i narożniki pochodzą ze sterownika. Parametry optyczne dotyczą tylko podglądu.",
-                "Xem trước LGEngine. Màu, độ mờ và góc theo ứng dụng chính. Thông số quang học chỉ áp dụng cho bản xem trước.");
+            status.Text = failed ?? TextFor("Preview only. Automatic tint adapts to the background; Light/Dark locks the appearance. Blur and corners follow the controller.",
+                "仅影响预览。自动色调根据背景调整明暗；浅色／深色锁定外观。模糊和圆角跟随主程序。",
+                "僅影響預覽。自動色調根據背景調整明暗；淺色／深色鎖定外觀。模糊和圓角跟隨主程式。",
+                "Tylko podgląd. Tryb automatyczny reaguje na tło; Jasny/Ciemny blokuje wygląd. Rozmycie i narożniki ze sterownika.",
+                "Chỉ xem trước. Màu tự động theo nền; Sáng/Tối cố định giao diện. Độ mờ và góc theo ứng dụng chính.");
         }
 
         void QueueLook() { Localize(); debounce.Stop(); debounce.Start(); }
@@ -282,12 +285,6 @@ namespace LiquidGlassOptical
             string serialized = preferences.Serialize();
             if (serialized != savedOptics && preferences.Save()) savedOptics = serialized;
         }
-        bool Dark()
-        {
-            if (settings.Tint != 0) return settings.Tint == 2;
-            using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
-                return key != null && Convert.ToInt32(key.GetValue("AppsUseLightTheme", 1)) == 0;
-        }
         bool Quiet() { return settings.ReducedMotion || SystemInformation.HighContrast; }
         void ApplyLook()
         {
@@ -295,8 +292,8 @@ namespace LiquidGlassOptical
             try
             {
                 surface.SetLook(settings.Look(refraction.Value, rim.Value, elevation.Value), Profiles[Math.Max(0, profile.SelectedIndex)]);
-                surface.SetAppearance(Dark() ? 0 : 1);
-                surface.SetUpdates(SystemInformation.HighContrast ? 0 : 15, false, settings.SavePower);
+                surface.SetAppearance(settings.Appearance);
+                surface.SetUpdates(SystemInformation.HighContrast ? 0 : 15, settings.AdaptToBackground, settings.SavePower);
                 surface.SetMotion(Quiet() ? 0 : 4, 380, 230);
                 surface.SetInteraction(!Quiet());
                 DrawContents(); Place();
@@ -312,7 +309,7 @@ namespace LiquidGlassOptical
             {
                 if (service == null) service = GlassService.Connect(new GlassConnectOptions { Mode = GlassMode.UiThread });
                 GlassSpec spec = new GlassSpec { Label = "LiquidGlassControl.LGEngine.Preview", Size = CardSize,
-                    Place = CardPlace(), Scale = uiScale, Adapt = false, InShots = false, SavePower = settings.SavePower,
+                    Place = CardPlace(), Scale = uiScale, Adapt = settings.AdaptToBackground, InShots = false, SavePower = settings.SavePower,
                     AnimStyle = Quiet() ? 0 : 4, Hover = !Quiet(), Look = settings.Look(refraction.Value, rim.Value, elevation.Value) };
                 surface = service.Create(spec);
                 // UiThread creates its GlassLayer synchronously. Make it an

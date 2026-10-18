@@ -1,0 +1,21 @@
+#pragma once
+#include <algorithm>
+#include <cmath>
+namespace uiMotion {
+inline bool advance(float&position,float&velocity,float target,float elapsed,float duration){
+    float dt=std::max(0.f,std::min(.1f,elapsed)),omega=5.f/duration;
+    float offset=position-target,j=velocity+omega*offset,e=std::exp(-omega*dt);
+    position=target+(offset+j*dt)*e;velocity=(velocity-omega*j*dt)*e;
+    if(position<0||position>1){position=std::max(0.f,std::min(1.f,position));velocity=0;}
+    if(std::abs(position-target)<.001f&&std::abs(velocity)<.01f){position=target;velocity=0;return false;}return true;
+}
+inline bool test(){
+    float a=0,av=0,b=0,bv=0;
+    for(int i=0;i<6;++i)advance(a,av,1,1/60.f,.24f);
+    for(int i=0;i<12;++i)advance(b,bv,1,1/120.f,.24f);
+    if(std::abs(a-b)>.0001f||a<=0||a>=1)return false;
+    float old=a;advance(a,av,0,0,.24f);if(a!=old)return false;
+    bool active=true;for(int i=0;i<180;++i){active=advance(a,av,0,1/60.f,.24f);if(a<0||a>1||!std::isfinite(a)||!std::isfinite(av))return false;}
+    return !active&&a==0&&av==0;
+}
+}

@@ -12,7 +12,7 @@ namespace glass {
 constexpr UINT HostExitedMessage=WM_APP+18;
 class Controller {
     HANDLE mapping{};Config*data{};HMODULE module{};HOOKPROC hook{},messageHook{};UINT attach{},refresh{};std::map<DWORD,HHOOK> pendingHooks;
-    HANDLE statusMapping{};Status*status{};
+    HANDLE statusMapping{};Status*status{};const wchar_t* endpoint=L"LiquidGlass.Control";
     LONG observedConnected=0,observedSubscribed=0; StatusCursor statusCursor;bool statusDirty=true;
     unsigned packageRetryRounds=0;
     struct PackageAttach {DWORD pid{},owner{};std::wstring path;std::atomic<HRESULT> result{E_PENDING};bool reported=false;};
@@ -39,7 +39,7 @@ class Controller {
     static void CALLBACK hostEnded(void*context,BOOLEAN){auto watch=static_cast<HostWatch*>(context);PostMessageW(watch->window,HostExitedMessage,watch->pid,0);}
     void watchHosts(std::set<DWORD>const&ids){
         for(auto i=hostWatches.begin();i!=hostWatches.end();)if(!ids.count(i->first))i=hostWatches.erase(i);else ++i;
-        for(auto pid:ids)if(!hostWatches.count(pid)&&hostWatches.size()<8){auto watch=std::make_unique<HostWatch>();watch->pid=pid;watch->window=FindWindowW(L"LiquidGlass.Control",nullptr);watch->process=OpenProcess(SYNCHRONIZE,FALSE,pid);
+        for(auto pid:ids)if(!hostWatches.count(pid)&&hostWatches.size()<8){auto watch=std::make_unique<HostWatch>();watch->pid=pid;watch->window=FindWindowW(endpoint,nullptr);watch->process=OpenProcess(SYNCHRONIZE,FALSE,pid);
             if(watch->process&&watch->window&&RegisterWaitForSingleObject(&watch->wait,watch->process,hostEnded,watch.get(),INFINITE,WT_EXECUTEONLYONCE))hostWatches.emplace(pid,std::move(watch));}
     }
     void trace(const char*stage,DWORD value){if(strcmp(stage,"packaged shell processes")==0)return;auto at=dllPath.find_last_of(L"\\");auto file=dllPath.substr(0,at+1)+L"glass-controller.log";HANDLE h=CreateFileW(file.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,0,nullptr);if(h!=INVALID_HANDLE_VALUE){char line[120]{};int n=snprintf(line,sizeof(line),"%s: %lu\r\n",stage,(unsigned long)value);DWORD written=0;WriteFile(h,line,n,&written,nullptr);CloseHandle(h);}}
@@ -64,7 +64,7 @@ class Controller {
         // As in the Styler's deferred ShellHost initialization, enqueue on the
         // real window so modal/window-filtered message loops also receive it.
         BOOL posted=targetWindow?PostMessageW(targetWindow,attach,GetCurrentProcessId(),0):PostThreadMessageW(tid,attach,GetCurrentProcessId(),0);
-        if(!posted){trace("thread queue unavailable",GetLastError());UnhookWindowsHookEx(h);return;}pendingHooks[tid]=h;auto window=FindWindowW(L"LiquidGlass.Control",nullptr);if(window)SetTimer(window,5,2200,nullptr);}
+        if(!posted){trace("thread queue unavailable",GetLastError());UnhookWindowsHookEx(h);return;}pendingHooks[tid]=h;auto window=FindWindowW(endpoint,nullptr);if(window)SetTimer(window,5,2200,nullptr);}
     void discoverPackagedShell(){
         std::set<DWORD> ids;HANDLE p=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);if(p!=INVALID_HANDLE_VALUE){PROCESSENTRY32W e{};e.dwSize=sizeof(e);if(Process32FirstW(p,&e))do{bool start=(data->features&Start)&&startHost(e.szExeFile);bool notifications=(data->features&Notifications)&&(_wcsicmp(e.szExeFile,L"ShellExperienceHost.exe")==0||_wcsicmp(e.szExeFile,L"ShellHost.exe")==0);if(start||notifications)ids.insert(e.th32ProcessID);}while(Process32NextW(p,&e));CloseHandle(p);}
         DWORD session=0;ProcessIdToSessionId(GetCurrentProcessId(),&session);for(auto i=ids.begin();i!=ids.end();){DWORD hostSession=0;if(!ProcessIdToSessionId(*i,&hostSession)||hostSession!=session)i=ids.erase(i);else ++i;}
@@ -82,7 +82,8 @@ class Controller {
     }
 public:
     ~Controller(){shutdown();}
-    bool initialize(const std::wstring&dir){if(data)return true;
+    bool initialize(const std::wstring&dir,bool nativeProbe=false){if(data)return true;endpoint=nativeProbe?L"LiquidGlass.Control.NativeProbe":L"LiquidGlass.Control";
+
         // Extract the exact engine embedded in this EXE. A versioned filename
         // allows an old shell session to release its DLL naturally on sign-out.
         auto resource=FindResourceW(nullptr,MAKEINTRESOURCEW(201),RT_RCDATA);if(!resource)return false;DWORD size=SizeofResource(nullptr,resource);auto bytes=LockResource(LoadResource(nullptr,resource));
@@ -93,7 +94,7 @@ public:
         module=LoadLibraryExW(dllPath.c_str(),nullptr,LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|LOAD_LIBRARY_SEARCH_SYSTEM32);loadError=module?0:GetLastError();
         if(changedMode)SetThreadErrorMode(previousMode,nullptr);
         if(!module){trace("engine load error",loadError);return false;}hook=(HOOKPROC)GetProcAddress(module,"GlassHook");messageHook=(HOOKPROC)GetProcAddress(module,"GlassMessageHook");if(!hook||!messageHook){trace("engine export error",GetLastError());return false;}
-        auto name=mappingName(GetCurrentProcessId());mapping=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,sizeof(Config),name.c_str());if(!mapping)return false;data=(Config*)MapViewOfFile(mapping,FILE_MAP_ALL_ACCESS,0,0,sizeof(Config));if(!data)return false;Config initial;initial.owner=GetCurrentProcessId();initial.heartbeat=(LONG)GetTickCount();*data=initial;
+        auto name=mappingName(GetCurrentProcessId())+(nativeProbe?L".Probe":L"");mapping=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,sizeof(Config),name.c_str());if(!mapping)return false;data=(Config*)MapViewOfFile(mapping,FILE_MAP_ALL_ACCESS,0,0,sizeof(Config));if(!data)return false;Config initial;initial.owner=GetCurrentProcessId();initial.heartbeat=(LONG)GetTickCount();*data=initial;
         name=statusName(GetCurrentProcessId());statusMapping=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,PAGE_READWRITE,0,sizeof(Status),name.c_str());if(!statusMapping)return false;status=(Status*)MapViewOfFile(statusMapping,FILE_MAP_ALL_ACCESS,0,0,sizeof(Status));if(!status)return false;Status initialStatus;initialStatus.owner=GetCurrentProcessId();*status=initialStatus;
         // Only the disposable status page is writable by a low-integrity host;
         // configuration remains read-only and at the controller's integrity.
@@ -104,9 +105,9 @@ public:
     bool policyBlocked()const{return loadError==4551||loadError==577||loadError==1260;}
     DWORD initializationError()const{return loadError;}
     bool hostExited(DWORD pid){if(!hostWatches.count(pid))return false;hostWatches.erase(pid);packageAttachments.erase(pid);threads.clear();attemptedThreads.clear();processes.erase(pid);recoveryRounds=0;trace("shell host exited",pid);return true;}
-    void tick(){if(data)InterlockedExchange(&data->heartbeat,(LONG)GetTickCount());if(status&&data){DWORD success=(DWORD)status->success&data->features,fallback=(DWORD)status->fallback&success,failed=(DWORD)status->failed&data->features;LONG error=status->error;auto changes=statusCursor.take(success,fallback,failed,error,statusDirty);statusDirty=false;if(changes.success||changes.failed){auto window=FindWindowW(L"LiquidGlass.Control",nullptr);auto message=RegisterWindowMessageW(StatusMessage);for(DWORD bits=changes.success;bits;){DWORD bit=bits&-bits;bits&=~bit;PostMessageW(window,message,bit,(fallback&bit)?S_FALSE:S_OK);}if(changes.failed)PostMessageW(window,message,changes.failed,error);}}
+    void tick(){if(data)InterlockedExchange(&data->heartbeat,(LONG)GetTickCount());if(status&&data){DWORD success=(DWORD)status->success&data->features,fallback=(DWORD)status->fallback&success,failed=(DWORD)status->failed&data->features;LONG error=status->error;auto changes=statusCursor.take(success,fallback,failed,error,statusDirty);statusDirty=false;if(changes.success||changes.failed){auto window=FindWindowW(endpoint,nullptr);auto message=RegisterWindowMessageW(StatusMessage);for(DWORD bits=changes.success;bits;){DWORD bit=bits&-bits;bits&=~bit;PostMessageW(window,message,bit,(fallback&bit)?S_FALSE:S_OK);}if(changes.failed)PostMessageW(window,message,changes.failed,error);}}
         if(status&&status->connected!=observedConnected){observedConnected=status->connected;trace("connected host mask",observedConnected);}if(status&&status->subscribed!=observedSubscribed){observedSubscribed=status->subscribed;trace("subscribed host mask",observedSubscribed);}
-        for(auto&entry:packageAttachments){auto hr=entry.second->result.load();if(hr!=E_PENDING&&!entry.second->reported){entry.second->reported=true;trace("notification diagnostics result",(DWORD)hr);if(hr==HRESULT_FROM_WIN32(ERROR_NOT_FOUND)&&packageRetryRounds<15)SetTimer(FindWindowW(L"LiquidGlass.Control",nullptr),21,2000,nullptr);}}}
+        for(auto&entry:packageAttachments){auto hr=entry.second->result.load();if(hr!=E_PENDING&&!entry.second->reported){entry.second->reported=true;trace("notification diagnostics result",(DWORD)hr);if(hr==HRESULT_FROM_WIN32(ERROR_NOT_FOUND)&&packageRetryRounds<15)SetTimer(FindWindowW(endpoint,nullptr),21,2000,nullptr);}}}
     void retryPackages(){if(!data||!(data->features&(Start|Notifications))||packageRetryRounds>=15)return;++packageRetryRounds;std::vector<DWORD> retry;for(auto const&entry:packageAttachments)if(entry.second->result==HRESULT_FROM_WIN32(ERROR_NOT_FOUND))retry.push_back(entry.first);for(auto pid:retry){packageAttachments.erase(pid);discoverPackage(pid);}}
     bool recoverHosts(){if(!data||!(data->features&(Start|Notifications)))return false;discoverPackagedShell();return ++recoveryRounds<6;}
     void acknowledge(DWORD tid){auto i=pendingHooks.find(tid);if(i!=pendingHooks.end()){UnhookWindowsHookEx(i->second);pendingHooks.erase(i);threads.insert(tid);}}

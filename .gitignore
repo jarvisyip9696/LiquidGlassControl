@@ -12,3 +12,6 @@ self-test.txt
 *.log
 *.user
 *.suo
+/source-recovery/
+/AGENTS.md
+/README.txt

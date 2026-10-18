@@ -37,8 +37,8 @@ foreach ($notice in @('LICENSING.md', 'CODE-SIGNING.md')) {
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'LICENSE') -Destination $stage
 # Corresponding source accompanies the GPL engine, with no local settings/logs.
-$sourceFiles = @(Get-ChildItem -LiteralPath $PSScriptRoot -File | Where-Object { $_.Extension -in '.cpp','.h','.def','.ps1','.md','.txt' } | ForEach-Object FullName)
-$sourceFiles += @((Join-Path $PSScriptRoot 'src'),(Join-Path $PSScriptRoot 'docs'),(Join-Path $PSScriptRoot 'assets'),(Join-Path $PSScriptRoot 'third_party'),(Join-Path $PSScriptRoot 'release'),(Join-Path $PSScriptRoot 'tests'))
+$sourceFiles = @('CMakeLists.txt','build.ps1','prepare-winrt.ps1','package.ps1','verify-localization.ps1','update-desktop.ps1','compact-workspace.py','README.md','CONTRIBUTING.md') | ForEach-Object { Join-Path $PSScriptRoot $_ }
+$sourceFiles += @('src','docs','assets','third_party','release','tests','integrations') | ForEach-Object { Join-Path $PSScriptRoot $_ }
 $sourceFiles += Join-Path $PSScriptRoot 'LICENSE'
 $sourceZip = Join-Path $stage 'LiquidGlass-engine-source.zip'
 Compress-Archive -LiteralPath $sourceFiles -DestinationPath $sourceZip -CompressionLevel Optimal

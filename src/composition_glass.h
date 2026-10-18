@@ -2,6 +2,8 @@
 // Standalone composition blur. No Windhawk SDK or runtime calls.
 #undef GetCurrentTime
 #include <functional>
+#include <array>
+#include <algorithm>
 #include <cmath>
 #include <d2d1effects.h>
 #include <d2d1_1.h>
@@ -31,21 +33,29 @@ template<> inline constexpr winrt::guid winrt::impl::guid_v<GlassEffectInterop>{
 namespace liquid {
 namespace fx=winrt::Windows::Graphics::Effects;
 struct Effect:winrt::implements<Effect,fx::IGraphicsEffect,fx::IGraphicsEffectSource,GlassEffectInterop>{
-    bool matrix=false;float blur=12,opacity=.35f;bool dark=false;
+    bool matrix=false,adaptiveTint=false;float blur=12,opacity=.35f;bool dark=false;
     fx::IGraphicsEffectSource source{nullptr};winrt::hstring name;
     winrt::hstring Name(){return name;}void Name(winrt::hstring const&v){name=v;}
     HRESULT STDMETHODCALLTYPE GetEffectId(GUID*out)noexcept override{if(!out)return E_POINTER;*out=matrix?CLSID_D2D1ColorMatrix:CLSID_D2D1GaussianBlur;return S_OK;}
     HRESULT STDMETHODCALLTYPE GetNamedPropertyMapping(LPCWSTR,UINT*,UINT*)noexcept override{return E_INVALIDARG;}
     HRESULT STDMETHODCALLTYPE GetPropertyCount(UINT*out)noexcept override{if(!out)return E_POINTER;*out=3;return S_OK;}
     HRESULT STDMETHODCALLTYPE GetSourceCount(UINT*out)noexcept override{if(!out)return E_POINTER;*out=1;return S_OK;}
-    HRESULT STDMETHODCALLTYPE GetSource(UINT i,IUnknown**out)noexcept override{if(!out)return E_POINTER;*out=nullptr;if(i||!source)return E_INVALIDARG;return winrt::get_unknown(source)->QueryInterface(winrt::guid_of<fx::IGraphicsEffectSource>(),(void**)out);}
+    HRESULT STDMETHODCALLTYPE GetSource(UINT i,IUnknown**out)noexcept override{if(!out)return E_POINTER;*out=nullptr;auto value=i==0?source:nullptr;if(!value)return E_INVALIDARG;return winrt::get_unknown(value)->QueryInterface(winrt::guid_of<fx::IGraphicsEffectSource>(),(void**)out);}
     HRESULT STDMETHODCALLTYPE GetProperty(UINT i,IUnknown**out)noexcept override try{
-        if(!out)return E_POINTER;*out=nullptr;if(i>2)return E_INVALIDARG;
+        if(!out)return E_POINTER;*out=nullptr;if(i>2u)return E_INVALIDARG;
         winrt::Windows::Foundation::IPropertyValue value{nullptr};
         using V=winrt::Windows::Foundation::PropertyValue;
         // Source-over tint, as in the Styler's flood/composite effect. Alpha
         // must receive the tint as well, including over a transparent backdrop.
-        if(matrix&&i==0){float a=1-opacity,t=dark?.08f:.96f;float values[20]={a,0,0,0,0,a,0,0,0,0,a,0,0,0,0,a,t*opacity,t*opacity,t*opacity,opacity};value=V::CreateSingleArray(values).as<winrt::Windows::Foundation::IPropertyValue>();}
+        if(adaptiveTint&&i==0){
+            // Continuous background luminance controls the tint. All coefficients
+            // stay in the premultiplied range; no unsupported clamping node.
+            float a=1-opacity,k=.88f*opacity,o=.08f*opacity;
+            float r=.299f*k,g=.587f*k,b=.114f*k;
+            float values[20]={a+r,r,r,0,g,a+g,g,0,b,b,a+b,0,0,0,0,a,o,o,o,opacity};
+            value=V::CreateSingleArray(values).as<winrt::Windows::Foundation::IPropertyValue>();
+        }
+        else if(matrix&&i==0){float a=1-opacity,t=dark?.08f:.96f;float values[20]={a,0,0,0,0,a,0,0,0,0,a,0,0,0,0,a,t*opacity,t*opacity,t*opacity,opacity};value=V::CreateSingleArray(values).as<winrt::Windows::Foundation::IPropertyValue>();}
         else if(!matrix&&i==0)value=V::CreateSingle(blur).as<winrt::Windows::Foundation::IPropertyValue>();
         else if(matrix&&i==2)value=V::CreateBoolean(false).as<winrt::Windows::Foundation::IPropertyValue>();
         else value=V::CreateUInt32(1u).as<winrt::Windows::Foundation::IPropertyValue>();
@@ -58,6 +68,23 @@ inline bool testTint(){try{
         winrt::com_array<float> matrix;encoded.as<winrt::Windows::Foundation::IPropertyValue>().GetSingleArray(matrix);if(matrix.size()!=20)return false;
         for(float alpha:{0.f,.5f,1.f}){float input[4]={.2f*alpha,.4f*alpha,.6f*alpha,alpha};for(int channel=0;channel<4;++channel){float actual=matrix[16+channel];for(int source=0;source<4;++source)actual+=input[source]*matrix[source*4+channel];float expected=input[channel]*(1-opacity)+(channel==3?1.f:dark?.08f:.96f)*opacity;if(std::abs(actual-expected)>0.00001f)return false;}}
     }
+    auto adaptive=winrt::make_self<Effect>();adaptive->matrix=true;adaptive->adaptiveTint=true;adaptive->opacity=.35f;
+    auto apply=[](winrt::com_ptr<Effect> const&effect,std::array<float,4> input){
+        winrt::com_ptr<IUnknown> encoded;if(FAILED(effect->GetProperty(0,encoded.put())))throw winrt::hresult_error(E_FAIL);
+        winrt::com_array<float> m;encoded.as<winrt::Windows::Foundation::IPropertyValue>().GetSingleArray(m);std::array<float,4> out{};
+        for(int c=0;c<4;++c){out[c]=m[16+c];for(int j=0;j<4;++j)out[c]+=input[j]*m[j*4+c];out[c]=std::max(0.f,std::min(1.f,out[c]));}return out;
+    };
+    float previous=-1;
+    for(float gray:{0.f,110.f/255,138.f/255,165.f/255,1.f}){
+        auto tone=apply(adaptive,{gray,gray,gray,1});
+        if(tone[0]<previous||std::abs(tone[3]-1.f)>.00001f||tone[0]>tone[3])return false;previous=tone[0];
+        float amount=gray;
+        if(std::abs(tone[0]-(gray*.65f+(.08f+.88f*amount)*.35f))>.00001f)return false;
+    }
+    for(float opacity:{.05f,.35f,.9f})for(float alpha:{0.f,.5f,1.f}){
+        adaptive->opacity=opacity;auto sample=apply(adaptive,{.1f*alpha,.3f*alpha,.7f*alpha,alpha});
+        for(int c=0;c<3;++c)if(sample[c]<0||sample[c]>sample[3]+.00001f)return false;
+    }
     return true;
 }catch(...){return false;}}
 template<class Compositor>auto makeGlass(Compositor const&compositor,glass::Config const&c,bool hostBackdrop=false){
@@ -65,7 +92,9 @@ template<class Compositor>auto makeGlass(Compositor const&compositor,glass::Conf
     // Both composition frameworks consume the standard graphics effect source.
     using Param=std::conditional_t<std::is_same_v<Compositor,winrt::Windows::UI::Composition::Compositor>,winrt::Windows::UI::Composition::CompositionEffectSourceParameter,winrt::Microsoft::UI::Composition::CompositionEffectSourceParameter>;
     gaussian->source=Param(L"Backdrop");auto tint=winrt::make_self<Effect>();tint->matrix=true;tint->opacity=c.opacity/100.f;tint->dark=c.tint==2;tint->source=*gaussian;
-    auto result=compositor.CreateEffectFactory(*tint).CreateBrush();auto backdrop=compositor.CreateBackdropBrush();if constexpr(std::is_same_v<Compositor,winrt::Windows::UI::Composition::Compositor>){if(hostBackdrop)backdrop=compositor.CreateHostBackdropBrush();}result.SetSourceParameter(L"Backdrop",backdrop);return result;
+    fx::IGraphicsEffect graph=*tint;
+    tint->adaptiveTint=c.tint==3;
+    auto result=compositor.CreateEffectFactory(graph).CreateBrush();auto backdrop=compositor.CreateBackdropBrush();if constexpr(std::is_same_v<Compositor,winrt::Windows::UI::Composition::Compositor>){if(hostBackdrop)backdrop=compositor.CreateHostBackdropBrush();}result.SetSourceParameter(L"Backdrop",backdrop);return result;
 }
 struct SystemBrush:winrt::Windows::UI::Xaml::Media::XamlCompositionBrushBaseT<SystemBrush>{
     winrt::Windows::UI::Composition::Compositor compositor{nullptr};glass::Config config;std::function<void(HRESULT)> completed;bool hostBackdrop=false;

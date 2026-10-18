@@ -62,7 +62,7 @@ inline bool selfTestSnapshot(){
     source.sequence=1;if(readSnapshot((volatile Config*)&source,out,4)!=ReadState::Transient)return false;
     source.sequence=0;source.magic=0;return readSnapshot((volatile Config*)&source,out)==ReadState::Invalid;
 }
-inline Config normalize(Config c){c.features&=511;c.blur=bounded(c.blur,0,40);c.opacity=bounded(c.opacity,5,90);c.radius=bounded(c.radius,0,28);c.tint=bounded(c.tint,0,2);return c;}
+inline Config normalize(Config c){c.features&=511;c.blur=bounded(c.blur,0,40);c.opacity=bounded(c.opacity,5,90);c.radius=bounded(c.radius,0,28);c.tint=bounded(c.tint,0,3);return c;}
 // Names only identify material surfaces. No width, height, padding, alignment,
 // taskbar position or system work-area property is ever written by this engine.
 enum Surface {NoSurface,TaskbarFill,OsdPlate,VolumePlate,BrightnessPlate,StartPlate,StartOverlay,NotificationPlate,ExplorerPlate,TaskbarRoot,TaskbarOverlay,StartClear,NotificationClear,ExplorerClear,DockRoot,DockIcon,TaskbarAuxiliary,NotificationAuxiliary,KeyboardPlate};
