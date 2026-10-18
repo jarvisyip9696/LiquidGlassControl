@@ -31,6 +31,14 @@ inline std::wstring mappingName(DWORD owner){return L"Local\\LiquidGlass.Engine.
 inline std::wstring statusName(DWORD owner){return L"Local\\LiquidGlass.Engine.Status.v3."+std::to_wstring(owner);}
 struct RootStatus {volatile LONG width=0,height=0,visible=0,brush=0,error=0,brushWhenVisible=0,visibleSamples=0;};
 struct Status {DWORD magic=Magic,version=Version,owner=0;volatile LONG success=0,fallback=0,failed=0,error=0,connected=0,subscribed=0;RootStatus roots[2];};
+struct StatusChanges {DWORD success=0,failed=0;};
+struct StatusCursor {
+    DWORD success=0,fallback=0,failed=0;LONG error=0;
+    StatusChanges take(DWORD nextSuccess,DWORD nextFallback,DWORD nextFailed,LONG nextError,bool force=false){
+        StatusChanges out{force?nextSuccess:nextSuccess&((nextSuccess^success)|(nextFallback^fallback)),nextFailed&&(force||nextFailed!=failed||nextError!=error)?nextFailed:0};
+        success=nextSuccess;fallback=nextFallback;failed=nextFailed;error=nextError;return out;
+    }
+};
 inline bool alive(volatile Config*config,DWORD now=GetTickCount()){return config&&DWORD(now-DWORD(config->heartbeat))<5000;}
 inline DWORD bounded(DWORD n,DWORD lo,DWORD hi){return n<lo?lo:n>hi?hi:n;}
 // Seqlock reader for the config the controller publishes. The writer keeps the sequence odd while publishing. Ok: consistent copy. Transient: still publishing or torn after the bounded attempts. Invalid: consistent copy with a foreign header.

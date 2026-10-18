@@ -36,8 +36,9 @@ void queueGlass(bool discover){
 void applyGlass(bool discover){
     syncOpticalPreview();
     KillTimer(mainWindow,14);glassPendingDiscover=false;
-    if(!engineReady||migrationJob||migrationNeeded()){updateNativeInfo();return;}
+    if(selfTestMode||migrationJob||migrationNeeded()){updateNativeInfo();return;}
     glassConfig.features=desiredGlassFeatures();
+    if(glassConfig.features&&!ensureEngine()){updateNativeInfo();return;}
     fallbackMaterials&=glassConfig.features;confirmedMaterials&=glassConfig.features;failedMaterials=0;KillTimer(mainWindow,6);
     // A rediscovery re-enumerates shell windows, so earlier success reports may describe surfaces that no longer exist (restarted Explorer, closed flyouts). Clear them until the engine reports again.
     if(discover)confirmedMaterials=fallbackMaterials=0;
@@ -46,7 +47,8 @@ void applyGlass(bool discover){
     if(!effective.tint){DWORD light=1,size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"SystemUsesLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);effective.tint=light?1:2;}
     BOOL systemMotion=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&systemMotion,0);if(!systemMotion)effective.features&=~glass::Dock;
     pausedFeatures=glassConfig.features&~effective.features;if(effective.economy)pausedFeatures|=glassConfig.features&glass::Dock;confirmedMaterials&=~pausedFeatures;
-    engine.publish(effective);if(discover)engine.discover();else engine.broadcast();
+    if(engineReady){engine.publish(effective);if(discover)engine.discover();else engine.broadcast();}
+    if(engineReady&&effective.features)SetTimer(mainWindow,20,1000,nullptr);else KillTimer(mainWindow,20);
     observeWindows();
     WritePrivateProfileStringW(L"Glass",L"Features",std::to_wstring(glassConfig.features).c_str(),iniPath.c_str());
     WritePrivateProfileStringW(L"Glass",L"Opacity",std::to_wstring(glassConfig.opacity).c_str(),iniPath.c_str());
