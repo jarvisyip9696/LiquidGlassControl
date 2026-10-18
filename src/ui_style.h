@@ -1,5 +1,4 @@
 // Small GDI renderer: no continuous UI animation loop, GPU polling or web runtime.
-#include <functional>
 #include "smooth_motion.h"
 std::function<void()> controlPainted;
 // WM_PRINTCLIENT must use the same renderer as normal painting. The DC belongs

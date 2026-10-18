@@ -13,6 +13,7 @@
 #include <vector>
 #include <map>
 #include <algorithm>
+#include <functional>
 #include <commctrl.h>
 #include <uxtheme.h>
 #include <cmath>
