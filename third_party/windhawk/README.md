@@ -17,6 +17,14 @@ RegQueryValueExW_Hook compatibility logic. Windhawk's hook installer is replaced
 by statically linked MinHook 1.3.4. Only the subscription thread receives the
 optional composition-diagnostics override; registry values are never written.
 
+Notification host readiness follows the user-supplied Notification Center
+Styler 1.7 snapshot: `ShellExperienceHost.exe` waits for
+`Windows.UI.Core.CoreWindow`, and `ShellHost.exe` waits for
+`ControlCenterWindow`. The standalone controller posts its bootstrap to that
+window's queue after creation, including hidden host windows. It does not
+probe notification worker threads. Window creation is observed externally
+with WinEvent rather than importing Windhawk's CreateWindowInBand hooks.
+
 windhawk_materials.h and the modified engine are distributed under GPL-3.0-only.
 This does not import the Windhawk application/runtime. WindhawkBlur markup is
 mapped to the existing standalone composition brush; user blur/tint/opacity

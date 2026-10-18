@@ -11,6 +11,13 @@ if (-not $Compiler) {
 $buildDir = Join-Path $PSScriptRoot 'build'
 $outputDir = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { $buildDir }
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+$expandedHeaderCache = $false
+$headerCache = Join-Path $buildDir 'winrt/headers.zip'
+$headerDirectory = Join-Path $buildDir 'winrt/include'
+if (-not $WinrtInclude -and -not (Test-Path -LiteralPath (Join-Path $headerDirectory 'winrt/Microsoft.UI.Xaml.h')) -and (Test-Path -LiteralPath $headerCache)) {
+    Expand-Archive -LiteralPath $headerCache -DestinationPath $headerDirectory -Force
+    $expandedHeaderCache = $true
+}
 $engineIncludes = @()
 if (-not $WinrtInclude -and (Test-Path (Join-Path $buildDir 'winrt\include\winrt\Microsoft.UI.Xaml.h'))) { $WinrtInclude = Join-Path $buildDir 'winrt\include' }
 if ($WinrtInclude) { $engineIncludes = @('-I' + [IO.Path]::GetFullPath($WinrtInclude)) }
@@ -43,5 +50,16 @@ if ($LASTEXITCODE -ne 0) { throw 'Compilation failed.' }
 if ($BuildTests) {
 & $Compiler --target=x86_64-w64-mingw32 -std=c++17 -DLG_ENABLE_SELF_TEST -Os -ffunction-sections -fdata-sections -Wall -Wextra -municode -mwindows -static '-Wl,--gc-sections,--strip-all' (Join-Path $PSScriptRoot 'src/main.cpp') (Join-Path $PSScriptRoot 'assets\icon.res') (Join-Path $outputDir 'engine.res') -o (Join-Path $outputDir 'LiquidGlassTests.exe') -ldwmapi -lshell32 -luser32 -lgdi32 -ladvapi32 -lole32 -lcomctl32 -luxtheme -luuid
 if ($LASTEXITCODE -ne 0) { throw 'Compilation failed.' }
+}
+# Successful binaries are self-contained; do not retain duplicate resource/object files.
+foreach ($artifact in @($hookObjects) + @(Join-Path $outputDir 'engine.res')) {
+    Remove-Item -LiteralPath $artifact -Force -ErrorAction Stop
+}
+if ($expandedHeaderCache) {
+    $resolvedHeaders = (Resolve-Path -LiteralPath $headerDirectory).Path
+    $expectedHeaders = [IO.Path]::GetFullPath((Join-Path $buildDir 'winrt/include'))
+    if (-not [string]::Equals($resolvedHeaders, $expectedHeaders, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected header cleanup path.' }
+    if (@(Get-ChildItem -LiteralPath $resolvedHeaders -Recurse -Force -Attributes ReparsePoint).Count) { throw 'Header cache contains a reparse point.' }
+    Remove-Item -LiteralPath $resolvedHeaders -Recurse -Force
 }
 Write-Host "Built: $outputDir\$OutputName"

@@ -22,6 +22,9 @@ void localize(){
       {ExplorerToggle,L"资源管理器玻璃",L"Explorer glass"},{ExplorerHeading,L"资源管理器",L"File Explorer"},
       {OpacityLabel,L"着色强度（越低越透明）",L"Tint strength (lower is clearer)"},{RadiusLabel,L"面板圆角",L"Panel corner radius"},{TintLabel,L"玻璃色调",L"Glass tint"},
       {BatteryFriendly,L"使用电池或节电模式时降低材质开销",L"Reduce material cost on battery or in battery saver"},
+      {RestoreOriginal,L"恢复默认参数",L"Reset material sliders"},
+      {KeyboardToggle,L"键盘布局切换",L"Keyboard layout switcher"},
+      {OpticalPreview,L"LGEngine 光学预览",L"LGEngine optical preview"},
       {EffectNote,L"更改后自动保存并应用；只调整材质，不改变任务栏尺寸。\r\n独立模糊与着色滑块；Dock 悬停动画单独开启。",L"Changes are saved and applied; taskbar geometry is preserved.\r\nIndependent blur and tint controls; Dock hover has a separate switch."},
       {LanguageLabel,L"界面语言",L"Interface language"},{ColorThemeLabel,L"界面配色",L"Interface color"},{StartupAnimation,L"程序启动时淡入并轻轻上移",L"Fade and gently slide the app in at startup"},
       {SettingsNote,L"语言、配色和启动动画偏好自动保存。\r\n关闭设置窗口会继续在托盘运行。",L"Language, color and startup animation preferences are saved automatically.\r\nClosing settings keeps the app running in the tray."},
@@ -64,9 +67,9 @@ void buildUI(){
     compatibility=control(L"STATIC",L"",0,Compatibility,24,346,742,42);
     control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Refresh,24,398,212,36);control(L"BUTTON",L"",BS_DEFPUSHBUTTON|WS_TABSTOP,Apply,250,398,250,36);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Restore,514,398,252,36);note=control(L"STATIC",L"",0,Note,24,454,742,82);
     buildingPage=1;
-    int headings[]={VolumeHeading,BrightnessHeading,TaskbarHeading,StartHeading,NotificationHeading,ExplorerHeading,DockHeading};int switches[]={VolumeOn,BrightnessOn,TaskbarToggle,StartToggle,NotificationToggle,ExplorerToggle,DockToggle};
+    int headings[]={VolumeHeading,BrightnessHeading,TaskbarHeading,StartHeading,NotificationHeading,ExplorerHeading,DockHeading,KeyboardHeading};int switches[]={VolumeOn,BrightnessOn,TaskbarToggle,StartToggle,NotificationToggle,ExplorerToggle,DockToggle,KeyboardToggle};
     // Seven system-effect rows; taskbar includes the capsule appearance.
-    for(int i=0;i<7;++i){int y=108+i*38;control(L"STATIC",L"",0,headings[i],40,y,590,28);HWND toggle=control(L"BUTTON",L"",BS_OWNERDRAW|WS_TABSTOP,switches[i],650,y,100,36);RemoveWindowSubclass(toggle,buttonHover,1);SetPropW(toggle,L"LG.IsSwitch",(HANDLE)1);SetWindowSubclass(toggle,compactSwitch,3,0);}
+    for(int i=0;i<8;++i){int y=108+i*38;control(L"STATIC",L"",0,headings[i],40,y,590,28);HWND toggle=control(L"BUTTON",L"",BS_OWNERDRAW|WS_TABSTOP,switches[i],650,y,100,36);RemoveWindowSubclass(toggle,buttonHover,1);SetPropW(toggle,L"LG.IsSwitch",(HANDLE)1);SetWindowSubclass(toggle,compactSwitch,3,0);}
     nativeInfo=control(L"STATIC",L"",0,NativeInfo,40,458,710,72);
     buildingPage=2;
     settingsTabs=control(WC_TABCONTROLW,L"",tabStyle,SettingsPages,32,112,720,38);tabItem(settingsTabs,3,224);
@@ -74,10 +77,11 @@ void buildUI(){
     control(L"STATIC",L"",0,ColorThemeLabel,40,244,210,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP|WS_VSCROLL,ColorTheme,272,238,440,260);
     control(L"BUTTON",L"",BS_AUTOCHECKBOX|WS_TABSTOP,StartupAnimation,40,304,690,34);SendMessageW(GetDlgItem(mainWindow,StartupAnimation),BM_SETCHECK,startupAnimation?BST_CHECKED:BST_UNCHECKED,0);control(L"STATIC",L"",0,SettingsNote,40,368,680,110);
     buildingSettings=1;control(L"STATIC",L"",0,OpacityLabel,40,166,620,28);HWND opacity=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,OpacitySlider,40,196,680,32);SendMessageW(opacity,TBM_SETRANGE,TRUE,MAKELPARAM(5,90));SendMessageW(opacity,TBM_SETPOS,TRUE,glassConfig.opacity);
-    control(L"STATIC",L"",0,BlurLabel,40,240,620,28);HWND blur=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,BlurSlider,40,270,680,32);SendMessageW(blur,TBM_SETRANGE,TRUE,MAKELPARAM(0,40));SendMessageW(blur,TBM_SETPOS,TRUE,glassConfig.blur);
-    control(L"STATIC",L"",0,RadiusLabel,40,314,620,28);HWND radius=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,RadiusSlider,40,344,680,32);SendMessageW(radius,TBM_SETRANGE,TRUE,MAKELPARAM(0,28));SendMessageW(radius,TBM_SETPOS,TRUE,glassConfig.radius);control(L"STATIC",L"",0,EffectValue,480,314,240,28);
-    control(L"STATIC",L"",0,TintLabel,40,390,220,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,TintCombo,272,384,440,150);
-    control(L"BUTTON",L"",BS_AUTOCHECKBOX|WS_TABSTOP,BatteryFriendly,40,430,680,34);SendMessageW(GetDlgItem(mainWindow,BatteryFriendly),BM_SETCHECK,batteryFriendly?BST_CHECKED:BST_UNCHECKED,0);control(L"STATIC",L"",0,EffectNote,40,476,680,54);
+    control(L"STATIC",L"",0,BlurLabel,40,226,620,28);HWND blur=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,BlurSlider,40,256,680,32);SendMessageW(blur,TBM_SETRANGE,TRUE,MAKELPARAM(0,40));SendMessageW(blur,TBM_SETPOS,TRUE,glassConfig.blur);
+    control(L"STATIC",L"",0,RadiusLabel,40,286,620,28);HWND radius=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,RadiusSlider,40,316,680,32);SendMessageW(radius,TBM_SETRANGE,TRUE,MAKELPARAM(0,28));SendMessageW(radius,TBM_SETPOS,TRUE,glassConfig.radius);control(L"STATIC",L"",0,EffectValue,480,286,240,28);
+    control(L"STATIC",L"",0,TintLabel,40,362,220,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,TintCombo,272,356,440,150);
+    control(L"BUTTON",L"",BS_AUTOCHECKBOX|WS_TABSTOP,BatteryFriendly,40,404,680,34);SendMessageW(GetDlgItem(mainWindow,BatteryFriendly),BM_SETCHECK,batteryFriendly?BST_CHECKED:BST_UNCHECKED,0);control(L"STATIC",L"",0,EffectNote,40,444,680,54);
+    control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,OpticalPreview,40,504,330,30);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,RestoreOriginal,390,504,330,30);
     buildingSettings=2;control(L"STATIC",L"",0,AboutText,40,182,680,230);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,ExitApp,40,446,460,42);
     buildingSettings=-1;buildingPage=-1;
     status=control(L"STATIC",L"",0,Status,24,552,570,64);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Pause,614,570,152,36);localize();selectPage(0);

@@ -56,3 +56,10 @@ $hashes = foreach ($file in @($zip, $standalone)) {
 $hashes | Set-Content -LiteralPath (Join-Path $dist 'SHA256SUMS.txt') -Encoding ascii
 Write-Host "Portable package: $zip"
 Write-Host "Standalone EXE: $standalone"
+
+# The archive and standalone output are complete; retain no duplicate staging build.
+$resolvedStage = (Resolve-Path -LiteralPath $stage).Path
+$buildRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'build')) + [IO.Path]::DirectorySeparatorChar
+if (-not $resolvedStage.StartsWith($buildRoot, [StringComparison]::OrdinalIgnoreCase) -or -not (Split-Path -Leaf $resolvedStage).StartsWith('package-')) { throw 'Unexpected package staging path.' }
+if (@(Get-ChildItem -LiteralPath $resolvedStage -Recurse -Force -Attributes ReparsePoint).Count) { throw 'Package staging contains a reparse point.' }
+Remove-Item -LiteralPath $resolvedStage -Recurse -Force

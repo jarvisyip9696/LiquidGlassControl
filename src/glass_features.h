@@ -1,5 +1,6 @@
 #pragma once
 void updateEffectLabels(){
+    syncOpticalPreview();
     std::wstring value=std::to_wstring(glassConfig.opacity)+L"%  ·  "+std::to_wstring(glassConfig.radius)+tr(L" 圆角",L" corner radius");
     SetWindowTextW(GetDlgItem(mainWindow,EffectValue),value.c_str());std::wstring blur=tr(L"模糊强度：",L"Blur strength: ")+std::to_wstring(glassConfig.blur);SetWindowTextW(GetDlgItem(mainWindow,BlurLabel),blur.c_str());
 }
@@ -25,7 +26,7 @@ void pollMigration(){
     message(tr(L"旧版主题已还原，任务栏使用系统原有布局。",L"Previous theme restored. Taskbar uses the original system layout."));
     if(exitAfterRestore)DestroyWindow(mainWindow);
 }
-inline DWORD desiredGlassFeatures(){return (volumeOn?glass::Volume:0)|(brightnessOn?glass::Brightness:0)|(shellOn[0]?(glass::Taskbar|glass::Capsule):0)|(shellOn[1]?glass::Start:0)|(shellOn[2]?glass::Notifications:0)|(explorerOn?glass::Explorer:0)|(dockOn?glass::Dock:0);}
+inline DWORD desiredGlassFeatures(){return (volumeOn?glass::Volume:0)|(brightnessOn?glass::Brightness:0)|(shellOn[0]?(glass::Taskbar|glass::Capsule):0)|(shellOn[1]?glass::Start:0)|(shellOn[2]?glass::Notifications:0)|(explorerOn?glass::Explorer:0)|(dockOn?glass::Dock:0)|(keyboardOn?glass::Keyboard:0);}
 void queueGlass(bool discover){
     glassConfig.features=desiredGlassFeatures();confirmedMaterials&=glassConfig.features;failedMaterials&=glassConfig.features;fallbackMaterials&=glassConfig.features;
     glassPendingDiscover=glassPendingDiscover||discover;updateNativeInfo();
@@ -33,6 +34,7 @@ void queueGlass(bool discover){
     if(!glassConfig.features||!SetTimer(mainWindow,14,180,nullptr)){bool pending=glassPendingDiscover;applyGlass(pending);}
 }
 void applyGlass(bool discover){
+    syncOpticalPreview();
     KillTimer(mainWindow,14);glassPendingDiscover=false;
     if(!engineReady||migrationJob||migrationNeeded()){updateNativeInfo();return;}
     glassConfig.features=desiredGlassFeatures();
@@ -41,7 +43,7 @@ void applyGlass(bool discover){
     if(discover)confirmedMaterials=fallbackMaterials=0;
     SYSTEM_POWER_STATUS power{};GetSystemPowerStatus(&power);glassConfig.economy=batteryFriendly&&(power.ACLineStatus==0||power.SystemStatusFlag==1);
     auto effective=glassConfig;HIGHCONTRASTW high{};high.cbSize=sizeof(high);if(SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(high),&high,0)&&(high.dwFlags&HCF_HIGHCONTRASTON))effective.features=0;
-    if(!effective.tint){DWORD light=1,size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"AppsUseLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);effective.tint=light?1:2;}
+    if(!effective.tint){DWORD light=1,size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"SystemUsesLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);effective.tint=light?1:2;}
     BOOL systemMotion=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&systemMotion,0);if(!systemMotion)effective.features&=~glass::Dock;
     pausedFeatures=glassConfig.features&~effective.features;if(effective.economy)pausedFeatures|=glassConfig.features&glass::Dock;confirmedMaterials&=~pausedFeatures;
     engine.publish(effective);if(discover)engine.discover();else engine.broadcast();
@@ -56,4 +58,12 @@ void applyGlass(bool discover){
     if(glassConfig.features&~pausedFeatures){if(glassConfig.features&~pausedFeatures&~confirmedMaterials)SetTimer(mainWindow,6,3500,nullptr);message(tr(L"正在连接系统材质；各项会显示连接结果。请打开对应区域。",L"Connecting materials; each item shows its result. Open the selected surface."));}
     else if(pausedFeatures)message(tr(L"效果已按省电或系统辅助功能设置暂停。",L"Effects paused by battery saving or system accessibility settings."));
     else message(tr(L"独立材质效果已关闭。",L"Standalone materials turned off."));
+}
+
+void resetGlassDefaults(){
+    glass::Config defaults;glassConfig.opacity=defaults.opacity;glassConfig.blur=defaults.blur;glassConfig.radius=defaults.radius;
+    SendMessageW(GetDlgItem(mainWindow,OpacitySlider),TBM_SETPOS,TRUE,glassConfig.opacity);SendMessageW(GetDlgItem(mainWindow,BlurSlider),TBM_SETPOS,TRUE,glassConfig.blur);SendMessageW(GetDlgItem(mainWindow,RadiusSlider),TBM_SETPOS,TRUE,glassConfig.radius);
+
+    for(auto entry:{std::pair<const wchar_t*,DWORD>{L"Opacity",glassConfig.opacity},{L"Blur",glassConfig.blur},{L"Radius",glassConfig.radius}})WritePrivateProfileStringW(L"Glass",entry.first,std::to_wstring(entry.second).c_str(),iniPath.c_str());
+    applyGlass(false);updateEffectLabels();RedrawWindow(mainWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
 }

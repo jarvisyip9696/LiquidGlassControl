@@ -14,6 +14,13 @@ inline Language read(const std::wstring&path){wchar_t code[32]{};GetPrivateProfi
 inline void save(const std::wstring&path){WritePrivateProfileStringW(L"UI",L"Language",codes[current],path.c_str());}
 struct Text{const wchar_t*en;const wchar_t*pl;const wchar_t*vi;};
 inline const Text catalog[]={
+{L"Reset material sliders",L"Resetuj suwaki materiału",L"Đặt lại thanh trượt vật liệu"},
+{L"Keyboard layout switcher",L"Przełącznik układu klawiatury",L"Chuyển bố cục bàn phím"},
+{L"LGEngine preview did not connect. Check the adapter and Windows application control.",L"Podgląd LGEngine nie połączył się. Sprawdź adapter i kontrolę aplikacji Windows.",L"LGEngine chưa kết nối. Kiểm tra bộ điều hợp và kiểm soát ứng dụng Windows."},
+{L"LGEngine optical preview",L"Podgląd szkła LGEngine",L"Xem trước kính LGEngine"},
+{L"Cannot start LGEngine preview. Build the optional adapter first. Error: ",L"Nie można uruchomić podglądu LGEngine. Najpierw zbuduj opcjonalny adapter. Błąd: ",L"Không thể mở bản xem trước LGEngine. Hãy dựng bộ điều hợp tùy chọn trước. Lỗi: "},
+{L"LGEngine preview connected; optical controls affect the preview only.",L"Podgląd LGEngine połączony; parametry optyczne dotyczą tylko podglądu.",L"Đã kết nối LGEngine; thông số quang học chỉ áp dụng cho bản xem trước."},
+{L"LGEngine preview failed; see the preview window for details.",L"Podgląd LGEngine nie działa; szczegóły w oknie podglądu.",L"Xem trước LGEngine thất bại; xem chi tiết trong cửa sổ xem trước."},
 {L"About",L"Informacje",L"Giới thiệu"},
 {L" · Applied",L" · Zastosowano",L" · Đã áp dụng"},
 {L"Windows application-control policy blocked the engine. A trusted signed or administrator-approved build is required.",L"Zasady kontroli aplikacji Windows zablokowały silnik. Wymagana jest zaufana podpisana lub zatwierdzona przez administratora wersja.",L"Chính sách kiểm soát ứng dụng Windows đã chặn công cụ. Cần bản dựng có chữ ký đáng tin cậy hoặc được quản trị viên phê duyệt."},

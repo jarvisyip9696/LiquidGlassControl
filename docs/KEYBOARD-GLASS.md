@@ -1,0 +1,13 @@
+# Keyboard layout material and original-effects restore
+
+The system-glass page has an independent keyboard layout switcher toggle (`Keyboard`, bit 256). Preferences use the existing material settings for blur, tint, corners, battery fallback and accessibility. This uses native Composition materials, not the experimental LGEngine highlight overlay.
+
+On this Windows installation, the keyboard layout popup is part of Explorer's XAML shell host. The controller observes the input switch window and the shell's XAML islands. A `FlatContent` ContentControl is only styled after its descendant tree contains `HeaderPanel`, `List`, `Footer` and `KeyboardDescription`. These names were observed in the real layout popup. Generic content controls, keyboard candidate windows and emoji panels are not accepted merely because they are input-related. Deferred visual-tree construction queues a coalesced update. Both system XAML and Explorer WinUI subscriptions include this feature.
+
+Original local material properties use the existing reversible property tracking. Disabling the toggle or restoring removes the applied material; no input language, layout list, keyboard shortcut or input behavior is changed. A closed/not-yet-created popup cannot report material success. The UI only reports application after the material brush confirms it; a connection alone is insufficient.
+
+Settings > Glass includes **Reset material sliders**. It restores tint strength to 35, blur to 12 and corner radius to 12, synchronizes the three controls and saves those values. Effect switches, glass light/dark preference, battery fallback, language and app color theme are preserved. This corrects the earlier misinterpretation that the button should disable all effects. The app's separate Restore action still restores original system appearance.
+
+The native self-test exercises the actual slider-reset command using an isolated INI and verifies default values, actual trackbar positions, saved values and preservation of the feature mask, tint choice and battery preference. Existing checks cover material graphs, configuration connection, recovery fixtures, five languages and 96/144/192 DPI geometry.
+
+Keyboard material now samples the host desktop backdrop rather than only the window's internal backdrop. Opaque wrapper backgrounds are cleared only when their subtrees contain the whole verified keyboard layout panel; list-item selection and hover fills are retained. Original wrapper values are restored through weak references on disable/exit. The runtime log records the number of wrappers cleared. Follow-system glass now reads `SystemUsesLightTheme`, rather than the independently configurable app theme.

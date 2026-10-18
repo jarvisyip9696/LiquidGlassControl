@@ -30,7 +30,7 @@ class DockAnimation {
             // Local pointer coordinates include the capsule's RenderTransform.
             // Do not compare an animated visual's bounds against the old root.
             float f=0;if(horizontal)try{auto p=args.GetCurrentPoint(e).Position();f=dockWeight(p.X,p.Y,(float)e.ActualWidth(),(float)e.ActualHeight());}catch(...){}
-            try{animate(*i,e,1+.20f*f);}catch(...){}++i;}}catch(...){}}
+            try{animate(*i,e,1+.26f*f);}catch(...){}++i;}}catch(...){}}
 public:
     ~DockAnimation(){stop();}
     bool ready()const{return attached&&!icons.empty();}

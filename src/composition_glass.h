@@ -2,7 +2,9 @@
 // Standalone composition blur. No Windhawk SDK or runtime calls.
 #undef GetCurrentTime
 #include <functional>
+#include <cmath>
 #include <d2d1effects.h>
+#include <d2d1_1.h>
 #include <winrt/Windows.UI.Input.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.Effects.h>
@@ -41,24 +43,34 @@ struct Effect:winrt::implements<Effect,fx::IGraphicsEffect,fx::IGraphicsEffectSo
         if(!out)return E_POINTER;*out=nullptr;if(i>2)return E_INVALIDARG;
         winrt::Windows::Foundation::IPropertyValue value{nullptr};
         using V=winrt::Windows::Foundation::PropertyValue;
-        if(matrix&&i==0){float a=1-opacity,t=dark?.08f:.96f;float values[20]={a,0,0,0,0,a,0,0,0,0,a,0,0,0,0,1,t*opacity,t*opacity,t*opacity,0};value=V::CreateSingleArray(values).as<winrt::Windows::Foundation::IPropertyValue>();}
+        // Source-over tint, as in the Styler's flood/composite effect. Alpha
+        // must receive the tint as well, including over a transparent backdrop.
+        if(matrix&&i==0){float a=1-opacity,t=dark?.08f:.96f;float values[20]={a,0,0,0,0,a,0,0,0,0,a,0,0,0,0,a,t*opacity,t*opacity,t*opacity,opacity};value=V::CreateSingleArray(values).as<winrt::Windows::Foundation::IPropertyValue>();}
         else if(!matrix&&i==0)value=V::CreateSingle(blur).as<winrt::Windows::Foundation::IPropertyValue>();
         else if(matrix&&i==2)value=V::CreateBoolean(false).as<winrt::Windows::Foundation::IPropertyValue>();
         else value=V::CreateUInt32(1u).as<winrt::Windows::Foundation::IPropertyValue>();
         *out=(IUnknown*)winrt::detach_abi(value);return S_OK;
     }catch(...){return winrt::to_hresult();}
 };
-template<class Compositor>auto makeGlass(Compositor const&compositor,glass::Config const&c){
+inline bool testTint(){try{
+    for(bool dark:{false,true})for(float opacity:{0.f,.35f,1.f}){
+        auto effect=winrt::make_self<Effect>();effect->matrix=true;effect->dark=dark;effect->opacity=opacity;winrt::com_ptr<IUnknown> encoded;if(FAILED(effect->GetProperty(0,encoded.put())))return false;
+        winrt::com_array<float> matrix;encoded.as<winrt::Windows::Foundation::IPropertyValue>().GetSingleArray(matrix);if(matrix.size()!=20)return false;
+        for(float alpha:{0.f,.5f,1.f}){float input[4]={.2f*alpha,.4f*alpha,.6f*alpha,alpha};for(int channel=0;channel<4;++channel){float actual=matrix[16+channel];for(int source=0;source<4;++source)actual+=input[source]*matrix[source*4+channel];float expected=input[channel]*(1-opacity)+(channel==3?1.f:dark?.08f:.96f)*opacity;if(std::abs(actual-expected)>0.00001f)return false;}}
+    }
+    return true;
+}catch(...){return false;}}
+template<class Compositor>auto makeGlass(Compositor const&compositor,glass::Config const&c,bool hostBackdrop=false){
     auto gaussian=winrt::make_self<Effect>();gaussian->blur=(float)c.blur;
     // Both composition frameworks consume the standard graphics effect source.
     using Param=std::conditional_t<std::is_same_v<Compositor,winrt::Windows::UI::Composition::Compositor>,winrt::Windows::UI::Composition::CompositionEffectSourceParameter,winrt::Microsoft::UI::Composition::CompositionEffectSourceParameter>;
     gaussian->source=Param(L"Backdrop");auto tint=winrt::make_self<Effect>();tint->matrix=true;tint->opacity=c.opacity/100.f;tint->dark=c.tint==2;tint->source=*gaussian;
-    auto result=compositor.CreateEffectFactory(*tint).CreateBrush();result.SetSourceParameter(L"Backdrop",compositor.CreateBackdropBrush());return result;
+    auto result=compositor.CreateEffectFactory(*tint).CreateBrush();auto backdrop=compositor.CreateBackdropBrush();if constexpr(std::is_same_v<Compositor,winrt::Windows::UI::Composition::Compositor>){if(hostBackdrop)backdrop=compositor.CreateHostBackdropBrush();}result.SetSourceParameter(L"Backdrop",backdrop);return result;
 }
 struct SystemBrush:winrt::Windows::UI::Xaml::Media::XamlCompositionBrushBaseT<SystemBrush>{
-    winrt::Windows::UI::Composition::Compositor compositor{nullptr};glass::Config config;std::function<void(HRESULT)> completed;
-    SystemBrush(winrt::Windows::UI::Xaml::UIElement const&e,glass::Config c,std::function<void(HRESULT)> callback):compositor(winrt::Windows::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(e).Compositor()),config(c),completed(std::move(callback)){FallbackColor(c.tint==2?winrt::Windows::UI::Color{255,24,32,44}:winrt::Windows::UI::Color{255,244,247,252});}
-    void OnConnected(){try{if(!CompositionBrush())CompositionBrush(config.economy?compositor.CreateColorBrush(FallbackColor()).as<winrt::Windows::UI::Composition::CompositionBrush>():makeGlass(compositor,config).as<winrt::Windows::UI::Composition::CompositionBrush>());completed(config.economy?S_FALSE:S_OK);}catch(...){completed(winrt::to_hresult());CompositionBrush(compositor.CreateColorBrush(FallbackColor()));}}
+    winrt::Windows::UI::Composition::Compositor compositor{nullptr};glass::Config config;std::function<void(HRESULT)> completed;bool hostBackdrop=false;
+    SystemBrush(winrt::Windows::UI::Xaml::UIElement const&e,glass::Config c,std::function<void(HRESULT)> callback,bool useHostBackdrop=false):compositor(winrt::Windows::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(e).Compositor()),config(c),completed(std::move(callback)),hostBackdrop(useHostBackdrop){FallbackColor(c.tint==2?winrt::Windows::UI::Color{255,24,32,44}:winrt::Windows::UI::Color{255,244,247,252});}
+    void OnConnected(){try{if(!CompositionBrush())CompositionBrush(config.economy?compositor.CreateColorBrush(FallbackColor()).as<winrt::Windows::UI::Composition::CompositionBrush>():makeGlass(compositor,config,hostBackdrop).as<winrt::Windows::UI::Composition::CompositionBrush>());completed(config.economy?S_FALSE:S_OK);}catch(...){completed(winrt::to_hresult());CompositionBrush(compositor.CreateColorBrush(FallbackColor()));}}
     void OnDisconnected(){CompositionBrush(nullptr);}
 };
 struct ModernBrush:winrt::Microsoft::UI::Xaml::Media::XamlCompositionBrushBaseT<ModernBrush>{
