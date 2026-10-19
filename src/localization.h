@@ -51,6 +51,8 @@ inline const Text catalog[]={
 {L"Notification center glass",L"Szkło powiadomień",L"Kính thông báo"},{L"Explorer glass",L"Szkło Eksploratora",L"Kính trình khám phá"},
 {L"On",L"Wł.",L"Bật"},{L"Off",L"Wył.",L"Tắt"},
 {L" · Connected",L" · Połączono",L" · Đã kết nối"},{L" · Connecting",L" · Łączenie",L" · Đang kết nối"},{L" · Not applied",L" · Nie zastosowano",L" · Chưa áp dụng"},
+{L" · Waiting for the indicator",L" · Czeka na wskaźnik",L" · Đang chờ chỉ báo"},{L" · Hidden by Liquid Glass",L" · Ukryte przez Liquid Glass",L" · Bị Liquid Glass ẩn"},{L" · Replaced by the LGEngine indicator",L" · Zastąpione wskaźnikiem LGEngine",L" · Được thay bằng chỉ báo LGEngine"},
+{L"Liquid Glass is already showing its own glass volume indicator, so this one stays off. Turn off the glass indicator in Liquid Glass to use this one.",L"Liquid Glass już pokazuje własny szklany wskaźnik głośności, więc ten pozostaje wyłączony. Aby używać tego, wyłącz szklany wskaźnik w Liquid Glass.",L"Liquid Glass đang hiển thị chỉ báo âm lượng kính của riêng nó, nên chỉ báo này vẫn tắt. Để dùng chỉ báo này, hãy tắt chỉ báo kính trong Liquid Glass."},
 {L"Tint strength (lower is clearer)",L"Siła zabarwienia (mniej = większa przejrzystość)",L"Độ đậm màu (thấp hơn sẽ trong hơn)"},
 {L"Panel corner radius",L"Zaokrąglenie panelu",L"Bán kính bo góc"},{L"Glass tint",L"Odcień szkła",L"Tông màu kính"},
 {L" corner radius",L" promień narożników",L" bán kính góc"},
