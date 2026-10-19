@@ -27,8 +27,10 @@ Copy-Item -LiteralPath $testSource -Destination $testExe
 $test = Start-Process -FilePath $testExe -ArgumentList '--self-test' -WindowStyle Hidden -PassThru
 if (-not $test.WaitForExit(20000)) { throw 'Release self-test timed out.' }
 $test.Refresh()
+# Print the report before judging it, so a failing check is named in the log (and as an annotation on GitHub Actions).
+$report = Join-Path $stage 'self-test.txt'
+if (Test-Path -LiteralPath $report) { foreach ($line in Get-Content -LiteralPath $report) { if ($env:GITHUB_ACTIONS -and $line.StartsWith('FAIL')) { "::error title=Release self-test::$line" } else { $line } } }
 if ($test.ExitCode -ne 0) { throw "Release self-test failed: $($test.ExitCode)" }
-Get-Content -LiteralPath (Join-Path $stage 'self-test.txt')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release\Quick Start.txt') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release\Create Desktop Shortcut.cmd') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release\Third Party Notices.txt') -Destination $stage
