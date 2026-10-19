@@ -14,6 +14,7 @@ void labelSectionTabs(){
     const wchar_t*settingsNames[]={tr(L"常规",L"General"),tr(L"关于",L"About")};
     for(int i=0;i<2;++i){TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=const_cast<wchar_t*>(systemNames[int(l10n::current)][i]);TabCtrl_SetItem(systemTabs,i,&item);item.pszText=const_cast<wchar_t*>(settingsNames[i]);TabCtrl_SetItem(settingsTabs,i,&item);}
 }
+void localizeOptical(){auto lang=int(l10n::current);auto ui=opticalui::kUi[lang];for(int i=0;i<4;++i)SetDlgItemTextW(mainWindow,OptLabel1+i,ui[i]);SetDlgItemTextW(mainWindow,OptReplay,ui[4]);SetDlgItemTextW(mainWindow,OptSample,ui[5]);SetDlgItemTextW(mainWindow,OptOn,tr(L"音量／亮度指示器（后台生效）",L"Volume / brightness OSD in background"));int ids[]={OptArrival,OptIndicator,OptSlosh,OptKnob};int counts[]={9,9,4,3};const wchar_t* const* lists[]={opticalui::kArrival[lang],opticalui::kArrival[lang],opticalui::kSlosh[lang],opticalui::kKnob[lang]};for(int i=0;i<4;++i){HWND c=GetDlgItem(mainWindow,ids[i]);int keep=selection(c);SendMessageW(c,CB_RESETCONTENT,0,0);if(i==1)SendMessageW(c,CB_ADDSTRING,0,(LPARAM)ui[7]);for(int j=0;j<counts[i];++j)SendMessageW(c,CB_ADDSTRING,0,(LPARAM)lists[i][j]);SendMessageW(c,CB_SETCURSEL,keep<0?(i==0?4:i==3?2:0):keep,0);}SetDlgItemTextW(mainWindow,OptTitle,tr(L"LGEngine 动画与指示器",L"LGEngine motion and indicators"));SetDlgItemTextW(mainWindow,OptNote,tr(L"设置自动保存。开启指示器后，切换分页或隐藏至托盘仍会响应音量／亮度变化。",L"Settings save automatically. When enabled, the OSD also works on other pages and in the tray."));}
 void localize(){
     SetWindowTextW(mainWindow,L"Liquid Glass · v" LG_VERSION_W);
     struct Text{int id;const wchar_t*zh;const wchar_t*en;};
@@ -42,7 +43,7 @@ void localize(){
     {const wchar_t*fade[]={L"Smooth fade at startup",L"启动时平滑淡入",L"啟動時平順淡入",L"Płynne pojawianie przy starcie",L"Hiện dần mượt khi khởi động"};SetWindowTextW(GetDlgItem(mainWindow,StartupAnimation),fade[int(l10n::current)]);}
     const wchar_t*names[]={tr(L"应用玻璃",L"App glass"),tr(L"系统玻璃",L"System glass"),tr(L"设置",L"Settings")};
     for(int i=0;i<3;++i){TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=const_cast<wchar_t*>(names[i]);TabCtrl_SetItem(tabs,i,&item);}
-    labelSectionTabs();
+    labelSectionTabs();localizeOptical();{TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=const_cast<wchar_t*>(L"LGEngine");TabCtrl_SetItem(systemTabs,2,&item);}
     int s=selection(scope),m=selection(material),c=selection(corners);
     combo(scope,{tr(L"所选应用（按进程名）",L"Selected app (by executable name)"),tr(L"资源管理器窗口",L"File Explorer windows"),tr(L"全部应用（内容区不保证）",L"All apps (content not guaranteed)")},s);
     combo(material,{L"Acrylic",L"Mica",L"Mica Alt",tr(L"关闭背景材质",L"No backdrop")},m);combo(corners,{tr(L"圆角",L"Rounded"),tr(L"小圆角",L"Small rounded"),tr(L"直角",L"Square")},c);
@@ -73,7 +74,7 @@ void buildUI(){
     compatibility=control(L"STATIC",L"",0,Compatibility,24,346,742,42);
     control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Refresh,24,398,212,36);control(L"BUTTON",L"",BS_DEFPUSHBUTTON|WS_TABSTOP,Apply,250,398,250,36);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Restore,514,398,252,36);note=control(L"STATIC",L"",0,Note,24,454,742,82);
     buildingPage=1;
-    systemTabs=control(WC_TABCONTROLW,L"",tabStyle,SettingsPages+1000,32,112,720,38);tabItem(systemTabs,2,340);
+    systemTabs=control(WC_TABCONTROLW,L"",tabStyle,SettingsPages+1000,32,112,720,38);tabItem(systemTabs,3,224);
     int headings[]={VolumeHeading,BrightnessHeading,TaskbarHeading,StartHeading,NotificationHeading,ExplorerHeading,DockHeading,KeyboardHeading};int switches[]={VolumeOn,BrightnessOn,TaskbarToggle,StartToggle,NotificationToggle,ExplorerToggle,DockToggle,KeyboardToggle};
     // Seven system-effect rows; taskbar includes the capsule appearance.
     for(int i=0;i<8;++i){int y=164+i*36;control(L"STATIC",L"",0,headings[i],40,y,590,28);HWND toggle=control(L"BUTTON",L"",BS_OWNERDRAW|WS_TABSTOP,switches[i],650,y,100,32);RemoveWindowSubclass(toggle,buttonHover,1);SetPropW(toggle,L"LG.IsSwitch",(HANDLE)1);SetWindowSubclass(toggle,compactSwitch,3,0);}
@@ -88,8 +89,14 @@ void buildUI(){
     control(L"STATIC",L"",0,RadiusLabel,40,286,430,28);HWND radius=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,RadiusSlider,40,316,680,32);SendMessageW(radius,TBM_SETRANGE,TRUE,MAKELPARAM(0,28));SendMessageW(radius,TBM_SETPOS,TRUE,glassConfig.radius);control(L"STATIC",L"",0,EffectValue,480,286,240,28);
     control(L"STATIC",L"",0,TintLabel,40,362,220,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,TintCombo,272,356,440,150);
     control(L"BUTTON",L"",BS_AUTOCHECKBOX|WS_TABSTOP,BatteryFriendly,40,404,680,34);SendMessageW(GetDlgItem(mainWindow,BatteryFriendly),BM_SETCHECK,batteryFriendly?BST_CHECKED:BST_UNCHECKED,0);control(L"STATIC",L"",0,EffectNote,40,444,680,54);
-    control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,RestoreOriginal,40,504,680,30);
+    control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,RestoreOriginal,40,504,320,30);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,OpticalPreview,376,504,344,30);
+    buildingPage=1;buildingSettings=3;
+    control(L"STATIC",L"",0,OptTitle,40,164,680,30);
+    int opticalLabels[]={OptLabel1,OptLabel2,OptLabel3,OptLabel4};int opticalCombos[]={OptArrival,OptIndicator,OptSlosh,OptKnob};
+    for(int i=0;i<4;++i){int x=i%2?392:40,y=210+(i/2)*54;control(L"STATIC",L"",0,opticalLabels[i],x,y+4,110,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,opticalCombos[i],x+112,y,208,280);}
+    control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,OptReplay,40,320,150,34);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,OptSample,202,320,176,34);control(L"BUTTON",L"",BS_AUTOCHECKBOX|WS_TABSTOP,OptOn,396,320,324,34);CheckDlgButton(mainWindow,OptOn,GetPrivateProfileIntW(L"LGEngine",L"IndicatorOn",1,iniPath.c_str())?BST_CHECKED:BST_UNCHECKED);
+    control(L"STATIC",L"",0,OptNote,40,494,680,42);
     buildingPage=2;buildingSettings=2;control(L"STATIC",L"",0,AboutText,40,182,680,230);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,ExitApp,40,446,460,42);
     buildingSettings=-1;buildingPage=-1;
-    status=control(L"STATIC",L"",0,Status,24,552,570,64);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Pause,614,570,152,36);localize();selectPage(0);
+    status=control(L"STATIC",L"",0,Status,24,552,570,64);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Pause,614,570,152,36);localize();{int ids[]={OptArrival,OptIndicator,OptSlosh,OptKnob};const wchar_t* keys[]={L"Arrival",L"Indicator",L"Slosh",L"Knob"};int defaults[]={4,0,0,2},maximum[]={8,9,3,2};for(int i=0;i<4;++i){int v=GetPrivateProfileIntW(L"LGEngine",keys[i],defaults[i],iniPath.c_str());SendDlgItemMessageW(mainWindow,ids[i],CB_SETCURSEL,std::clamp(v,0,maximum[i]),0);}}opticalUiReady=true;selectPage(0);syncOpticalPreview();
 }

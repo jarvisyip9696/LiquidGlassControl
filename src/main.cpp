@@ -21,6 +21,7 @@
 #include "localization.h"
 #include "glass_controller.h"
 #include "lgengine_preview.h"
+#include "optical_labels.h"
 #include "shell_diagnostics.h"
 #include "taskbar_recovery.h"
 #include "explorer_background.h"
@@ -55,14 +56,16 @@ bool enabled=false,busy=false,selfTestMode=false,nativeProbeMode=false; UINT dpi
 std::map<HWND,RECT> controlLayout;
 HWINEVENTHOOK windowEvents{};unsigned attributeWrites=0;std::set<HWND> pendingWindows;bool windowScanPending=false;
 bool volumeOn=false,brightnessOn=false,startupAnimation=true,startupPlayed=false;ULONGLONG startupTime=0;
-HWND settingsTabs{},systemTabs{};int systemSection=0,settingsPage=0,buildingSettings=-1;std::vector<HWND> settingsControls[3];std::map<std::wstring,HICON> appIcons;
+HWND settingsTabs{},systemTabs{};int systemSection=0,settingsPage=0,buildingSettings=-1;std::vector<HWND> settingsControls[4];std::map<std::wstring,HICON> appIcons;
 void selectSystemSection(int section);void labelSectionTabs();
 glass::Controller engine;glass::Config glassConfig;bool explorerOn=false,dockOn=false,keyboardOn=false,batteryFriendly=true;HANDLE migrationJob{};HPOWERNOTIFY powerNotification{},acNotification{};bool engineReady=false,engineAttempted=false;
 DWORD confirmedMaterials=0,failedMaterials=0,pausedFeatures=0,fallbackMaterials=0;
 constexpr GUID PowerSavingStatus={0xe00958c0,0xc213,0x4ace,{0xac,0x77,0xfe,0xcc,0xed,0x2e,0xee,0xa5}};
 bool glassPendingDiscover=false;
 lgpreview::Controller opticalPreview;
-ULONGLONG opticalStartup=0;
+ULONGLONG opticalStartup=0;bool opticalUiReady=false,opticalSuspended=false;
+enum {OptArrival=300,OptIndicator,OptSlosh,OptKnob,OptReplay,OptSample,OptOn,OptTitle,OptNote,OptLabel1,OptLabel2,OptLabel3,OptLabel4};
+void syncOpticalControls(int action=0);
 void applyGlass(bool discover=true);
 void queueGlass(bool discover=true);
 void updateEffectLabels();
@@ -88,10 +91,20 @@ std::vector<Entry> entries;std::map<HWND,Snapshot> originals;
 HWND lastListedWindow{};
 std::wstring selectedExe;int mode=0,backdrop=3,corner=2;
 const wchar_t* tr(const wchar_t* zh,const wchar_t* en){return l10n::translate(zh,en);}
+void syncOpticalControls(int action){
+    if(!opticalUiReady||!GetDlgItem(mainWindow,OptOn))return;
+    lgpreview::Controls c;int ids[]={OptArrival,OptIndicator,OptSlosh,OptKnob};int* values[]={&c.arrival,&c.indicator,&c.slosh,&c.knob};
+    const wchar_t* keys[]={L"Arrival",L"Indicator",L"Slosh",L"Knob"};
+    for(int i=0;i<4;++i){int n=(int)SendDlgItemMessageW(mainWindow,ids[i],CB_GETCURSEL,0,0);if(n>=0)*values[i]=n;if(!selfTestMode&&!nativeProbeMode)WritePrivateProfileStringW(L"LGEngine",keys[i],std::to_wstring(*values[i]).c_str(),iniPath.c_str());}
+    c.enabled=currentPage==1&&systemSection==2;c.osd=IsDlgButtonChecked(mainWindow,OptOn)==BST_CHECKED;c.action=action;
+    if(!selfTestMode&&!nativeProbeMode)WritePrivateProfileStringW(L"LGEngine",L"IndicatorOn",c.osd?L"1":L"0",iniPath.c_str());
+    opticalPreview.controls(c);
+}
 void syncOpticalPreview(){
+    if(!selfTestMode&&!nativeProbeMode&&!opticalSuspended&&opticalUiReady&&GetDlgItem(mainWindow,OptOn)&&!opticalPreview.running()&&(IsDlgButtonChecked(mainWindow,OptOn)==BST_CHECKED||(currentPage==1&&systemSection==2))){if(!opticalPreview.start(mainWindow))return;}
     lgpreview::Settings value;value.opacity=glassConfig.opacity;value.blur=glassConfig.blur;value.radius=glassConfig.radius;value.tint=glassConfig.tint;value.savePower=batteryFriendly;value.language=(DWORD)l10n::current;
     BOOL motion=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&motion,0);HIGHCONTRASTW high{};high.cbSize=sizeof(high);SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(high),&high,0);value.reducedMotion=!motion||(high.dwFlags&HCF_HIGHCONTRASTON);
-    if(opticalPreview.publish(value)){opticalStartup=0;if(mainWindow)KillTimer(mainWindow,16);}
+    if(opticalPreview.publish(value)){syncOpticalControls();opticalStartup=0;if(mainWindow)KillTimer(mainWindow,16);}
     else if(opticalPreview.running()&&mainWindow){if(!opticalStartup)opticalStartup=GetTickCount64();SetTimer(mainWindow,16,500,nullptr);}
 }
 int selection(HWND h){return (int)SendMessageW(h,CB_GETCURSEL,0,0);}
@@ -143,16 +156,16 @@ void selectPage(int page){
     if(page<0||page>2)return;bool changed=currentPage!=page;finishPageMotion();currentPage=page;
     SendMessageW(mainWindow,WM_SETREDRAW,FALSE,0);
     for(int p=0;p<3;++p)for(HWND h:pageControls[p])ShowWindow(h,p==page?SW_SHOWNA:SW_HIDE);
-    if(page==2)selectSettingsPage(settingsPage);
+    if(page!=1)syncOpticalControls();if(page==2)selectSettingsPage(settingsPage);
     if(page==1){selectSystemSection(systemSection);updateNativeInfo();}
     TabCtrl_SetCurSel(tabs,page);SendMessageW(mainWindow,WM_SETREDRAW,TRUE,0);RedrawWindow(mainWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
     if(HWND focused=GetFocus();focused&&IsChild(mainWindow,focused)&&!IsWindowVisible(focused))SetFocus(tabs);
     if(changed){beginPageMotion();if(page==0)refresh(true);else if(list)releaseAppList();}
 }
 void selectSettingsPage(int page){if(page!=0&&page!=2)return;settingsPage=page;for(int p:{0,2})for(HWND h:settingsControls[p])ShowWindow(h,currentPage==2&&p==page?SW_SHOWNA:SW_HIDE);TabCtrl_SetCurSel(settingsTabs,page==2?1:0);RedrawWindow(settingsTabs,nullptr,nullptr,RDW_INVALIDATE);InvalidateRect(mainWindow,nullptr,FALSE);if(HWND focused=GetFocus();focused&&IsChild(mainWindow,focused)&&!IsWindowVisible(focused))SetFocus(currentPage==2?settingsTabs:tabs);}
-void selectSystemSection(int section){if(section<0||section>1)return;systemSection=section;
-    for(HWND h:pageControls[1]){bool tuning=std::find(settingsControls[1].begin(),settingsControls[1].end(),h)!=settingsControls[1].end();ShowWindow(h,currentPage==1&&(h==systemTabs||(section==1)==tuning)?SW_SHOWNA:SW_HIDE);}
-    TabCtrl_SetCurSel(systemTabs,section);RedrawWindow(mainWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
+void selectSystemSection(int section){if(section<0||section>2)return;systemSection=section;
+    for(HWND h:pageControls[1]){int group=std::find(settingsControls[3].begin(),settingsControls[3].end(),h)!=settingsControls[3].end()?2:std::find(settingsControls[1].begin(),settingsControls[1].end(),h)!=settingsControls[1].end()?1:0;ShowWindow(h,currentPage==1&&(h==systemTabs||section==group)?SW_SHOWNA:SW_HIDE);}
+    if(currentPage==1&&section==2&&!nativeProbeMode&&!selfTestMode){if(!opticalPreview.running())opticalPreview.start(mainWindow);syncOpticalPreview();}else syncOpticalControls();TabCtrl_SetCurSel(systemTabs,section);RedrawWindow(mainWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
     if(HWND focused=GetFocus();focused&&IsChild(mainWindow,focused)&&!IsWindowVisible(focused))SetFocus(systemTabs);
 }
 void restoreWindows(){
@@ -252,7 +265,7 @@ void apply(){
     setRulesActive(true);sync(true);
 }
 void restoreAll(bool exit){
-    opticalPreview.stop();KillTimer(mainWindow,16);opticalStartup=0;
+    opticalSuspended=true;if(!exit){CheckDlgButton(mainWindow,OptOn,BST_UNCHECKED);syncOpticalControls();}opticalPreview.stop();KillTimer(mainWindow,16);opticalStartup=0;
     if(migrationJob)return;
     setRulesActive(false);restoreWindows();if(!originals.empty())return;
     if(!nativeProbeMode&&!taskbar_recovery::restore(iniPath)){message(tr(L"任务栏恢复失败，恢复记录已保留。",L"Taskbar restore failed; recovery record retained."));return;}dockOn=false;WritePrivateProfileStringW(L"Taskbar",L"AutoHide",L"0",iniPath.c_str());volumeOn=brightnessOn=explorerOn=keyboardOn=false;for(bool&on:shellOn)on=false;glassConfig.features=0;WritePrivateProfileStringW(L"Glass",L"Features",L"0",iniPath.c_str());applyGlass(false);
@@ -309,7 +322,7 @@ int selfTest(){
     volumeOn=brightnessOn=true;explorerOn=dockOn=keyboardOn=false;for(bool&on:shellOn)on=false;shellOn[0]=true;queueGlass();volumeOn=false;queueGlass();
     passed=passed&&glassPendingDiscover&&glassConfig.features==(glass::Brightness|glass::Taskbar|glass::Capsule)&&SendMessageW(GetDlgItem(mainWindow,TaskbarToggle),BM_GETCHECK,0,0)==BST_CHECKED;
     KillTimer(mainWindow,14);glassPendingDiscover=false;volumeOn=oldVolume;brightnessOn=oldBrightness;explorerOn=oldExplorer;dockOn=oldDock;keyboardOn=oldKeyboard;for(int i=0;i<3;++i)shellOn[i]=oldShell[i];glassConfig=savedConfig;updateNativeInfo();}
-    passed=passed&&glass::unifiedTaskbar(0)==0&&glass::unifiedTaskbar(glass::Taskbar)==(glass::Taskbar|glass::Capsule)&&glass::unifiedTaskbar(glass::Capsule|glass::Dock)==(glass::Taskbar|glass::Capsule|glass::Dock)&&glass::unifiedTaskbar(glass::Start)==glass::Start&&pageControls[1].size()==18+settingsControls[1].size();
+    passed=passed&&glass::unifiedTaskbar(0)==0&&glass::unifiedTaskbar(glass::Taskbar)==(glass::Taskbar|glass::Capsule)&&glass::unifiedTaskbar(glass::Capsule|glass::Dock)==(glass::Taskbar|glass::Capsule|glass::Dock)&&glass::unifiedTaskbar(glass::Start)==glass::Start&&pageControls[1].size()==18+settingsControls[1].size()+settingsControls[3].size();
     passed=passed&&!glass::active(glass::TaskbarAuxiliary,glass::Capsule)&&glass::active(glass::TaskbarAuxiliary,glass::Taskbar)&&glass::feature(glass::TaskbarAuxiliary)==glass::Taskbar;
     passed=passed&&glass::identify(L"BackgroundFill",L"Windows.UI.Xaml.Shapes.Rectangle",0)==glass::TaskbarFill&&glass::identify(L"BackgroundFill",L"Windows.UI.Xaml.Shapes.Rectangle",3)==glass::NoSurface&&glass::identify(L"MyDocument",L"Grid",3)==glass::NoSurface;
     passed=passed&&!glass::active(glass::VolumePlate,glass::Brightness)&&glass::active(glass::BrightnessPlate,glass::Brightness)&&!glass::active(glass::TaskbarFill,glass::Start);
@@ -333,7 +346,7 @@ int selfTest(){
     passed=taskbar_recovery::test(iniPath+L".taskbar-test-"+std::to_wstring(GetCurrentProcessId()))&&passed;
     record("system controls and isolated theme recovery");
     selectPage(2);passed=passed&&((GetWindowLongPtrW(GetDlgItem(mainWindow,SettingsNote),GWL_STYLE)&WS_VISIBLE)!=0);
-    passed=passed&&TabCtrl_GetItemCount(settingsTabs)==2&&TabCtrl_GetItemCount(systemTabs)==2&&!GetDlgItem(mainWindow,OpticalPreview);
+    passed=passed&&TabCtrl_GetItemCount(settingsTabs)==2&&TabCtrl_GetItemCount(systemTabs)==3&&GetDlgItem(mainWindow,OpticalPreview);
     selectPage(1);selectSystemSection(1);passed=passed&&((GetWindowLongPtrW(GetDlgItem(mainWindow,OpacitySlider),GWL_STYLE)&WS_VISIBLE)!=0)&&((GetWindowLongPtrW(language,GWL_STYLE)&WS_VISIBLE)==0)&&SendMessageW(GetDlgItem(mainWindow,TintCombo),CB_GETCOUNT,0,0)==4;
     selectPage(2);passed=passed&&((GetWindowLongPtrW(GetDlgItem(mainWindow,OpacitySlider),GWL_STYLE)&WS_VISIBLE)==0);
     selectSettingsPage(2);RECT pending{};passed=passed&&settingsPage==2&&TabCtrl_GetCurSel(settingsTabs)==1&&GetUpdateRect(settingsTabs,&pending,FALSE);
@@ -395,6 +408,7 @@ int selfTest(){
 
         selectSystemSection(1);RemovePropW(tabs,L"LG.Sel");RemovePropW(systemTabs,L"LG.Sel");passed=saveUiProof(mainWindow,settingsDir()+L"ui-system-material.bmp")&&passed;
         l10n::current=l10n::Simplified;localize();RemovePropW(tabs,L"LG.Sel");RemovePropW(systemTabs,L"LG.Sel");passed=saveUiProof(mainWindow,settingsDir()+L"ui-system-material-zh.bmp")&&passed;
+        selectSystemSection(2);RemovePropW(systemTabs,L"LG.Sel");passed=IsWindowVisible(GetDlgItem(mainWindow,OptArrival))&&!IsWindowVisible(GetDlgItem(mainWindow,OpacitySlider))&&saveUiProof(mainWindow,settingsDir()+L"ui-lgengine-zh.bmp")&&passed;selectPage(2);passed=!IsWindowVisible(GetDlgItem(mainWindow,OptArrival))&&passed;
         l10n::current=savedLanguage;localize();selectPage(0);record("system glass pages render using native controls without a host overlay");}
     passed=allPassed;
     std::wstring report=iniPath.substr(0,iniPath.find_last_of(L"\\")+1)+L"self-test.txt";
@@ -433,6 +447,9 @@ LRESULT CALLBACK proc(HWND h,UINT msg,WPARAM w,LPARAM l){
         case StartupAnimation:startupAnimation=!startupAnimation;SendMessageW(GetDlgItem(h,StartupAnimation),BM_SETCHECK,startupAnimation?BST_CHECKED:BST_UNCHECKED,0);WritePrivateProfileStringW(L"UI",L"StartupAnimation",startupAnimation?L"1":L"0",iniPath.c_str());break;
         case VolumeOn:volumeOn=!volumeOn;queueGlass();break;
         case BrightnessOn:brightnessOn=!brightnessOn;queueGlass();break;
+        case OptArrival:case OptIndicator:case OptSlosh:case OptKnob:if(HIWORD(w)==CBN_SELCHANGE)syncOpticalControls();break;
+        case OptReplay:syncOpticalControls(1);break;case OptSample:syncOpticalControls(2);break;case OptOn:opticalSuspended=false;syncOpticalPreview();break;
+        case OpticalPreview:selectSystemSection(2);if(opticalPreview.start(h)){opticalStartup=GetTickCount64();syncOpticalPreview();}else message(std::wstring(tr(L"无法启动 LGEngine 预览，错误：",L"Cannot start LGEngine preview. Error: "))+std::to_wstring(opticalPreview.lastError()));break;
         case RestoreOriginal:resetGlassDefaults();break;
         case KeyboardToggle:keyboardOn=!keyboardOn;queueGlass();break;
         case DockToggle:dockOn=!dockOn;queueGlass();break;

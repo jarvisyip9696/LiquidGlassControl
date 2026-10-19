@@ -55,6 +55,12 @@ int main(int argc,char**argv){
     if(connected){
         check(pumpUntil([&]{return bridge.publish(settings);}),"exact parsed settings digest acknowledged");
         check(bridge.synchronized(),"acknowledgement marks settings synchronized");
+        check(pumpUntil([&]{return (bridge.status()&1)!=0;},12000),"real host negotiated protocol 1.1");
+        lgpreview::Controls controls;controls.enabled=0;check(bridge.controls(controls),"integrated page hides preview");controls.enabled=1;controls.arrival=8;controls.slosh=2;controls.knob=1;controls.action=2;check(bridge.controls(controls),"integrated page configures and samples preview");controls.enabled=0;controls.action=2;check(bridge.controls(controls),"sample starts while preview page is hidden");
+        check(pumpUntil([&]{unsigned s=bridge.status();return (s&21)==21&&(s&10)==0;}),"background OSD shown with hidden card and no floating controls");
+        controls.action=0;controls.osd=0;check(bridge.controls(controls)&&!(bridge.status()&20),"OSD off hides lens and stops background display");
+        controls.osd=1;controls.action=0;check(bridge.controls(controls),"background OSD re-enabled");
+        controls.knob=7;check(!bridge.controls(controls),"invalid page controls rejected");
         auto pid=bridge.processId();check(bridge.start(owner)&&bridge.processId()==pid,"reopen reuses child process");
         check(!bridge.accept(owner),"reject window from another process");
         check(bridge.connected(),"rejected acknowledgement leaves valid connection intact");

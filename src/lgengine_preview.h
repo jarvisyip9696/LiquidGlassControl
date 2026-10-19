@@ -7,6 +7,9 @@
 namespace lgpreview {
 constexpr UINT Event = WM_APP + 16;
 constexpr ULONG_PTR WireTag = 0x4c475031;
+constexpr ULONG_PTR ControlsTag = 0x4c475032;
+constexpr ULONG_PTR StatusTag = 0x4c475033;
+struct Controls { int arrival=4, indicator=0, slosh=0, knob=2, enabled=1, osd=1, action=0; };
 struct Settings {
     DWORD version=2, opacity=35, blur=12, radius=12, tint=0;
     DWORD savePower=1, reducedMotion=0, language=0;
@@ -24,6 +27,17 @@ class Controller {
 public:
     ~Controller(){stop();}
     DWORD lastError()const{return error;}
+    unsigned status(){
+        if(!validRemote())return 0;
+        COPYDATASTRUCT data{StatusTag,0,nullptr};DWORD_PTR result=0;
+        if(!SendMessageTimeoutW(remote,WM_COPYDATA,reinterpret_cast<WPARAM>(ownerWindow),reinterpret_cast<LPARAM>(&data),SMTO_ABORTIFHUNG|SMTO_BLOCK,200,&result))return 0;
+        return unsigned(result);
+    }
+    bool controls(Controls value){
+        if(!validRemote())return false;
+        COPYDATASTRUCT data{ControlsTag,sizeof(value),&value};DWORD_PTR result=0;
+        return SendMessageTimeoutW(remote,WM_COPYDATA,reinterpret_cast<WPARAM>(ownerWindow),reinterpret_cast<LPARAM>(&data),SMTO_ABORTIFHUNG|SMTO_BLOCK,200,&result)&&result==1;
+    }
     bool running()const{return process&&WaitForSingleObject(process,0)==WAIT_TIMEOUT;}
     bool connected()const{return validRemote();}
     bool synchronized()const{return validRemote()&&sent;}

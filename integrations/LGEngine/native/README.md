@@ -1,5 +1,23 @@
 # C++ client → original LGEngineHost
 
+## Desktop integration
+
+The desktop controller now exposes the animation, indicator arrival, slosh, knob,
+Replay and Sample controls in **System glass > LGEngine**. Owned adapters have no
+visible control window. The card and its three glow chips appear only on this page.
+The enabled volume/brightness lens continues working on other pages and in the
+tray, appearing near the bottom of the active monitor. High contrast disables it.
+Animation selections and the OSD switch are saved in the `LGEngine` settings section.
+The sample never changes system volume or brightness. Brightness events depend on
+the display and Windows reporting brightness notifications.
+
+`enable-host-v11.ps1` applies the local protocol adapter to the upstream checkout;
+`host-v11-methods.cs` exposes the engine's existing motion, buttons, pointer, slosh,
+busy and cut controls. This is a local extension, not an upstream 1.1 release.
+The dedicated `lgcontrol11` host namespace avoids attaching to an older host used
+by another application. Ordinary Windows toast notifications are not intercepted
+or replaced, and the Windows volume flyout is not suppressed.
+
 The candidate now uses the original LGEngine host through its version-1 named
 pipe and shared-memory protocol. The previous partial C++ renderer was removed.
 The app and adapter are C++; the original host remains C#/.NET Framework.

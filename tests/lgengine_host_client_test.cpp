@@ -31,16 +31,17 @@ int main(int argc,char**argv){
         check(a->hostProcessId()!=0&&a->hostProcessId()==b->hostProcessId(),"two clients share the same authenticated host process");
         bool invalid=false;try{a->setContents(std::vector<uint32_t>(1));}catch(const std::invalid_argument&){invalid=true;}check(invalid,"incorrect shared bitmap size rejected");
         a->setPlace(-9000,-9000);a->show(false);check(pump([&]{return a->connected();},200),"state updates preserve connection");
-        check(b->hostMinor()<=1&&b->light()>=0&&b->light()<=1,"host minor and light are in range");
+        check(b->hostMinor()==1&&b->light()>=0&&b->light()<=1,"host minor and light are in range");
         unsigned idBefore=b->surfaceId();
         for(int change=0;change<12;++change){spec.look.dark=20+change;b->setSpec(spec);pump([]{return false;},30);}
         for(int step=1;step<=3;++step){int w=96+8*step,h=64+8*step;spec.width=w;spec.height=h;b->resize(w,h,std::vector<uint32_t>(size_t(w)*h,0));pump([]{return false;},60);}
         pump([]{return false;},200);
         check(idBefore!=0&&b->surfaceId()==idBefore&&!failed[1],"look and size changes keep the same surface");
-        b->setSlosh(1,60);b->kick(1);b->setBusy(true);b->setBusy(false);b->setPointerArea(RECT{0,0,10,10});b->setButtons(std::vector<lghost::Button>(),false);
+        b->setSlosh(1,60);b->kick(1);b->setBusy(true);b->setBusy(false);b->setPointerArea(RECT{0,0,10,10});lghost::Button chip;chip.hit={0,0,20,20};chip.maskBox={0,0,20,20};chip.cx=chip.cy=10;chip.hx=chip.hy=10;chip.rad=5;chip.mask.assign(400,255);b->setButtons({chip},false);
         pump([]{return false;},100);
         check(b->connected()&&!failed[1],"1.1 setters are harmless on any host");
         check(b->hostErrors()==0&&a->hostErrors()==0,"host sent no Error frames (types 10-17 are not sent to a minor-0 host)");
+        spec.zoom=15;spec.liquid=70;spec.bounce=50;spec.travel=40;spec.indicator=8;spec.fps=20;b->setSpec(spec);pump([]{return false;},300);b->hide(false);pump([]{return false;},200);unsigned beforeCut=shown[1];b->show();check(pump([&]{return shown[1]>beforeCut;})&&!b->hostErrors(),"extended motion, updates and cut-hide permit showing again");
         unsigned beforeKind=shown[1];
         spec.kind=1;b->setSpec(spec);
         check(pump([&]{return shown[1]>beforeKind||failed[1];})&&shown[1]>beforeKind&&!failed[1]&&b->surfaceId()!=idBefore,"kind change re-creates the surface (new id, new Shown)");

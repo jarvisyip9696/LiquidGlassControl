@@ -1,7 +1,7 @@
-param([string]$SourceDirectory = (Join-Path $PSScriptRoot 'build/candidates/lgengine-native'))
+param([string]$SourceDirectory = (Join-Path $PSScriptRoot 'build/candidates/lgengine-native'), [string]$ShortcutPath, [string]$TargetDirectory)
 $ErrorActionPreference = 'Stop'
 $source = (Resolve-Path -LiteralPath $SourceDirectory).Path
-$target = Join-Path $PSScriptRoot 'build'
+$target = if ($TargetDirectory) { (Resolve-Path -LiteralPath $TargetDirectory).Path } else { Join-Path $PSScriptRoot 'build' }
 $hostSource = Join-Path $source 'lgengine/LGEngineHost.exe'
 $sourcePointer = Join-Path $source 'lgengine/host-current.ini'
 if (Test-Path -LiteralPath $sourcePointer) {
@@ -16,7 +16,7 @@ foreach ($file in $files) {
 }
 if (-not (Test-Path -LiteralPath $hostSource -PathType Leaf)) { throw 'Candidate host is missing.' }
 $desktop = [Environment]::GetFolderPath('Desktop')
-$shortcutPath = Join-Path $desktop 'Liquid Glass Control.lnk'
+if (-not $ShortcutPath) { $ShortcutPath = Join-Path $desktop 'Liquid Glass Control.lnk' }
 $shell = New-Object -ComObject WScript.Shell
 if (-not (Test-Path -LiteralPath $shortcutPath)) { throw 'Desktop shortcut not found; no shortcut was changed.' }
 $shortcut = $shell.CreateShortcut($shortcutPath)

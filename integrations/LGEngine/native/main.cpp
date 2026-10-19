@@ -12,24 +12,21 @@
 #include "../client/lg_client.h"
 #include "../../../src/lgengine_preview.h"
 #include "osd.h"
+#include "../../../src/optical_labels.h"
 
 namespace {
 constexpr UINT HostEvent=WM_APP+60,OsdEvent=WM_APP+61,MsgVolume=WM_APP+62,MsgDevice=WM_APP+63,MsgOwner=WM_APP+64;
 enum : int {IdArrival=101,IdIndicator,IdSlosh,IdKnob,IdReplay,IdSample,IdOn,IdLabel1=111,IdLabel2,IdLabel3,IdLabel4};
 enum : UINT_PTR {TimerAnim=2,TimerHide=3,TimerReplay=4,TimerRecheck=5};
 // Language order everywhere: English, Simplified Chinese, Traditional Chinese, Polish, Vietnamese.
-const wchar_t* const kArrival[5][9]={{L"None",L"Fade",L"Slide",L"Zoom",L"Slide + zoom",L"Drop",L"Pop",L"Melt",L"Ripple"},{L"无",L"淡入",L"滑入",L"缩放",L"滑入并缩放",L"落下",L"弹出",L"融化",L"涟漪"},{L"無",L"淡入",L"滑入",L"縮放",L"滑入並縮放",L"落下",L"彈出",L"融化",L"漣漪"},{L"Brak",L"Zanikanie",L"Przesunięcie",L"Powiększenie",L"Przesunięcie + powiększenie",L"Opadanie",L"Wyskok",L"Topnienie",L"Fala"},{L"Không",L"Mờ dần",L"Trượt",L"Phóng",L"Trượt + phóng",L"Rơi",L"Bật",L"Tan chảy",L"Gợn sóng"}};
-const wchar_t* const kSlosh[5][4]={{L"Lean",L"Bounce",L"Pulse",L"None"},{L"倾斜",L"弹跳",L"脉冲",L"无"},{L"傾斜",L"彈跳",L"脈衝",L"無"},{L"Przechył",L"Odbicie",L"Puls",L"Brak"},{L"Nghiêng",L"Nảy",L"Xung",L"Không"}};
-const wchar_t* const kKnob[5][3]={{L"Round",L"Pill",L"Lens"},{L"圆形",L"胶囊",L"透镜"},{L"圓形",L"膠囊",L"透鏡"},{L"Okrągły",L"Pigułka",L"Soczewka"},{L"Tròn",L"Viên thuốc",L"Thấu kính"}};
-// arrival, indicator arrival, slosh, knob, replay, sample indicator, indicator, same as card
-const wchar_t* const kUi[5][8]={{L"Arrival",L"Indicator arrival",L"Slosh",L"Knob",L"Replay",L"Sample indicator",L"Indicator",L"Same as card"},{L"入场",L"指示器入场",L"晃动",L"旋钮",L"重播",L"示例指示器",L"指示器",L"与卡片相同"},{L"入場",L"指示器入場",L"晃動",L"旋鈕",L"重播",L"範例指示器",L"指示器",L"與卡片相同"},{L"Pojawianie się",L"Wejście wskaźnika",L"Chlupot",L"Gałka",L"Powtórz",L"Przykładowy wskaźnik",L"Wskaźnik",L"Jak karta"},{L"Xuất hiện",L"Chỉ báo xuất hiện",L"Sóng sánh",L"Núm",L"Phát lại",L"Chỉ báo mẫu",L"Chỉ báo",L"Như thẻ"}};
+using namespace opticalui;
 HWND gWindow{},gOwner{};
 void CALLBACK ownerEvent(HWINEVENTHOOK,DWORD,HWND hwnd,LONG object,LONG,DWORD,DWORD){if(hwnd&&hwnd==gOwner&&object==OBJID_WINDOW&&gWindow)PostMessageW(gWindow,MsgOwner,0,0);}
 VOID CALLBACK parentGone(PVOID window,BOOLEAN){PostMessageW(static_cast<HWND>(window),WM_CLOSE,0,0);}
 struct App {
     HWND window{},owner{};lghost::Handle parent;lgpreview::Settings settings;
-    std::unique_ptr<lghost::Client> client,osdClient;lghost::Spec spec,lens;bool visible=true,failed=false;
-    HANDLE wait{};HWINEVENTHOOK hooks[2]{};HPOWERNOTIFY power{},power2{};DWORD displayState=1;ULONGLONG quietUntil=0;HFONT uiFont{};DWORD ownerPid{};unsigned labelLang=99;
+    std::unique_ptr<lghost::Client> client,osdClient;lghost::Spec spec,lens;bool visible=true,failed=false,pageEnabled=true;
+    HANDLE wait{};HWINEVENTHOOK hooks[3]{};HPOWERNOTIFY power{},power2{};DWORD displayState=1;ULONGLONG quietUntil=0;HFONT uiFont{};DWORD ownerPid{};unsigned labelLang=99;
     osd::State state;osd::AudioWatch audio;std::vector<uint32_t> osdBase,osdFrame;int drawnNumber=-1;wchar_t drawnGlyph=0;
     bool osdAnimating=false,osdShown=false;LONGLONG lastTick=0;
     const wchar_t* title(unsigned event)const{
@@ -41,8 +38,8 @@ struct App {
     int sel(int id)const{LRESULT n=SendDlgItemMessageW(window,id,CB_GETCURSEL,0,0);return n<0?0:int(n);}
     bool reduced()const{return settings.reducedMotion!=0;}
     bool indicatorOn()const{return IsDlgButtonChecked(window,IdOn)==BST_CHECKED;}
-    void place(){RECT r{};GetWindowRect(window,&r);spec.x=r.left;spec.y=r.bottom+8;if(client)client->setPlace(spec.x,spec.y);
-        if(osdClient){lens.x=spec.x+(spec.width-lens.width)/2;lens.y=spec.y+spec.height+int(std::lround(8*spec.scale));osdClient->setPlace(lens.x,lens.y);}}
+    void place(){RECT r{};GetWindowRect(window,&r);spec.x=r.left;spec.y=r.bottom+8;if(owner){POINT p{MulDiv(40,GetDpiForWindow(owner),96),MulDiv(365,GetDpiForWindow(owner),96)};ClientToScreen(owner,&p);spec.x=p.x;spec.y=p.y;}if(client)client->setPlace(spec.x,spec.y);
+        if(osdClient){lens.x=spec.x+(spec.width-lens.width)/2;lens.y=spec.y+spec.height+int(std::lround(8*spec.scale));if(!visible){MONITORINFO mi{};mi.cbSize=sizeof(mi);if(GetMonitorInfoW(MonitorFromWindow(GetForegroundWindow(),MONITOR_DEFAULTTONEAREST),&mi)){lens.x=mi.rcWork.left+(mi.rcWork.right-mi.rcWork.left-lens.width)/2;lens.y=mi.rcWork.bottom-lens.height-int(std::lround(32*spec.scale));}}osdClient->setPlace(lens.x,lens.y);}}
     // The preview window's own Win32 controls.
     void fill(int id,const wchar_t* const* items,int count,const wchar_t* first){
         int keep=sel(id);SendDlgItemMessageW(window,id,CB_RESETCONTENT,0,0);if(first)SendDlgItemMessageW(window,id,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(first));
@@ -95,7 +92,7 @@ struct App {
         }
         auto previous=SelectObject(dc,font);
         static const wchar_t* text[]={L"LGEngine host\nBackground-adaptive liquid glass",L"LGEngine 宿主\n根据背景自适应的液态玻璃",L"LGEngine 宿主\n根據背景自適應的液態玻璃",L"Host LGEngine\nSzkło dopasowane do tła",L"LGEngine host\nKính tự điều chỉnh theo nền"};
-        RECT bounds{20,spec.height/3,spec.width-20,bottom};DrawTextW(dc,text[settings.language],-1,&bounds,DT_CENTER|DT_WORDBREAK|DT_NOPREFIX);GdiFlush();
+        RECT bounds{20,spec.height/3,spec.width-20,bottom};if(!owner)DrawTextW(dc,text[settings.language],-1,&bounds,DT_CENTER|DT_WORDBREAK|DT_NOPREFIX);GdiFlush();
         std::vector<uint32_t> image(pixels,pixels+size_t(spec.width)*spec.height);
         for(auto&p:image)if(p&0xffffff)p=0xfefefefe; // LGEngine's even-alpha ink convention.
         SelectObject(dc,previous);DeleteObject(font);SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);client->setContents(std::move(image));
@@ -119,11 +116,11 @@ struct App {
         if(!client)return;
         HIGHCONTRASTW high{};high.cbSize=sizeof(high);SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(high),&high,0);
         bool ownerHidden=owner&&GetParent(owner)!=HWND_MESSAGE&&(!IsWindowVisible(owner)||IsIconic(owner));
-        bool now=!ownerHidden&&!IsIconic(window)&&!(high.dwFlags&HCF_HIGHCONTRASTON);
-        if(now!=visible){visible=now;client->show(now);if(!now)osdStop();}
+        bool now=pageEnabled&&!ownerHidden&&!IsIconic(window)&&!(high.dwFlags&HCF_HIGHCONTRASTON);
+        if(now!=visible){visible=now;client->show(now);}place();if(!osdOk())osdStop();
     }
     // OSD lens
-    bool osdOk()const{return osdClient&&client&&visible&&indicatorOn()&&client->hostMinor()>=1;}
+    bool osdOk()const{HIGHCONTRASTW high{};high.cbSize=sizeof(high);SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(high),&high,0);return osdClient&&client&&indicatorOn()&&client->hostMinor()>=1&&!(high.dwFlags&HCF_HIGHCONTRASTON);}
     void osdRender(bool full){
         if(!osdClient)return;auto L=osd::layout(lens.width,lens.height,lens.scale);size_t count=size_t(L.W)*size_t(L.H);int number=state.percent();wchar_t glyph=state.glyph();
         if(osdBase.size()!=count||osdFrame.size()!=count||number!=drawnNumber||glyph!=drawnGlyph){osdBase=osd::inkBase(L,glyph,number);osdFrame=osdBase;drawnNumber=number;drawnGlyph=glyph;full=true;}
@@ -142,10 +139,10 @@ struct App {
     }
     void osdShowChange(int way){
         if(!osdOk()){state.knob.jump(state.current());return;} // not shown: snap, so the next show does not glide from an old level
-        osdRender(true);osdClient->kick(way);osdClient->show(true);osdShown=true;osdWake();SetTimer(window,TimerHide,1800,nullptr);
+        place();osdRender(true);osdClient->kick(way);osdClient->show(true);osdShown=true;osdWake();SetTimer(window,TimerHide,1800,nullptr);
     }
     void sample(){ // a sweep on the lens only: nothing here reads or writes the system volume or brightness
-        if(!osdOk())return;KillTimer(window,TimerHide);state.startSample();osdRender(true);osdClient->show(true);osdShown=true;osdWake();
+        if(!osdOk())return;place();KillTimer(window,TimerHide);state.startSample();osdRender(true);osdClient->show(true);osdShown=true;osdWake();
     }
     void replay(){if(!client||!visible)return;client->hide(true);SetTimer(window,TimerReplay,UINT(spec.outMs+150),nullptr);}
     bool valid(lgpreview::Settings s){return s.version==2&&s.opacity>=5&&s.opacity<=90&&s.blur<=40&&s.radius<=28&&s.tint<=2&&s.savePower<=1&&s.reducedMotion<=1&&s.language<=4;}
@@ -172,7 +169,7 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
                 if(quiet)app->state.resetBrightness(level);else{int way=app->state.onBrightness(level);if(way)app->osdShowChange(way);}}
             else if(s->PowerSetting==osd::ConsoleDisplayGuid&&s->DataLength==sizeof(DWORD)){memcpy(&app->displayState,s->Data,sizeof(DWORD));app->quietUntil=GetTickCount64()+3000;}}
         return TRUE;
-    case WM_COPYDATA:{auto p=reinterpret_cast<COPYDATASTRUCT*>(l);if(reinterpret_cast<HWND>(w)!=app->owner||!p||p->dwData!=lgpreview::WireTag||p->cbData!=sizeof(lgpreview::Settings)||!p->lpData)return 0;
+    case WM_COPYDATA:{auto p=reinterpret_cast<COPYDATASTRUCT*>(l);if(reinterpret_cast<HWND>(w)==app->owner&&p&&p->dwData==lgpreview::StatusTag&&p->cbData==0){return (app->client&&app->client->hostMinor()>=1?1:0)|(app->visible?2:0)|(app->osdShown?4:0)|(IsWindowVisible(hwnd)?8:0)|(app->osdOk()?16:0);}if(reinterpret_cast<HWND>(w)==app->owner&&p&&p->dwData==lgpreview::ControlsTag&&p->cbData==sizeof(lgpreview::Controls)&&p->lpData){lgpreview::Controls c;memcpy(&c,p->lpData,sizeof(c));if(c.arrival<0||c.arrival>8||c.indicator<0||c.indicator>9||c.slosh<0||c.slosh>3||c.knob<0||c.knob>2||c.action<0||c.action>2)return 0;int ids[]={IdArrival,IdIndicator,IdSlosh,IdKnob};int values[]={c.arrival,c.indicator,c.slosh,c.knob};for(int i=0;i<4;++i)SendDlgItemMessageW(hwnd,ids[i],CB_SETCURSEL,values[i],0);CheckDlgButton(hwnd,IdOn,c.osd?BST_CHECKED:BST_UNCHECKED);app->pageEnabled=c.enabled!=0;app->refresh();app->apply();if(!c.osd)app->osdStop();if(c.action==1)app->replay();if(c.action==2)app->sample();return 1;}if(reinterpret_cast<HWND>(w)!=app->owner||!p||p->dwData!=lgpreview::WireTag||p->cbData!=sizeof(lgpreview::Settings)||!p->lpData)return 0;
         lgpreview::Settings next;memcpy(&next,p->lpData,sizeof(next));if(!app->valid(next))return 0;app->settings=next;app->apply();return lgpreview::digest(next);}
     case WM_COMMAND:{int id=LOWORD(w),code=HIWORD(w);
         if(code==CBN_SELCHANGE&&id>=IdArrival&&id<=IdKnob){app->apply();return 0;}
@@ -187,7 +184,7 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
     case WM_MOVE:app->place();return 0;
     case WM_DPICHANGED:{auto r=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,r->left,r->top,r->right-r->left,r->bottom-r->top,SWP_NOZORDER|SWP_NOACTIVATE);
         app->spec.scale=GetDpiForWindow(hwnd)/96.f;app->spec.width=MulDiv(420,GetDpiForWindow(hwnd),96);app->spec.height=MulDiv(200,GetDpiForWindow(hwnd),96);app->layoutUi(false);app->place();app->apply();return 0;}
-    case WM_APP+17:ShowWindow(hwnd,SW_RESTORE);SetForegroundWindow(hwnd);return 0;
+    case WM_APP+17:if(!app->owner){ShowWindow(hwnd,SW_RESTORE);SetForegroundWindow(hwnd);}return 0;
     case WM_CLOSE:DestroyWindow(hwnd);return 0;
     case WM_DESTROY:
         for(UINT_PTR timer:{TimerAnim,TimerHide,TimerReplay,TimerRecheck})KillTimer(hwnd,timer);
@@ -242,9 +239,9 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);WNDCLASSW cls{};cls.lpfnWndProc=proc;cls.hInstance=instance;cls.lpszClassName=L"LiquidGlass.LGHost.Client";cls.hCursor=LoadCursorW(nullptr,IDC_ARROW);cls.hbrBackground=reinterpret_cast<HBRUSH>(UINT_PTR(COLOR_WINDOW+1));
     if(!RegisterClassW(&cls))return 1;auto hwnd=CreateWindowExW(WS_EX_TOOLWINDOW,cls.lpszClassName,L"Connecting to LGEngineHost",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,100,100,600,150,nullptr,nullptr,instance,&app);if(!hwnd)return 1;
     gWindow=hwnd;gOwner=app.owner;
-    try{wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,32768);std::wstring path=executable;path.resize(path.find_last_of(L"\\")+1);lghost::Options options;options.hostPath=lghost::bundledHostPath(path);options.notify=hwnd;options.message=HostEvent;
+    try{wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,32768);std::wstring path=executable;path.resize(path.find_last_of(L"\\")+1);lghost::Options options;options.hostPath=lghost::bundledHostPath(path);options.suffix=L"lgcontrol11";options.notify=hwnd;options.message=HostEvent;
         app.buildUi(instance);
-        app.spec.scale=GetDpiForWindow(hwnd)/96.f;app.spec.width=MulDiv(420,GetDpiForWindow(hwnd),96);app.spec.height=MulDiv(200,GetDpiForWindow(hwnd),96);app.place();
+        app.spec.scale=GetDpiForWindow(hwnd)/96.f;app.spec.width=MulDiv(420,GetDpiForWindow(hwnd),96);app.spec.height=MulDiv(app.owner?64:200,GetDpiForWindow(hwnd),96);app.place();
         app.client=std::make_unique<lghost::Client>(options,app.spec);
         app.lens=osd::lensSpec(app.spec,app.spec.scale);app.lens.hover=false;lghost::Options lensOptions=options;lensOptions.message=OsdEvent;app.osdClient=std::make_unique<lghost::Client>(lensOptions,app.lens);
         app.apply();
@@ -253,7 +250,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
     }catch(...){DestroyWindow(hwnd);return 1;}
     if(app.parent.value)RegisterWaitForSingleObject(&app.wait,app.parent.value,parentGone,hwnd,INFINITE,WT_EXECUTEONLYONCE); // parent exit -> WM_CLOSE
     if(app.owner&&app.ownerPid){app.hooks[0]=SetWinEventHook(EVENT_OBJECT_SHOW,EVENT_OBJECT_HIDE,nullptr,ownerEvent,app.ownerPid,0,WINEVENT_OUTOFCONTEXT);
-        app.hooks[1]=SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART,EVENT_SYSTEM_MINIMIZEEND,nullptr,ownerEvent,app.ownerPid,0,WINEVENT_OUTOFCONTEXT);}
-    ShowWindow(hwnd,SW_SHOWNORMAL);app.refresh();if(app.owner)PostMessageW(app.owner,lgpreview::Event,1,reinterpret_cast<LPARAM>(hwnd));
+        app.hooks[2]=SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE,EVENT_OBJECT_LOCATIONCHANGE,nullptr,ownerEvent,app.ownerPid,0,WINEVENT_OUTOFCONTEXT);app.hooks[1]=SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART,EVENT_SYSTEM_MINIMIZEEND,nullptr,ownerEvent,app.ownerPid,0,WINEVENT_OUTOFCONTEXT);}
+    ShowWindow(hwnd,app.owner?SW_HIDE:SW_SHOWNORMAL);app.refresh();if(app.owner)PostMessageW(app.owner,lgpreview::Event,1,reinterpret_cast<LPARAM>(hwnd));
     MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}return app.failed?1:0;
 }
