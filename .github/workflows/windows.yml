@@ -22,6 +22,11 @@ jobs:
         run: cmake -S . -B build/cmake -A x64 -DLGENGINE_BUILD_EXAMPLE=ON -DLGENGINE_BUILD_TESTS=ON
       - name: Build
         run: cmake --build build/cmake --config Release
+      - name: Wire test and adapter self-test
+        shell: pwsh
+        run: |
+          & (Get-ChildItem build/cmake -Recurse -Filter LGEngineWireTest.exe | Select-Object -First 1).FullName; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $p = Start-Process build/cmake/Release/lgengine/LiquidGlass.LGPreview.exe -ArgumentList '--self-test' -Wait -PassThru; exit $p.ExitCode
       - name: Build and stage pinned LGEngine host
         shell: pwsh
         run: ./integrations/LGEngine/stage-host.ps1 -OutputDirectory build/cmake/Release/lgengine

@@ -4,7 +4,10 @@ The C++17 client and adapter use the official LGEngine 2.7.12.0 host at
 `dabe4cb3241a0cd079b254c83c9a06ff95885745` (protocol 1.1).
 `prepare-upstream.ps1` downloads/verifies the pinned checkout in
 `build/LGEngine-2.7.12`; `build-native.ps1` compiles it and the adapter.
-The historical `enable-host-v11.ps1` patch is not applied by release builds.
+Release route: `stage-host.ps1`, `build-native.ps1` and CI build that pinned host
+unpatched. Developer route: `build-candidate.ps1` applies `fixes.patch` (explicit
+appearance mode) to `build/LGEngine-upstream` for local candidates only; none of
+it ships in a release.
 
 ## User interface
 
@@ -28,13 +31,16 @@ one-shot owner visibility rechecks; idle clients wait on events.
 
 The host owns capture, rendering, glass windows, hover and animation. This is not
 a C++ engine port: the host uses Windows .NET Framework 4.x. Clients share a host
-in the dedicated `lgcontrol11` namespace and never terminate a shared host.
+in the dedicated `lgcontrol11` namespace and never terminate a shared host. This
+private host runs next to the default LGEngine host of the owner's Liquid Glass
+app (separate pipe names), not instead of it, so both can run at the same time.
 Hashed host names and `host-current.ini` allow safe desktop upgrades.
 
 The full portable ZIP includes controller, adapter, host, example and source.
-The separate controller EXE does not include the companion runtime. The owner
-confirmed DK's source/EXE distribution authorization; see `docs/LICENSING.md`
-and `release/LGEngine Distribution.txt`. Upstream notices remain intact.
+The separate controller EXE does not include the companion runtime. LGEngine
+(source and host EXE) is MIT-licensed by DK, who confirmed redistribution; see
+`docs/LICENSING.md` and `release/LGEngine Distribution.txt`. The MIT notice
+ships next to the host, and upstream notices remain intact.
 
 Windows toasts and the native volume flyout are not intercepted or suppressed.
 This does not migrate taskbar, Start, Explorer or settings UI into the optical

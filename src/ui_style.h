@@ -167,7 +167,7 @@ void paintCompactSwitch(HWND h,HDC dc){RECT r{};GetClientRect(h,&r);FillRect(dc,
         int w=std::min(px(58),int(r.right)),hgt=std::min(px(36),int(r.bottom));if(w<1||hgt<1)return;BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=w;info.bmiHeader.biHeight=-hgt;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
         std::vector<unsigned long> pixels(size_t(w)*hgt);
         float unit=dpi/96.f,scale=1.f+.06f*hover-.035f*press,cx=28*unit,cy=hgt/2.f;
-        COLORREF rest=active?RGB(155,165,181):RGB(200,206,215),fill=mix(rest,palette().accent,active?check:0.f);
+        COLORREF rest=highContrast()?GetSysColor(active?COLOR_WINDOWTEXT:COLOR_GRAYTEXT):active?RGB(155,165,181):RGB(200,206,215),fill=mix(rest,highContrast()?GetSysColor(COLOR_HIGHLIGHT):palette().accent,active?check:0.f);
         float thumbWidth=(22-3*press)*unit,thumbX=(5+24*check)*unit+(22*unit-thumbWidth)/2;
         auto coverage=[](float distance){return std::max(0.f,std::min(1.f,.5f-distance));};
         auto rgb=[](COLORREF c){return (unsigned long)((GetRValue(c)<<16)|(GetGValue(c)<<8)|GetBValue(c));};
@@ -180,7 +180,7 @@ void paintCompactSwitch(HWND h,HDC dc){RECT r{};GetClientRect(h,&r);FillRect(dc,
             if(focused)color=mix(color,highContrast()?GetSysColor(COLOR_HIGHLIGHT):palette().accent,coverage(track)-coverage(track+2*unit));
             float tx=(xx-(thumbX+thumbWidth/2))/(thumbWidth/2),ty=(yy-cy)/(11*unit);
             float thumb=(std::sqrt(tx*tx+ty*ty)-1)*std::min(thumbWidth/2,11*unit)*scale;
-            color=mix(color,RGB(255,255,255),coverage(thumb));pixels[size_t(y)*w+x]=rgb(color);
+            color=mix(color,highContrast()?GetSysColor(COLOR_WINDOW):RGB(255,255,255),coverage(thumb));pixels[size_t(y)*w+x]=rgb(color);
         }
         SetDIBitsToDevice(dc,0,0,w,hgt,0,0,0,hgt,pixels.data(),&info,DIB_RGB_COLORS);
         RECT caption=r;caption.left=px(62);wchar_t label[512]{};if(r.right>px(150))GetWindowTextW(h,label,512);SelectObject(dc,font);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,active?textColor():GetSysColor(COLOR_GRAYTEXT));DrawTextW(dc,*label?label:on?tr(L"开",L"On"):tr(L"关",L"Off"),-1,&caption,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS|DT_NOPREFIX);

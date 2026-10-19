@@ -2,12 +2,11 @@ LGEngine 2.7.12.0 by DK (@domk6966)
 Upstream: https://github.com/domk6966/LGEngine
 Source revision: dabe4cb3241a0cd079b254c83c9a06ff95885745
 
-The repository owner confirmed on 2026-10-18 that DK has authorized distribution
-of LGEngine source and the host EXE with this project. This records the owner's
-confirmation; it is not an independently collected upstream license statement.
-The upstream README says that a general license has not yet been chosen. This
-package does not relicense LGEngine or grant rights beyond that authorization.
-The original upstream source archive is included, with its notices preserved.
+LGEngine (source and host EXE) is licensed under the MIT License by its author,
+DK, who confirmed on 2026-10-19 that it may be redistributed with this project.
+The license text is in lgengine\LICENSE-LGEngine.txt, next to the host. LGEngine
+is not relicensed under this project's GPL-3.0-only. The original upstream
+source archive is included, with its notices preserved.
 
 The full portable ZIP includes the controller, preview adapter, host, C++ SDK
 example, controller source and upstream host source. Extract the entire folder.
