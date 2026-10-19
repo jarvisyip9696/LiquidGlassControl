@@ -27,8 +27,10 @@ Copy-Item -LiteralPath $testSource -Destination $testExe
 $test = Start-Process -FilePath $testExe -ArgumentList '--self-test' -WindowStyle Hidden -PassThru
 if (-not $test.WaitForExit(20000)) { throw 'Release self-test timed out.' }
 $test.Refresh()
+# Print the report before judging it, so a failing check is named in the log (and as an annotation on GitHub Actions).
+$report = Join-Path $stage 'self-test.txt'
+if (Test-Path -LiteralPath $report) { foreach ($line in Get-Content -LiteralPath $report) { if ($env:GITHUB_ACTIONS -and $line.StartsWith('FAIL')) { "::error title=Release self-test::$line" } else { $line } } }
 if ($test.ExitCode -ne 0) { throw "Release self-test failed: $($test.ExitCode)" }
-Get-Content -LiteralPath (Join-Path $stage 'self-test.txt')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release\Quick Start.txt') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release\Create Desktop Shortcut.cmd') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release\Third Party Notices.txt') -Destination $stage
@@ -62,9 +64,18 @@ if ($IncludeLGEngine) {
     $files += Join-Path $PSScriptRoot 'release/LGEngine Distribution.txt'
     $upstream = Join-Path $PSScriptRoot 'build/LGEngine-2.7.12'
     & (Join-Path $PSScriptRoot 'integrations/LGEngine/prepare-upstream.ps1') -SourceDirectory $upstream
+    # LGEngine is MIT. The pinned revision predates its LICENSE file, so the same text ships from release\ until the pin has one.
+    $pinnedLicense = [bool](& git -C $upstream ls-tree --name-only HEAD LICENSE)
+    $engineLicense = if ($pinnedLicense) { Join-Path $upstream 'LICENSE' } else { Join-Path $PSScriptRoot 'release/LGEngine LICENSE.txt' }
+    Copy-Item -LiteralPath $engineLicense -Destination (Join-Path $runtimeStage 'LICENSE-LGEngine.txt')
     $engineSourceZip = Join-Path $dist 'LGEngine-2.7.12.0-source.zip'
     & git -C $upstream archive --format=zip --output=$engineSourceZip HEAD
     if ($LASTEXITCODE -ne 0) { throw 'LGEngine source archive failed.' }
+    if (-not $pinnedLicense) {
+        Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+        $archive = [IO.Compression.ZipFile]::Open($engineSourceZip, [IO.Compression.ZipArchiveMode]::Update)
+        try { [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $engineLicense, 'LICENSE') } finally { $archive.Dispose() }
+    }
     $files += $engineSourceZip
     $extraAssets += $engineSourceZip
 }

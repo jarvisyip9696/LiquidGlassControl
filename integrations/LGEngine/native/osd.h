@@ -1,6 +1,7 @@
 #pragma once
 // OSD lens for the LGEngine preview: knob springs, slider drawing, chip buttons, and the volume/brightness sources.
-// Slider drawing follows the user's Glass.cs DrawSlider/StepSlider. Alpha convention (LGEngine): even alpha = grey ink that
+// The indicator sample, bar finding, slider drawing and ink marking are a line-for-line port of the owner's Glass.cs (DrawIndicatorSample, MarkInk,
+// FindBar, AdoptBar, DrawSlider, StepSlider; the Knob springs below). Alpha convention (LGEngine): even alpha = grey ink that
 // light glass may turn dark; odd alpha = final colour the engine leaves alone. The slider is drawn for the glass it is on
 // (light 0..1) and marked odd; glyph, number and chip labels are ink (even).
 #include <objbase.h>
@@ -10,8 +11,18 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
 #include <vector>
+#include <string>
 #include "../client/lg_client.h"
+#include <objidl.h>
+namespace Gdiplus {using std::min;using std::max;} // gdiplus.h wants min/max, which NOMINMAX removes
+#include <gdiplus.h>
+#ifdef _MSC_VER
+#pragma comment(lib,"gdiplus")
+#endif
 
 namespace osd {
 constexpr float SliderSpring=52.f,SliderDamping=1.f,LiftSpring=26.f,LiftDamping=.9f,LiftHold=.5f;
@@ -29,7 +40,7 @@ struct Knob {
     bool active()const{return moving()||hold>0||lift!=0||liftSpeed!=0;}
     bool step(float dt){ // true if the knob's place or lift changed (a redraw is due)
         if(at<0)return false;dt=std::min(.034f,std::max(0.f,dt));float wasAt=at,wasLift=lift;
-        bool going=moving();float liftGoal=going||hold>0?1.f:0.f;hold=std::max(0.f,hold-dt);
+        hold=std::max(0.f,hold-dt);bool going=moving();float liftGoal=going||hold>0?1.f:0.f; // (the owner's hold counts this step's time too)
         for(float left=dt;left>0;left-=.005f){float s=std::min(.005f,left),before=goal-at;
             speed+=(SliderSpring*SliderSpring*(goal-at)-2*SliderDamping*SliderSpring*speed)*s;at+=speed*s;
             if(before!=0&&(goal-at)*before<=0){at=goal;speed=0;}
@@ -63,30 +74,33 @@ struct State {
     int percent()const{return knob.at<0?0:int(std::lround(clamp01(knob.goal)*100.f));} // the real level (the target), not the gliding knob
     wchar_t glyph()const{return sampling?wchar_t(0xE767):(source==1?wchar_t(0xE706):(muted?wchar_t(0xE74F):wchar_t(0xE767)));}
 };
-struct Layout {int W=0,H=0;float k=1,cy=0,barL=0,barR=0,barH=0;RECT strip{},glyph{},num{};};
-inline Layout layout(int W,int H,float k){Layout L;L.W=W;L.H=H;L.k=k;L.cy=float(H)/2.f;L.barH=6*k;L.barL=66*k;L.barR=float(W)-66*k;
-    L.strip=RECT{std::max(0,int(std::lround(L.barL-14*k))),0,std::min(W,int(std::lround(L.barR+14*k))),H};
-    L.glyph=RECT{int(std::lround(14*k)),0,int(std::lround(46*k)),H};L.num=RECT{W-int(std::lround(52*k)),0,W-int(std::lround(10*k)),H};return L;}
+// The owner's indicator card is 192x47 DIP; its lens has its own look and motion (Glass.cs EnsureSurface / SurfaceSettings), set here to the owner's defaults.
 inline lghost::Spec lensSpec(const lghost::Spec&card,float scale){lghost::Spec s=card;s.kind=1;s.scale=scale;
-    s.width=int(std::lround(300*scale));s.height=int(std::lround(64*scale));s.label="LiquidGlassControl.Host.OSD";
+    s.width=int(std::lround(192*scale));s.height=int(std::lround(47*scale));s.label="LiquidGlassControl.Host.OSD";s.profile.clear();
+    s.look=lghost::Look{5,32,90,68,30,24,100,50};s.inMs=288;s.outMs=230;s.zoom=10;s.liquid=60;s.bounce=50;s.travel=96;s.fps=60;s.adapt=true;s.hover=false;
     s.x=card.x+(card.width-s.width)/2;s.y=card.y+card.height+int(std::lround(8*scale));return s;}
+// Windows' level bar found in the contents (Glass.cs `bar`), and the strip round it that is drawn over (`barStrip`, `barBase`).
+struct Bar {RECT r{};float level=0;bool empty()const{return r.right<=r.left;}};
+struct Slider {Bar bar;RECT strip{};std::vector<uint32_t> base;};
 inline void lay(float&a,float&c,float la,float lc){a=la+a*(1-la);c=lc+c*(1-la);}
 inline float capsule(float px,float py,float x0,float x1,float y,float r){float dy=py-y;if(px>=x0&&px<=x1)return std::fabs(dy)-r;float dx=px<x0?x0-px:px-x1;return std::sqrt(dx*dx+dy*dy)-r;}
 inline float pill(float px,float py,float cx,float cy,float hx,float hy){float r=std::min(hx,hy),qx=std::fabs(px-cx)-(hx-r),qy=std::fabs(py-cy)-(hy-r),ox=std::max(qx,0.f),oy=std::max(qy,0.f);return std::sqrt(ox*ox+oy*oy)+std::min(std::max(qx,qy),0.f)-r;}
 inline float cover(float d){return d<=-.5f?1.f:(d>=.5f?0.f:.5f-d);}
 inline float smooth(float t){t=clamp01(t);return t*t*(3-2*t);}
-// Draws the track, fill and knob over the strip of `px` (premultiplied ARGB, W wide). style: 0 lens, 1 pill, 2 round; t: glass light 0..1.
-inline void drawSlider(uint32_t*px,const Layout&L,const Knob&kn,int style,float t){
-    float k=L.k,cy=L.cy,trackR=std::max(L.barH,4*k)/2;bool lens=style==0;float knobHy,knobHx,popUp,drawMost;
+// Glass.cs DrawSlider: puts the base strip back, then draws the track, fill and knob over it in `px` (premultiplied ARGB, W wide). style: 0 lens, 1 pill, 2 round; t: glass light 0..1.
+inline void drawSlider(uint32_t*px,int W,const Slider&sl,const Knob&kn,int style,float k,float t){
+    const RECT&S=sl.strip;const Bar&bar=sl.bar;int sw=S.right-S.left;if(bar.empty()||sw<=0||S.bottom<=S.top||sl.base.size()<size_t(sw)*size_t(S.bottom-S.top))return;
+    for(int y=0;y<S.bottom-S.top;++y)memcpy(&px[size_t(S.top+y)*size_t(W)+size_t(S.left)],&sl.base[size_t(y)*size_t(sw)],size_t(sw)*4);
+    float barL=float(bar.r.left),barR=float(bar.r.right),cy=float(bar.r.top)+float(bar.r.bottom-bar.r.top)/2.f,trackR=std::max(float(bar.r.bottom-bar.r.top),4*k)/2;bool lens=style==0;float knobHy,knobHx,popUp,drawMost;
     if(lens){knobHy=trackR*2.6f;knobHx=knobHy*1.6f;popUp=.24f;drawMost=.2f;}else if(style==1){knobHy=trackR*2.3f;knobHx=knobHy*1.5f;popUp=.14f;drawMost=.1f;}else{knobHy=knobHx=trackR*2.1f;popUp=.3f;drawMost=0;}
-    float x0=L.barL+trackR,x1=L.barR-trackR,travel0=L.barL+knobHx,travel1=std::max(travel0,L.barR-knobHx);
+    float x0=barL+trackR,x1=barR-trackR,travel0=barL+knobHx,travel1=std::max(travel0,barR-knobHx);
     float kx=travel0+(travel1-travel0)*std::max(-.05f,std::min(1.05f,kn.at));
     float lift=clamp01(kn.lift),clear=lift,grow=1+popUp*lift,drawOut=1+std::min(drawMost,std::fabs(kn.flow)*.3f);
     float rest=knobHx*grow,extra=rest*(drawOut-1),hx=rest+extra,hy=knobHy*grow/std::sqrt(drawOut),kc=kx-(kn.flow>=0?extra:-extra);
     float magnify=1.25f+.45f*clear,shadowMost=(.24f-.06f*clear)*(1+.55f*t),shadowDrop=(1.5f+clear)*k,shadowWide=(3+1.5f*clear)*k;
     float reachX=hx+4.5f*k+1,reachUp=hy+3*k+1,reachDown=hy+7*k+1,outlineA=.14f+.26f*t,rimBoost=1+2*t,shadeBelow=.09f*t;
-    for(int y=L.strip.top;y<L.strip.bottom;++y){float py=float(y)+.5f;
-        for(int x=L.strip.left;x<L.strip.right;++x){float pxf=float(x)+.5f,a=0,c=0;
+    for(int y=S.top;y<S.bottom;++y){float py=float(y)+.5f;
+        for(int x=S.left;x<S.right;++x){float pxf=float(x)+.5f,a=0,c=0;
             if(py>cy-trackR-1&&py<cy+trackR+1){float track=cover(capsule(pxf,py,x0,x1,cy,trackR)),fill=cover(capsule(pxf,py,x0,std::min(x1,std::max(x0,kx)),cy,trackR));
                 if(track>0)lay(a,c,.3f*track,.3f*track*(1-t));if(fill>0)lay(a,c,fill,fill*(1-t));}
             if(std::fabs(pxf-kc)<reachX&&py>cy-reachUp&&py<cy+reachDown){
@@ -99,7 +113,7 @@ inline void drawSlider(uint32_t*px,const Layout&L,const Knob&kn,int style,float 
                     if(lens){float rim=cover(std::fabs(knob+.8f*k)-.6f*k)*body,upper=std::max(0.f,(cy-py)/hy);c=std::min(a,c+rim*.15f*(.4f+.6f*upper)*(1-milk+.3f)*rimBoost);}}
                 float line=outlineA*cover(std::fabs(knob)-.5f*k);if(line>0)lay(a,c,line,0);}
             if(a<.002f)continue;
-            size_t at=size_t(y)*size_t(L.W)+size_t(x);uint32_t under=px[at];int ua=int(under>>24)&255;float keep=1-a;int A=int(a*255+float(ua)*keep+.5f);
+            size_t at=size_t(y)*size_t(W)+size_t(x);uint32_t under=px[at];int ua=int(under>>24)&255;float keep=1-a;int A=int(a*255+float(ua)*keep+.5f);
             if(A<=0){px[at]=0;continue;}if(A>255)A=255;A|=1; // odd: final, left alone by the light-glass flip
             int v=int(c*255+.5f),R=std::min(A,v+int(float((under>>16)&255)*keep)),G=std::min(A,v+int(float((under>>8)&255)*keep)),B=std::min(A,v+int(float(under&255)*keep));
             px[at]=(uint32_t(A)<<24)|(uint32_t(R)<<16)|(uint32_t(G)<<8)|uint32_t(B);}}
@@ -108,26 +122,101 @@ inline void drawSlider(uint32_t*px,const Layout&L,const Knob&kn,int style,float 
 inline bool premultiplied(uint32_t p){uint32_t a=p>>24;return ((p>>16)&255)<=a&&((p>>8)&255)<=a&&(p&255)<=a;}
 inline bool isInk(uint32_t p){return p==0||((p>>24)%2==0&&premultiplied(p));}
 inline bool isFinal(uint32_t p){return p==0||((p>>24)%2==1&&premultiplied(p));}
-inline BOOL CALLBACK faceFound(const LOGFONTW*,const TEXTMETRICW*,DWORD,LPARAM found){*reinterpret_cast<bool*>(found)=true;return FALSE;}
-inline const wchar_t* iconFace(){static const wchar_t* face=nullptr;if(face)return face;
-    HDC dc=GetDC(nullptr);LOGFONTW f{};f.lfCharSet=DEFAULT_CHARSET;wcscpy_s(f.lfFaceName,L"Segoe Fluent Icons");bool found=false;
-    EnumFontFamiliesExW(dc,&f,reinterpret_cast<FONTENUMPROCW>(faceFound),reinterpret_cast<LPARAM>(&found),0);ReleaseDC(nullptr,dc);
-    face=found?L"Segoe Fluent Icons":L"Segoe MDL2 Assets";return face;}
-// The glyph and the number as ink (even alpha), the rest of the card clear.
-inline std::vector<uint32_t> inkBase(const Layout&L,wchar_t glyph,int number){
-    std::vector<uint32_t> image(size_t(L.W)*size_t(L.H),0);HDC dc=CreateCompatibleDC(nullptr);BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
-    info.bmiHeader.biWidth=L.W;info.bmiHeader.biHeight=-L.H;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;uint32_t*pixels{};
-    HBITMAP bitmap=CreateDIBSection(dc,&info,DIB_RGB_COLORS,reinterpret_cast<void**>(&pixels),nullptr,0);
-    if(!dc||!bitmap||!pixels){if(bitmap)DeleteObject(bitmap);if(dc)DeleteDC(dc);return image;}
-    auto old=SelectObject(dc,bitmap);memset(pixels,0,image.size()*4);SetTextColor(dc,RGB(254,254,254));SetBkMode(dc,TRANSPARENT);
-    HFONT icons=CreateFontW(-int(std::lround(20*L.k)),0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,0,0,NONANTIALIASED_QUALITY,0,iconFace());
-    HFONT digits=CreateFontW(-int(std::lround(18*L.k)),0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,0,0,NONANTIALIASED_QUALITY,0,L"Segoe UI");
-    RECT g=L.glyph,n=L.num;wchar_t text[16]{};swprintf(text,16,L"%d",number);
-    auto previous=SelectObject(dc,icons);DrawTextW(dc,&glyph,1,&g,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
-    SelectObject(dc,digits);DrawTextW(dc,text,-1,&n,DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);GdiFlush();
-    for(size_t i=0;i<image.size();++i)if(pixels[i]&0xffffff)image[i]=0xfefefefeu; // LGEngine's even-alpha ink convention.
-    SelectObject(dc,previous);DeleteObject(icons);DeleteObject(digits);SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);return image;
-}
+// Greyscale-antialiased white text drawn on black: its coverage, and that coverage as ink (premultiplied white, even alpha).
+inline uint8_t coverage(uint32_t p){return uint8_t(std::max((p>>16)&255,std::max((p>>8)&255,p&255)));}
+inline uint32_t inkOf(uint32_t p){return (uint32_t(coverage(p))&~1u)*0x01010101u;}
+// GDI+ for the process: start once before any drawing, shut down after the last bitmap and font are gone.
+struct GdiSession {ULONG_PTR token=0;bool ok=false;GdiSession(){Gdiplus::GdiplusStartupInput in;ok=Gdiplus::GdiplusStartup(&token,&in,nullptr)==Gdiplus::Ok;}~GdiSession(){if(ok)Gdiplus::GdiplusShutdown(token);}
+    GdiSession(const GdiSession&)=delete;GdiSession&operator=(const GdiSession&)=delete;};
+// Glass.cs InkSeen/MarkPatches: the patches of colour in `seen` (aw x ah, 1 where a pixel is colourful): each pixel of a patch marked 2; of a patch big enough to be an icon or a picture, and anything else within its bounds (padded by `pad`), 4 (colour) or 3 (not).
+inline void markPatches(std::vector<uint8_t>&seen,int aw,int ah,int pad){
+    std::vector<int> stack;std::vector<RECT> boxes;
+    for(int i=0;i<aw*ah;i++){if(seen[size_t(i)]!=1)continue;int x0=i%aw,x1=x0,y0=i/aw,y1=y0,n=0;seen[size_t(i)]=2;stack.push_back(i);
+        while(!stack.empty()){int at=stack.back(),ax=at%aw,ay=at/aw;stack.pop_back();n++;
+            if(ax<x0)x0=ax;else if(ax>x1)x1=ax;if(ay<y0)y0=ay;else if(ay>y1)y1=ay;
+            for(int dy=-1;dy<=1;dy++){int ny=ay+dy;if(ny<0||ny>=ah)continue;
+                for(int dx=-1;dx<=1;dx++){int nx=ax+dx,ni=ny*aw+nx;if(nx<0||nx>=aw||seen[size_t(ni)]!=1)continue;seen[size_t(ni)]=2;stack.push_back(ni);}}}
+        if(n<24)continue; // (a fleck: a coloured fringe of text, say)
+        boxes.push_back(RECT{std::max(0,x0-pad),std::max(0,y0-pad),std::min(aw-1,x1+pad)+1,std::min(ah-1,y1+pad)+1});}
+    for(const RECT&box:boxes)for(int yy=box.top;yy<box.bottom;yy++)for(int xx=box.left,o=yy*aw;xx<box.right;xx++){uint8_t s=seen[size_t(o+xx)];if(s==0)seen[size_t(o+xx)]=3;else if(s==2)seen[size_t(o+xx)]=4;}}
+// Glass.cs MarkInk: marks in the alpha what is to be left alone (odd: inside the bounds of a patch of colour) and what is ink that light glass may turn (even).
+inline void markInk(uint32_t*px,int w,int h,RECT area){
+    int left=std::max<int>(0,area.left),top=std::max<int>(0,area.top),right=std::min<int>(w,area.right),bottom=std::min<int>(h,area.bottom);if(right<=left||bottom<=top)return;
+    int aw=right-left,ah=bottom-top;std::vector<uint8_t> seen(size_t(aw)*size_t(ah),0);const uint8_t Kept=2;
+    for(int y=top;y<bottom;y++)for(int x=left;x<right;x++){uint32_t p=px[size_t(y)*size_t(w)+size_t(x)];int a=int(p>>24)&255;if(a<96)continue;
+        int r=int(p>>16)&255,g=int(p>>8)&255,b=int(p)&255,mx=r>g?(r>b?r:b):(g>b?g:b),mn=r<g?(r<b?r:b):(g<b?g:b);
+        if((mx-mn)*255>56*a)seen[size_t(y-top)*size_t(aw)+size_t(x-left)]=1;}
+    markPatches(seen,aw,ah,2); // each patch of colour (touching pixels), and its bounds: a big enough one is an icon
+    for(int y=top;y<bottom;y++)for(int x=left;x<right;x++){size_t at=size_t(y)*size_t(w)+size_t(x);uint32_t p=px[at];int a=int(p>>24)&255;if(a==0)continue;
+        uint8_t mark=seen[size_t(y-top)*size_t(aw)+size_t(x-left)];int want=mark>=Kept?(a|1):(a&~1);if(want!=a)px[at]=(uint32_t(want)<<24)|(p&0xFFFFFFu);}}
+inline std::unique_ptr<Gdiplus::Font> makeFont(const wchar_t*first,const wchar_t*second,float px){
+    for(const wchar_t*face:{first,second}){if(!face||!Gdiplus::FontFamily(face).IsAvailable())continue;std::unique_ptr<Gdiplus::Font> f(new Gdiplus::Font(face,px,Gdiplus::FontStyleRegular,Gdiplus::UnitPixel));if(f->IsAvailable())return f;} // (Font(name) itself falls back to sans serif silently)
+    return std::unique_ptr<Gdiplus::Font>(new Gdiplus::Font(Gdiplus::FontFamily::GenericSansSerif(),px,Gdiplus::FontStyleRegular,Gdiplus::UnitPixel));}
+// Glass.cs DrawIndicatorSample: the stand-in contents of the volume/brightness indicator, a symbol, a bar and a number (premultiplied). glyph: U+E767 volume (the owner's), U+E74F muted, U+E706 brightness.
+inline std::vector<uint32_t> drawIndicatorSample(int w,int h,float k,int percent,wchar_t glyph=wchar_t(0xE767)){
+    using namespace Gdiplus;std::vector<uint32_t> px(w>0&&h>0?size_t(w)*size_t(h):0,0);if(px.empty())return px;
+    {Bitmap bmp(w,h,PixelFormat32bppPARGB);
+     {Graphics g(&bmp);auto symbol=makeFont(L"Segoe Fluent Icons",L"Segoe MDL2 Assets",16.f);auto number=makeFont(L"Segoe UI",nullptr,14.f);
+      SolidBrush white(Color(255,255,255,255));Pen rest(Color(96,255,255,255),4.f);Pen done(Color(255,76,194,255),4.f); // (Windows' own: its accent colour)
+      g.SetSmoothingMode(SmoothingModeAntiAlias);g.SetPixelOffsetMode(PixelOffsetModeHighQuality);g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);g.ScaleTransform(k,k);
+      float cw=float(w)/k,ch=float(h)/k,mid=ch/2.f;
+      rest.SetStartCap(LineCapRound);rest.SetEndCap(LineCapRound);done.SetStartCap(LineCapRound);done.SetEndCap(LineCapRound);
+      // Laid out evenly: the speaker and the number as far in from either end, each centred on the middle line, and the bar between them. (Measured without the padding text is usually drawn with, which would push one in further than the other.)
+      const float Edge=18.f,Gap=14.f;const StringFormat*tight=StringFormat::GenericTypographic();int pc=std::max(0,std::min(100,percent));
+      std::wstring said=std::to_wstring(pc);wchar_t sym[2]={glyph,0};RectF area(0,0,100,999999);
+      auto measure=[&](const wchar_t*text,const Font*font){RectF b;g.MeasureString(text,-1,font,area,tight,&b);return SizeF(b.Width,b.Height);};
+      SizeF symbolSize=measure(sym,symbol.get()),widest=measure(L"100",number.get()),saidSize=measure(said.c_str(),number.get());
+      g.DrawString(sym,-1,symbol.get(),PointF(Edge,mid-symbolSize.Height/2.f),tight,&white); // the speaker
+      float from=Edge+symbolSize.Width+Gap,to=std::max(from+20,cw-Edge-widest.Width-Gap),level=from+(to-from)*float(pc)/100.f;
+      g.DrawLine(&rest,from,mid,to,mid);g.DrawLine(&done,from,mid,level,mid);
+      g.DrawString(said.c_str(),-1,number.get(),PointF(cw-Edge-saidSize.Width,mid-saidSize.Height/2.f),tight,&white);}
+     BitmapData data;Rect all(0,0,w,h);
+     if(bmp.LockBits(&all,ImageLockModeRead,PixelFormat32bppPARGB,&data)==Ok){for(int y=0;y<h;++y)memcpy(&px[size_t(y)*size_t(w)],static_cast<const uint8_t*>(data.Scan0)+ptrdiff_t(y)*ptrdiff_t(data.Stride),size_t(w)*4);bmp.UnlockBits(&data);}}
+    markInk(px.data(),w,h,RECT{0,0,w,h});return px;}
+// Glass.cs FindBar/Coloured/Inked: Windows' level bar in the contents (within area): the run of its accent colour (the level) and the grey track carrying on from it, across the middle. Found if it is a long, thin bar; level is how far along it the colour reaches.
+inline bool coloured(uint32_t p){int a=int(p>>24)&255;if(a<160)return false;int r=int(p>>16)&255,g=int(p>>8)&255,b=int(p)&255,mx=r>g?(r>b?r:b):(g>b?g:b),mn=r<g?(r<b?r:b):(g<b?g:b);return (mx-mn)*255>60*a;}
+inline bool inked(uint32_t p){return int((p>>24)&255)>=24;}
+inline bool findBar(const uint32_t*px,int w,int h,RECT area,float k,RECT&found,float&level){
+    found=RECT{};level=0;int aL=area.left,aT=area.top,aR=area.right,aB=area.bottom,aw=aR-aL,ah=aB-aT,left=std::max(0,aL),right=std::min(w,aR);
+    int top=std::max(0,aT+ah/4),bottom=std::min(h,aB-ah/4),bestRow=-1,bestRun=0,fillL=0,fillR=-1;
+    for(int y=top;y<bottom;y++){int row=y*w,runStart=-1;
+        for(int x=left;x<=right;x++){bool col=x<right&&coloured(px[size_t(row+x)]);
+            if(col&&runStart<0)runStart=x;else if(!col&&runStart>=0){if(x-runStart>bestRun){bestRun=x-runStart;bestRow=y;fillL=runStart;fillR=x-1;}runStart=-1;}}}
+    int barL,barR,barY;
+    if(float(bestRun)>=3*k){barY=bestRow;barL=fillL;barR=fillR;
+        for(int x=fillR+1,gap=0;x<right&&gap<=2;x++){if(inked(px[size_t(barY*w+x)])){barR=x;gap=0;}else gap++;} // the track, carrying on from it
+    }else{ // no colour (the level at 0, or a grey accent): the longest thin run of ink
+        bestRun=0;barY=-1;barL=barR=0;
+        for(int y=top;y<bottom;y++){int row=y*w,runStart=-1;
+            for(int x=left;x<=right;x++){bool ink=x<right&&inked(px[size_t(row+x)]);
+                if(ink&&runStart<0)runStart=x;else if(!ink&&runStart>=0){if(x-runStart>bestRun){bestRun=x-runStart;barY=y;barL=runStart;barR=x-1;}runStart=-1;}}}
+        if(barY<0)return false;
+        fillR=barL-1;for(int x=barL;x<=barR&&(int((px[size_t(barY*w+x)]>>24)&255)>=200);x++)fillR=x; // (a solid start: the level, in grey)
+        if(fillR-barL<2)fillR=barL-1;}
+    int width=barR-barL+1;if(width<aw/4)return false;
+    int mx=(barL+barR)/2,y0=barY,y1=barY; // how thick: up and down from the middle of it while there is ink
+    while(y0-1>=std::max(0,aT)&&inked(px[size_t((y0-1)*w+mx)]))y0--;
+    while(y1+1<std::min(h,aB)&&inked(px[size_t((y1+1)*w+mx)]))y1++;
+    if(float(y1-y0+1)>10*k)return false;
+    found=RECT{barL,y0,barL+width,y1+1};level=clamp01(float(fillR-barL+1)/float(width));return true;}
+inline RECT intersect(const RECT&a,const RECT&b){RECT r{std::max(a.left,b.left),std::max(a.top,b.top),std::min(a.right,b.right),std::min(a.bottom,b.bottom)};return r.right<=r.left||r.bottom<=r.top?RECT{}:r;}
+// Glass.cs AdoptBar: finds the bar in `content` (W x H), keeps the strip of it that the slider is drawn over (sl.base) and clears the bar out of the content. False (sl.bar empty, content left alone) if no bar was found.
+inline bool adoptBar(std::vector<uint32_t>&content,int W,int H,float k,Slider&sl){
+    RECT area{0,0,W,H},found{};float level=0;
+    if(content.size()!=size_t(W)*size_t(H)||!findBar(content.data(),W,H,area,k,found,level)){sl.bar=Bar{};sl.strip=RECT{};return false;}
+    RECT seen=found;const Bar&bar=sl.bar;int fw=found.right-found.left,fh=found.bottom-found.top;
+    if(!bar.empty()&&std::abs(int(found.left-bar.r.left))<=2&&std::abs(int(found.right-bar.r.right))<=2&&std::abs(int(found.top-bar.r.top))<=1){
+        // (the same bar as before, give or take its softened edges: kept as it was, so that the knob's travel does not change with every reading)
+        level=clamp01((float(found.left)+level*float(fw)-float(bar.r.left))/std::max(1.f,float(bar.r.right-bar.r.left)));found=bar.r;fw=found.right-found.left;fh=found.bottom-found.top;}
+    int knobH=int(std::ceil(std::max(float(fh),4.f*k)*2.6f*1.45f))+int(12*k),cy=found.top+fh/2;
+    // (room either side for the lifted knob and its shadow at either end of the bar)
+    int sx=found.left-int(10*k),sy=cy-knobH/2;RECT strip=intersect(RECT{sx,sy,sx+fw+int(20*k),sy+knobH},area);
+    // (out with the bar: a pixel or two round it too, for its softened edges)
+    RECT u{std::min(seen.left,found.left)-2,std::min(seen.top,found.top)-2,std::max(seen.right,found.right)+2,std::max(seen.bottom,found.bottom)+2},clear=intersect(u,area);
+    for(int y=clear.top;y<clear.bottom;y++)memset(&content[size_t(y)*size_t(W)+size_t(clear.left)],0,size_t(clear.right-clear.left)*4);
+    int sw=strip.right-strip.left,sh=strip.bottom-strip.top;sl.base.assign(size_t(std::max(0,sw))*size_t(std::max(0,sh)),0);
+    for(int y=0;y<sh;y++)memcpy(&sl.base[size_t(y)*size_t(sw)],&content[size_t(strip.top+y)*size_t(W)+size_t(strip.left)],size_t(sw)*4);
+    sl.bar.r=found;sl.bar.level=level;sl.strip=strip;return true;}
 // Three chips in a row near the card's bottom; textW are the label widths in pixels.
 inline std::array<RECT,3> chipBoxes(int W,int H,float k,const int textW[3]){
     int h=int(std::lround(26*k)),gap=int(std::lround(8*k)),pad=int(std::lround(20*k)),maxW=(W-2*int(std::lround(16*k))-2*gap)/3,w[3],total=2*gap;

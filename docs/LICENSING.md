@@ -12,11 +12,15 @@ New contributions must be submitted under GPL-3.0-only unless they are clearly i
 
 ## LGEngine host distribution
 
-On 2026-10-18 the repository owner explicitly confirmed that DK authorized
-distribution of LGEngine source and the host EXE. This records the owner's
-confirmation, not an independently collected upstream statement. The bundled
+LGEngine, both its source and the host EXE, is licensed under the **MIT
+License** by its author and owner, DK (@domk6966). On 2026-10-19 DK confirmed
+the MIT license and that LGEngine may be redistributed with this project. This
+supersedes the 2026-10-18 note that recorded a distribution authorization only.
+
+LGEngine is not relicensed under this project's GPL-3.0-only; it stays MIT, and
+its copyright and permission notice must accompany every copy. The bundled
 LGEngine 2.7.12.0 corresponds to upstream commit
-`dabe4cb3241a0cd079b254c83c9a06ff95885745`. Its upstream README still says a
-general license has not been chosen. The authorization recorded here does not
-relicense LGEngine under this project's GPL or assert a broader public license.
-Original source and notices accompany the host in the portable package.
+`dabe4cb3241a0cd079b254c83c9a06ff95885745`, which predates the upstream
+`LICENSE` file, so the portable package ships the MIT text from
+`release/LGEngine LICENSE.txt` as `lgengine/LICENSE-LGEngine.txt`, next to the
+host, and adds it as `LICENSE` to the original upstream source archive.

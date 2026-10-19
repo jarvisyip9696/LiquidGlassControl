@@ -18,3 +18,8 @@ The complete source archive includes tests, licenses and third-party notices.
 ZIP includes the adapter and pinned official host; a separate controller EXE does
 not include those companions. Both controller and host source archives accompany
 the prerelease, with the recorded host distribution authorization.
+
+0.13.0-beta.2 fixes the LGEngine preview: the card no longer floats over other
+windows, settings are written only when changed, and the preview recovers after a
+host failure. Its text and icons are antialiased. LGEngine (source and host) is
+MIT-licensed, and its license text ships next to the host.

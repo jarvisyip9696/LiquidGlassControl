@@ -1,4 +1,4 @@
-Liquid Glass Control 0.13.0-beta.1 — Experimental / 实验版
+Liquid Glass Control 0.13.0-beta.2 — Experimental / 实验版
 Windows 11 x64 · Portable / 免安装
 
 中文
@@ -14,7 +14,7 @@ Windows 11 x64 · Portable / 免安装
 亮度回调取决于硬件支持。无需 Windhawk；宿主使用 Windows 自带的 .NET Framework 4.x。
 不要只移动主 EXE，否则 LGEngine 功能缺少配套组件。程序未签名，系统策略可能阻止运行。
 升级前保留 settings.ini 和恢复记录，成功还原之前不要删除恢复文件。
-LGEngine 的分发授权和上游说明见 LGEngine Distribution.txt。
+LGEngine 采用 MIT 许可证；许可证和上游说明见 LGEngine Distribution.txt。
 
 English
 1. Fully extract the ZIP to a writable directory and run LiquidGlassControl.exe. Keep lgengine/ beside it.
@@ -29,4 +29,4 @@ The sample does not change system levels. Windows toasts and the native volume f
 Brightness reporting depends on hardware. No Windhawk required; the host uses Windows .NET Framework 4.x.
 The separate EXE is controller-only. This is unsigned experimental software.
 Keep personal settings and recovery files during upgrades until restoration succeeds.
-See LGEngine Distribution.txt for the recorded host distribution authorization.
+See LGEngine Distribution.txt for LGEngine's MIT license and upstream notes.

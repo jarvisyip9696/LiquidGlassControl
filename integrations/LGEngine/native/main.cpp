@@ -15,20 +15,25 @@
 #include "../../../src/optical_labels.h"
 
 namespace {
-constexpr UINT HostEvent=WM_APP+60,OsdEvent=WM_APP+61,MsgVolume=WM_APP+62,MsgDevice=WM_APP+63,MsgOwner=WM_APP+64;
+constexpr UINT HostEvent=WM_APP+60,OsdEvent=WM_APP+61,MsgVolume=WM_APP+62,MsgDevice=WM_APP+63,MsgOwner=WM_APP+64,MsgForeground=WM_APP+65;
 enum : int {IdArrival=101,IdIndicator,IdSlosh,IdKnob,IdReplay,IdSample,IdOn,IdLabel1=111,IdLabel2,IdLabel3,IdLabel4};
 enum : UINT_PTR {TimerAnim=2,TimerHide=3,TimerReplay=4,TimerRecheck=5};
 // Language order everywhere: English, Simplified Chinese, Traditional Chinese, Polish, Vietnamese.
 using namespace opticalui;
 HWND gWindow{},gOwner{};
 void CALLBACK ownerEvent(HWINEVENTHOOK,DWORD,HWND hwnd,LONG object,LONG,DWORD,DWORD){if(hwnd&&hwnd==gOwner&&object==OBJID_WINDOW&&gWindow)PostMessageW(gWindow,MsgOwner,0,0);}
+void CALLBACK foregroundEvent(HWINEVENTHOOK,DWORD,HWND,LONG,LONG,DWORD,DWORD){if(gWindow)PostMessageW(gWindow,MsgForeground,0,0);}
 VOID CALLBACK parentGone(PVOID window,BOOLEAN){PostMessageW(static_cast<HWND>(window),WM_CLOSE,0,0);}
 struct App {
     HWND window{},owner{};lghost::Handle parent;lgpreview::Settings settings;
-    std::unique_ptr<lghost::Client> client,osdClient;lghost::Spec spec,lens;bool visible=true,failed=false,pageEnabled=true;
-    HANDLE wait{};HWINEVENTHOOK hooks[3]{};HPOWERNOTIFY power{},power2{};DWORD displayState=1;ULONGLONG quietUntil=0;HFONT uiFont{};DWORD ownerPid{};unsigned labelLang=99;
-    osd::State state;osd::AudioWatch audio;std::vector<uint32_t> osdBase,osdFrame;int drawnNumber=-1;wchar_t drawnGlyph=0;
-    bool osdAnimating=false,osdShown=false;LONGLONG lastTick=0;
+    std::unique_ptr<lghost::Client> client,osdClient;lghost::Spec spec,lens;bool visible=true,failed=false,pageEnabled=true,hostSeen=false,cardPlaced=false,lensPlaced=false;UINT specDpi=0;POINT cardAt{},lensAt{};
+    UINT dpi()const{return owner?GetDpiForWindow(owner):GetDpiForWindow(window);}
+    bool rescale(){UINT d=dpi();if(!d||d==specDpi)return false;specDpi=d;spec.scale=d/96.f;spec.width=MulDiv(420,int(d),96);spec.height=MulDiv(owner?64:200,int(d),96);return true;}
+    bool osdLive()const{return osdShown||osdAnimating||state.sampling;}
+    HANDLE wait{};HWINEVENTHOOK hooks[4]{};HPOWERNOTIFY power{},power2{};DWORD displayState=1;ULONGLONG quietUntil=0;HFONT uiFont{};DWORD ownerPid{};unsigned labelLang=99;
+    osd::State state;osd::AudioWatch audio;std::vector<uint32_t> osdFrame;osd::Slider slider;int drawnNumber=-1,drawnW=0,drawnH=0;float drawnK=0;wchar_t drawnGlyph=0;
+    lghost::Look lensLook{5,32,90,68,30,24,100,50};int lensShape=0;ULONGLONG kickUntil=0; // the lens's own look and profile (Controls.shape), and when the last kick's slosh is over
+    bool osdAnimating=false,osdShown=false,osdIn=false;LONGLONG lastTick=0; // osdIn: the lens is fully in (the Shown event), which is when the owner kicks it
     const wchar_t* title(unsigned event)const{
         static const wchar_t* connected[]={L"LGEngine host connected — drag to move",L"LGEngine 宿主已连接 — 拖动移动",L"LGEngine 宿主已連線 — 拖動移動",L"Połączono z LGEngine — przeciągnij",L"Đã kết nối LGEngine — kéo để di chuyển"};
         static const wchar_t* lost[]={L"LGEngine disconnected — reconnecting",L"LGEngine 已断开 — 正在重连",L"LGEngine 已中斷 — 正在重新連線",L"LGEngine rozłączony — ponowne łączenie",L"LGEngine ngắt kết nối — đang kết nối lại"};
@@ -38,8 +43,11 @@ struct App {
     int sel(int id)const{LRESULT n=SendDlgItemMessageW(window,id,CB_GETCURSEL,0,0);return n<0?0:int(n);}
     bool reduced()const{return settings.reducedMotion!=0;}
     bool indicatorOn()const{return IsDlgButtonChecked(window,IdOn)==BST_CHECKED;}
-    void place(){RECT r{};GetWindowRect(window,&r);spec.x=r.left;spec.y=r.bottom+8;if(owner){POINT p{MulDiv(40,GetDpiForWindow(owner),96),MulDiv(365,GetDpiForWindow(owner),96)};ClientToScreen(owner,&p);spec.x=p.x;spec.y=p.y;}if(client)client->setPlace(spec.x,spec.y);
-        if(osdClient){lens.x=spec.x+(spec.width-lens.width)/2;lens.y=spec.y+spec.height+int(std::lround(8*spec.scale));if(!visible){MONITORINFO mi{};mi.cbSize=sizeof(mi);if(GetMonitorInfoW(MonitorFromWindow(GetForegroundWindow(),MONITOR_DEFAULTTONEAREST),&mi)){lens.x=mi.rcWork.left+(mi.rcWork.right-mi.rcWork.left-lens.width)/2;lens.y=mi.rcWork.bottom-lens.height-int(std::lround(32*spec.scale));}}osdClient->setPlace(lens.x,lens.y);}}
+    void place(){RECT r{};GetWindowRect(window,&r);spec.x=r.left;spec.y=r.bottom+8;if(owner){POINT p{MulDiv(40,int(dpi()),96),MulDiv(365,int(dpi()),96)};ClientToScreen(owner,&p);spec.x=p.x;spec.y=p.y;}
+        // Foreground and setting changes call this often: send a place only when it moved.
+        if(client&&(!cardPlaced||cardAt.x!=spec.x||cardAt.y!=spec.y)){cardPlaced=true;cardAt=POINT{spec.x,spec.y};client->setPlace(spec.x,spec.y);}
+        if(osdClient){lens.x=spec.x+(spec.width-lens.width)/2;lens.y=spec.y+spec.height+int(std::lround(8*spec.scale));if(!visible){MONITORINFO mi{};mi.cbSize=sizeof(mi);if(GetMonitorInfoW(MonitorFromWindow(GetForegroundWindow(),MONITOR_DEFAULTTONEAREST),&mi)){lens.x=mi.rcWork.left+(mi.rcWork.right-mi.rcWork.left-lens.width)/2;lens.y=mi.rcWork.bottom-lens.height-int(std::lround(32*spec.scale));}}
+            if(!lensPlaced||lensAt.x!=lens.x||lensAt.y!=lens.y){lensPlaced=true;lensAt=POINT{lens.x,lens.y};osdClient->setPlace(lens.x,lens.y);}}}
     // The preview window's own Win32 controls.
     void fill(int id,const wchar_t* const* items,int count,const wchar_t* first){
         int keep=sel(id);SendDlgItemMessageW(window,id,CB_RESETCONTENT,0,0);if(first)SendDlgItemMessageW(window,id,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(first));
@@ -53,11 +61,11 @@ struct App {
         static const Item items[]={{IdLabel1,L"STATIC",0},{IdLabel2,L"STATIC",0},{IdLabel3,L"STATIC",0},{IdLabel4,L"STATIC",0},{IdArrival,L"COMBOBOX",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP},{IdIndicator,L"COMBOBOX",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP},
             {IdSlosh,L"COMBOBOX",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP},{IdKnob,L"COMBOBOX",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP},{IdReplay,L"BUTTON",BS_PUSHBUTTON|WS_TABSTOP},{IdSample,L"BUTTON",BS_PUSHBUTTON|WS_TABSTOP},{IdOn,L"BUTTON",BS_AUTOCHECKBOX|WS_TABSTOP}};
         for(auto&item:items)CreateWindowExW(0,item.cls,L"",WS_CHILD|WS_VISIBLE|item.style,0,0,0,0,window,reinterpret_cast<HMENU>(UINT_PTR(item.id)),instance,nullptr);
-        relabel();SendDlgItemMessageW(window,IdArrival,CB_SETCURSEL,4,0);SendDlgItemMessageW(window,IdIndicator,CB_SETCURSEL,0,0);SendDlgItemMessageW(window,IdSlosh,CB_SETCURSEL,0,0);SendDlgItemMessageW(window,IdKnob,CB_SETCURSEL,2,0);
+        relabel();SendDlgItemMessageW(window,IdArrival,CB_SETCURSEL,5,0);SendDlgItemMessageW(window,IdIndicator,CB_SETCURSEL,5,0);SendDlgItemMessageW(window,IdSlosh,CB_SETCURSEL,0,0);SendDlgItemMessageW(window,IdKnob,CB_SETCURSEL,2,0);
         CheckDlgButton(window,IdOn,BST_CHECKED);layoutUi(true);}
     void layoutUi(bool resize){
-        UINT dpi=GetDpiForWindow(window);auto S=[dpi](int v){return MulDiv(v,int(dpi),96);};
-        NONCLIENTMETRICSW metrics{};metrics.cbSize=sizeof(metrics);SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS,sizeof(metrics),&metrics,0,dpi);
+        UINT wd=GetDpiForWindow(window);auto S=[wd](int v){return MulDiv(v,int(wd),96);};
+        NONCLIENTMETRICSW metrics{};metrics.cbSize=sizeof(metrics);SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS,sizeof(metrics),&metrics,0,wd);
         HFONT font=CreateFontIndirectW(&metrics.lfMessageFont);
         auto put=[&](int id,int x,int y,int w,int h){HWND c=GetDlgItem(window,id);SetWindowPos(c,nullptr,S(x),S(y),S(w),S(h),SWP_NOZORDER|SWP_NOACTIVATE);SendMessageW(c,WM_SETFONT,reinterpret_cast<WPARAM>(font),TRUE);};
         const int r1=72,r2=104,r3=136;
@@ -66,7 +74,7 @@ struct App {
         put(IdReplay,12,r3,100,26);put(IdSample,124,r3,170,26);put(IdOn,306,r3,200,24);
         for(int id:{IdArrival,IdIndicator,IdSlosh,IdKnob})SendDlgItemMessageW(window,id,CB_SETDROPPEDWIDTH,WPARAM(S(240)),0);
         if(uiFont)DeleteObject(uiFont);uiFont=font;
-        if(resize){RECT rc{0,0,S(560),S(172)};DWORD style=DWORD(GetWindowLongPtrW(window,GWL_STYLE)),ex=DWORD(GetWindowLongPtrW(window,GWL_EXSTYLE));AdjustWindowRectExForDpi(&rc,style,FALSE,ex,dpi);
+        if(resize){RECT rc{0,0,S(560),S(172)};DWORD style=DWORD(GetWindowLongPtrW(window,GWL_STYLE)),ex=DWORD(GetWindowLongPtrW(window,GWL_EXSTYLE));AdjustWindowRectExForDpi(&rc,style,FALSE,ex,wd);
             SetWindowPos(window,nullptr,0,0,rc.right-rc.left,rc.bottom-rc.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);}
     }
     void content(){
@@ -75,18 +83,18 @@ struct App {
         uint32_t*pixels{};HBITMAP bitmap=CreateDIBSection(dc,&info,DIB_RGB_COLORS,reinterpret_cast<void**>(&pixels),nullptr,0);
         if(!dc||!bitmap){if(bitmap)DeleteObject(bitmap);if(dc)DeleteDC(dc);throw std::runtime_error("content bitmap");}
         auto old=SelectObject(dc,bitmap);memset(pixels,0,size_t(spec.width)*spec.height*4);SetTextColor(dc,RGB(254,254,254));SetBkMode(dc,TRANSPARENT);
-        HFONT font=CreateFontW(-MulDiv(20,GetDpiForWindow(window),96),0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,0,0,NONANTIALIASED_QUALITY,0,L"Segoe UI");
+        HFONT font=CreateFontW(-MulDiv(20,int(dpi()),96),0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Segoe UI");
         // Three chips (host glow buttons): the labels are ink here and their pixels are the glow masks.
         std::vector<lghost::Button> chips;int bottom=spec.height-20;
         if(client->hostMinor()>=1){
             unsigned lang=settings.language;const wchar_t* label[3]={kArrival[lang][reduced()?0:sel(IdArrival)],kSlosh[lang][reduced()?3:sel(IdSlosh)],kKnob[lang][sel(IdKnob)]};
-            HFONT chipFont=CreateFontW(-MulDiv(13,GetDpiForWindow(window),96),0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,0,0,NONANTIALIASED_QUALITY,0,L"Segoe UI");auto keep=SelectObject(dc,chipFont);int width[3]{};
+            HFONT chipFont=CreateFontW(-MulDiv(13,int(dpi()),96),0,0,0,FW_NORMAL,0,0,0,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Segoe UI");auto keep=SelectObject(dc,chipFont);int width[3]{};
             for(int i=0;i<3;++i){RECT m{};DrawTextW(dc,label[i],-1,&m,DT_CALCRECT|DT_SINGLELINE|DT_NOPREFIX);width[i]=m.right-m.left;}
             auto boxes=osd::chipBoxes(spec.width,spec.height,spec.scale,width);
             for(int i=0;i<3;++i){RECT t=boxes[size_t(i)];DrawTextW(dc,label[i],-1,&t,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX|DT_END_ELLIPSIS);}
             GdiFlush();
             for(int i=0;i<3;++i){const RECT&b=boxes[size_t(i)];int w=b.right-b.left,h=b.bottom-b.top;std::vector<uint8_t> mask(size_t(w)*size_t(h));
-                for(int y=0;y<h;++y)for(int x=0;x<w;++x)mask[size_t(y)*size_t(w)+size_t(x)]=pixels[size_t(b.top+y)*size_t(spec.width)+size_t(b.left+x)]&0xffffff?255:0;
+                for(int y=0;y<h;++y)for(int x=0;x<w;++x)mask[size_t(y)*size_t(w)+size_t(x)]=osd::coverage(pixels[size_t(b.top+y)*size_t(spec.width)+size_t(b.left+x)]);
                 chips.push_back(osd::chipButton(b,std::move(mask)));osd::tightenMask(chips.back());}osd::fitMasks(chips);
             SelectObject(dc,keep);DeleteObject(chipFont);bottom=boxes[0].top-4;
         }
@@ -94,7 +102,7 @@ struct App {
         static const wchar_t* text[]={L"LGEngine host\nBackground-adaptive liquid glass",L"LGEngine 宿主\n根据背景自适应的液态玻璃",L"LGEngine 宿主\n根據背景自適應的液態玻璃",L"Host LGEngine\nSzkło dopasowane do tła",L"LGEngine host\nKính tự điều chỉnh theo nền"};
         RECT bounds{20,spec.height/3,spec.width-20,bottom};if(!owner)DrawTextW(dc,text[settings.language],-1,&bounds,DT_CENTER|DT_WORDBREAK|DT_NOPREFIX);GdiFlush();
         std::vector<uint32_t> image(pixels,pixels+size_t(spec.width)*spec.height);
-        for(auto&p:image)if(p&0xffffff)p=0xfefefefe; // LGEngine's even-alpha ink convention.
+        for(auto&p:image)p=osd::inkOf(p); // LGEngine's even-alpha ink convention, with smooth edges.
         SelectObject(dc,previous);DeleteObject(font);SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);client->setContents(std::move(image));
         if(client->hostMinor()>=1)client->setButtons(std::move(chips),false); // decorative glow only: the host does not forward clicks
     }
@@ -106,8 +114,12 @@ struct App {
         int arrival=sel(IdArrival),indicator=sel(IdIndicator)-1;spec.motion=rm?0:arrival;spec.indicator=rm?0:indicator;
         // Protocol v1 has background adaptation but no explicit light override.
         spec.adapt=true;client->setSpec(spec);
-        if(osdClient){lens=osd::lensSpec(spec,spec.scale);lens.hover=false;lens.motion=rm?0:(indicator<0?arrival:indicator);lens.indicator=spec.indicator;osdClient->setSpec(lens);}
-        int slosh=rm?3:sel(IdSlosh);client->setSlosh(slosh,60);if(osdClient)osdClient->setSlosh(slosh,60);
+        if(osdClient){ // the lens: its own look and profile (Controls), the owner's motion numbers (lensSpec), the arrival and indicator of the combos
+            static const char* const profiles[]={"","Tighter rim","Thin lens","Flat pane"};
+            lens=osd::lensSpec(spec,spec.scale);lens.look=lensLook;lens.profile=profiles[lensShape<0||lensShape>3?0:lensShape];lens.savePower=settings.savePower!=0;lens.hover=false;
+            lens.motion=rm?0:arrival;lens.indicator=spec.indicator;osdClient->setSpec(lens);}
+        cardPlaced=lensPlaced=false; // setSpec carried the spec's own place; the next place() sends the real one
+        int slosh=rm?3:sel(IdSlosh);client->setSlosh(slosh,60);if(osdClient)osdClient->setSlosh(slosh,50);
         client->setPointerArea(RECT{0,0,spec.width,spec.height});
         content();client->show(visible);osdRender(true);InvalidateRect(window,nullptr,TRUE);
     }
@@ -115,31 +127,35 @@ struct App {
     void refresh(){
         if(!client)return;
         HIGHCONTRASTW high{};high.cbSize=sizeof(high);SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(high),&high,0);
-        bool ownerHidden=owner&&GetParent(owner)!=HWND_MESSAGE&&(!IsWindowVisible(owner)||IsIconic(owner));
-        bool now=pageEnabled&&!ownerHidden&&!IsIconic(window)&&!(high.dwFlags&HCF_HIGHCONTRASTON);
-        if(now!=visible){visible=now;client->show(now);}place();if(!osdOk())osdStop();
+        bool ownerAway=owner&&GetParent(owner)!=HWND_MESSAGE&&(!IsWindowVisible(owner)||IsIconic(owner)||GetForegroundWindow()!=owner);
+        bool now=pageEnabled&&!ownerAway&&!IsIconic(window)&&!(high.dwFlags&HCF_HIGHCONTRASTON);
+        if(now!=visible){visible=now;client->show(now);}place();if(!osdOk()&&osdLive())osdStop();
+        if(owner&&rescale()){place();apply();}
     }
     // OSD lens
     bool osdOk()const{HIGHCONTRASTW high{};high.cbSize=sizeof(high);SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(high),&high,0);return osdClient&&client&&indicatorOn()&&client->hostMinor()>=1&&!(high.dwFlags&HCF_HIGHCONTRASTON);}
     void osdRender(bool full){
-        if(!osdClient)return;auto L=osd::layout(lens.width,lens.height,lens.scale);size_t count=size_t(L.W)*size_t(L.H);int number=state.percent();wchar_t glyph=state.glyph();
-        if(osdBase.size()!=count||osdFrame.size()!=count||number!=drawnNumber||glyph!=drawnGlyph){osdBase=osd::inkBase(L,glyph,number);osdFrame=osdBase;drawnNumber=number;drawnGlyph=glyph;full=true;}
-        else for(int y=L.strip.top;y<L.strip.bottom;++y){size_t at=size_t(y)*size_t(L.W)+size_t(L.strip.left);memcpy(&osdFrame[at],&osdBase[at],size_t(L.strip.right-L.strip.left)*4);}
-        osd::drawSlider(osdFrame.data(),L,state.knob,osd::styleOf(sel(IdKnob)),osdClient->light());
-        osdClient->setContents(osdFrame,full?RECT{}:L.strip);
+        // Glass.cs ShowPreview/RefreshPreview/LevelChanged: the sample is made at the card size and scale, the bar adopted out of it, and the number made again when the level (or the symbol) changes; only the slider strip moves otherwise.
+        if(!osdClient)return;int W=lens.width,H=lens.height;float k=lens.scale;size_t count=size_t(W)*size_t(H);int number=state.percent();wchar_t glyph=state.glyph();
+        if(W!=drawnW||H!=drawnH||k!=drawnK){slider=osd::Slider{};drawnW=W;drawnH=H;drawnK=k;drawnNumber=-1;}
+        if(number!=drawnNumber||glyph!=drawnGlyph||osdFrame.size()!=count){osdFrame=osd::drawIndicatorSample(W,H,k,number,glyph);osd::adoptBar(osdFrame,W,H,k,slider);drawnNumber=number;drawnGlyph=glyph;full=true;}
+        if(osdFrame.size()!=count)return;
+        if(state.knob.at>=0)osd::drawSlider(osdFrame.data(),W,slider,state.knob,osd::styleOf(sel(IdKnob)),k,osdClient->light());
+        osdClient->setContents(osdFrame,full?RECT{}:slider.strip);
     }
+    void osdKick(int way){if(!osdClient||!osdIn)return;osdClient->kick(way);kickUntil=GetTickCount64()+700;} // Glass.cs Kick/LevelChanged: only a lens that is fully in is kicked; the frames carry on 700 ms for the slosh
     LONGLONG now()const{LARGE_INTEGER t{};QueryPerformanceCounter(&t);return t.QuadPart;}
     void osdWake(){if(osdAnimating)return;osdAnimating=true;lastTick=now();SetTimer(window,TimerAnim,16,nullptr);osdClient->setBusy(true);}
-    void osdStop(){KillTimer(window,TimerAnim);KillTimer(window,TimerHide);osdAnimating=false;osdShown=false;state.sampling=false;if(state.knob.at>=0)state.knob.jump(state.current());if(osdClient){osdClient->setBusy(false);osdClient->hide(false);}}
+    void osdStop(){KillTimer(window,TimerAnim);KillTimer(window,TimerHide);osdAnimating=false;osdShown=false;osdIn=false;state.sampling=false;if(state.knob.at>=0)state.knob.jump(state.current());if(osdClient){osdClient->setBusy(false);osdClient->hide(false);}}
     void osdTick(){
         if(!osdClient)return;LARGE_INTEGER f{};QueryPerformanceFrequency(&f);LONGLONG t=now();float dt=float(double(t-lastTick)/double(f.QuadPart));lastTick=t;
-        bool was=state.sampling;int kick=0;bool changed=state.tick(dt,kick);if(kick)osdClient->kick(kick);if(changed||kick)osdRender(false);
+        bool was=state.sampling;int kick=0;bool changed=state.tick(dt,kick);if(kick)osdKick(kick);if(changed||kick)osdRender(false);
         if(was&&!state.sampling)SetTimer(window,TimerHide,1800,nullptr);
-        if(!state.knob.active()&&!state.sampling){KillTimer(window,TimerAnim);osdAnimating=false;osdClient->setBusy(false);}
+        if(!state.knob.active()&&!state.sampling&&GetTickCount64()>=kickUntil){KillTimer(window,TimerAnim);osdAnimating=false;osdClient->setBusy(false);}
     }
     void osdShowChange(int way){
         if(!osdOk()){state.knob.jump(state.current());return;} // not shown: snap, so the next show does not glide from an old level
-        place();osdRender(true);osdClient->kick(way);osdClient->show(true);osdShown=true;osdWake();SetTimer(window,TimerHide,1800,nullptr);
+        place();osdRender(!osdShown);osdKick(way);osdClient->show(true);osdShown=true;osdWake();SetTimer(window,TimerHide,1800,nullptr);
     }
     void sample(){ // a sweep on the lens only: nothing here reads or writes the system volume or brightness
         if(!osdOk())return;place();KillTimer(window,TimerHide);state.startSample();osdRender(true);osdClient->show(true);osdShown=true;osdWake();
@@ -156,24 +172,30 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
         if(w==lghost::Failed){app->failed=true;SetWindowTextW(hwnd,app->title(unsigned(w)));
             wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,32768);std::wstring path=executable;path.resize(path.find_last_of(L"\\")+1);path+=L"host-client.log";
             auto file=_wfopen(path.c_str(),L"a");if(file){auto text=app->client->failureText();fprintf(file,"Win32 %lu: %s\n",(unsigned long)app->client->lastError(),text.c_str());fclose(file);}
-            if(app->owner)PostMessageW(app->owner,lgpreview::Event,2,reinterpret_cast<LPARAM>(hwnd));}
+            // Only the client giving up (never connected) is fatal; a rejected Create, look or extra keeps the pipe and the OSD lens.
+            if(app->owner&&!app->hostSeen){PostMessageW(app->owner,lgpreview::Event,2,reinterpret_cast<LPARAM>(hwnd));app->client->show(false);if(app->osdLive())app->osdStop();}}
         else if(w==lghost::Lost||w==lghost::Shown)SetWindowTextW(hwnd,app->title(unsigned(w)));
-        else if(w==lghost::Connected||w==lghost::Restarted){app->content();app->osdRender(true);}return 0; // the host minor is known now: the chips and the lens can appear
-    case OsdEvent:if(w==lghost::LightMoved&&app->osdShown)app->osdRender(false);else if(w==lghost::Connected||w==lghost::Restarted)app->osdRender(true);return 0;
+        else if(w==lghost::Connected||w==lghost::Restarted){app->hostSeen=true;if(app->owner)PostMessageW(app->owner,lgpreview::HostState,1,reinterpret_cast<LPARAM>(hwnd));app->content();app->osdRender(true);}return 0; // the host minor is known now: the chips and the lens can appear
+    case OsdEvent:if(w==lghost::LightMoved&&app->osdShown)app->osdRender(false);else if(w==lghost::Connected||w==lghost::Restarted){app->osdIn=false;app->osdRender(true);}
+        else if(w==lghost::Shown){if(app->osdShown)app->osdIn=true;}else if(w==lghost::Hidden){if(!app->osdShown)app->osdIn=false;}return 0;
     case MsgVolume:{int way=app->state.onVolume(float(w)/1000.f,l!=0);if(way)app->osdShowChange(way);return 0;}
     case MsgDevice:{float level=0;bool mute=false;if(app->audio.attach()&&app->audio.read(level,mute))app->state.resetVolume(level,mute);return 0;}
     case MsgOwner:app->refresh();SetTimer(hwnd,TimerRecheck,400,nullptr);return 0; // the event can come before the minimize/restore finishes: look again once
+    case MsgForeground:app->refresh();return 0;
     case WM_POWERBROADCAST:
         if(w==PBT_POWERSETTINGCHANGE&&l){auto s=reinterpret_cast<POWERBROADCAST_SETTING*>(l);
             if(s->PowerSetting==osd::BrightnessGuid&&s->DataLength==sizeof(DWORD)){DWORD percent=0;memcpy(&percent,s->Data,sizeof(percent));int level=int(std::min<DWORD>(percent,100));bool quiet=app->displayState!=1||GetTickCount64()<app->quietUntil; // idle dimming and display changes move the brightness too: re-baseline silently
                 if(quiet)app->state.resetBrightness(level);else{int way=app->state.onBrightness(level);if(way)app->osdShowChange(way);}}
             else if(s->PowerSetting==osd::ConsoleDisplayGuid&&s->DataLength==sizeof(DWORD)){memcpy(&app->displayState,s->Data,sizeof(DWORD));app->quietUntil=GetTickCount64()+3000;}}
         return TRUE;
-    case WM_COPYDATA:{auto p=reinterpret_cast<COPYDATASTRUCT*>(l);if(reinterpret_cast<HWND>(w)==app->owner&&p&&p->dwData==lgpreview::StatusTag&&p->cbData==0){return (app->client&&app->client->hostMinor()>=1?1:0)|(app->visible?2:0)|(app->osdShown?4:0)|(IsWindowVisible(hwnd)?8:0)|(app->osdOk()?16:0);}if(reinterpret_cast<HWND>(w)==app->owner&&p&&p->dwData==lgpreview::ControlsTag&&p->cbData==sizeof(lgpreview::Controls)&&p->lpData){lgpreview::Controls c;memcpy(&c,p->lpData,sizeof(c));if(c.arrival<0||c.arrival>8||c.indicator<0||c.indicator>9||c.slosh<0||c.slosh>3||c.knob<0||c.knob>2||c.action<0||c.action>2)return 0;int ids[]={IdArrival,IdIndicator,IdSlosh,IdKnob};int values[]={c.arrival,c.indicator,c.slosh,c.knob};for(int i=0;i<4;++i)SendDlgItemMessageW(hwnd,ids[i],CB_SETCURSEL,values[i],0);CheckDlgButton(hwnd,IdOn,c.osd?BST_CHECKED:BST_UNCHECKED);app->pageEnabled=c.enabled!=0;app->refresh();app->apply();if(!c.osd)app->osdStop();if(c.action==1)app->replay();if(c.action==2)app->sample();return 1;}if(reinterpret_cast<HWND>(w)!=app->owner||!p||p->dwData!=lgpreview::WireTag||p->cbData!=sizeof(lgpreview::Settings)||!p->lpData)return 0;
+    case WM_COPYDATA:{auto p=reinterpret_cast<COPYDATASTRUCT*>(l);if(reinterpret_cast<HWND>(w)==app->owner&&p&&p->dwData==lgpreview::StatusTag&&p->cbData==0){return (app->client&&app->client->hostMinor()>=1?1:0)|(app->visible?2:0)|(app->osdShown?4:0)|(IsWindowVisible(hwnd)?8:0)|(app->osdOk()?16:0)|(app->client&&app->client->connected()?32:0);}if(reinterpret_cast<HWND>(w)==app->owner&&p&&p->dwData==lgpreview::ControlsTag&&p->cbData==sizeof(lgpreview::Controls)&&p->lpData){lgpreview::Controls c;memcpy(&c,p->lpData,sizeof(c));if(c.arrival<0||c.arrival>8||c.indicator<0||c.indicator>9||c.slosh<0||c.slosh>3||c.knob<0||c.knob>2||c.action<0||c.action>2)return 0;
+            for(int v:{c.dark,c.blur,c.refraction,c.rim,c.shadow,c.elevation})if(v<0||v>100)return 0;if(c.round<0||c.round>28||c.intensity<0||c.intensity>150||c.shape<0||c.shape>3)return 0;
+            app->lensLook=lghost::Look{c.dark,c.blur,c.refraction,c.rim,c.shadow,c.round,c.intensity,c.elevation};app->lensShape=c.shape; // the lens's own look and profile: apply() sends them in place
+            int ids[]={IdArrival,IdIndicator,IdSlosh,IdKnob};int values[]={c.arrival,c.indicator,c.slosh,c.knob};for(int i=0;i<4;++i)SendDlgItemMessageW(hwnd,ids[i],CB_SETCURSEL,values[i],0);CheckDlgButton(hwnd,IdOn,c.osd?BST_CHECKED:BST_UNCHECKED);app->pageEnabled=c.enabled!=0;app->refresh();app->apply();if(!c.osd&&app->osdLive())app->osdStop();if(c.action==1)app->replay();if(c.action==2)app->sample();return 1;}if(reinterpret_cast<HWND>(w)!=app->owner||!p||p->dwData!=lgpreview::WireTag||p->cbData!=sizeof(lgpreview::Settings)||!p->lpData)return 0;
         lgpreview::Settings next;memcpy(&next,p->lpData,sizeof(next));if(!app->valid(next))return 0;app->settings=next;app->apply();return lgpreview::digest(next);}
     case WM_COMMAND:{int id=LOWORD(w),code=HIWORD(w);
         if(code==CBN_SELCHANGE&&id>=IdArrival&&id<=IdKnob){app->apply();return 0;}
-        if(code==BN_CLICKED){if(id==IdReplay)app->replay();else if(id==IdSample)app->sample();else if(id==IdOn){EnableWindow(GetDlgItem(hwnd,IdSample),app->indicatorOn());if(!app->indicatorOn())app->osdStop();}}
+        if(code==BN_CLICKED){if(id==IdReplay)app->replay();else if(id==IdSample)app->sample();else if(id==IdOn){EnableWindow(GetDlgItem(hwnd,IdSample),app->indicatorOn());if(!app->indicatorOn()&&app->osdLive())app->osdStop();}}
         return 0;}
     case WM_TIMER:
         if(w==TimerRecheck){KillTimer(hwnd,TimerRecheck);app->refresh();}else if(w==TimerAnim)app->osdTick();
@@ -183,7 +205,7 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
     case WM_SETTINGCHANGE:case WM_SIZE:app->refresh();break;
     case WM_MOVE:app->place();return 0;
     case WM_DPICHANGED:{auto r=reinterpret_cast<RECT*>(l);SetWindowPos(hwnd,nullptr,r->left,r->top,r->right-r->left,r->bottom-r->top,SWP_NOZORDER|SWP_NOACTIVATE);
-        app->spec.scale=GetDpiForWindow(hwnd)/96.f;app->spec.width=MulDiv(420,GetDpiForWindow(hwnd),96);app->spec.height=MulDiv(200,GetDpiForWindow(hwnd),96);app->layoutUi(false);app->place();app->apply();return 0;}
+        app->layoutUi(false);if(app->rescale()){app->place();app->apply();}return 0;}
     case WM_APP+17:if(!app->owner){ShowWindow(hwnd,SW_RESTORE);SetForegroundWindow(hwnd);}return 0;
     case WM_CLOSE:DestroyWindow(hwnd);return 0;
     case WM_DESTROY:
@@ -210,15 +232,21 @@ int selfTest(){lghost::Spec spec;auto frame=lghost::wire::frame(3,42,lghost::wir
     state.startSample();int kicks=0,ticks=0;while((state.sampling||state.knob.active())&&ticks<1000){int kick=0;state.tick(.016f,kick);kicks+=kick!=0;++ticks;}
     check(ticks<1000&&kicks>=3&&std::fabs(state.knob.at-state.current())<.0001f,"sample sweep returns to the real level");
     // OSD: alpha convention (slider odd, ink even, premultiplied)
-    auto L=osd::layout(300,64,1.f);std::vector<uint32_t> pixels(size_t(L.W)*size_t(L.H),0);bool final=true,any=false;
-    for(int style=0;style<3;++style){osd::Knob k;k.jump(.6f);k.lift=.8f;for(auto&p:pixels)p=0;osd::drawSlider(pixels.data(),L,k,style,style*.5f);
-        for(auto p:pixels)if(p){any=true;if(!osd::isFinal(p))final=false;}}
-    check(any&&final,"slider pixels have odd alpha and are premultiplied");
-    auto ink=osd::inkBase(L,wchar_t(0xE767),50);bool inkOk=true,inkAny=false;for(auto p:ink)if(p){inkAny=true;if(!osd::isInk(p))inkOk=false;}check(inkAny&&inkOk,"glyph and number are even-alpha ink");
+    {const int W=192,H=47;osd::Slider sl;sl.bar.r=RECT{50,20,140,26};sl.strip=RECT{40,0,150,H};sl.base.assign(size_t(110)*size_t(H),0);std::vector<uint32_t> pixels(size_t(W)*size_t(H),0);bool final=true,any=false;
+        for(int style=0;style<3;++style){osd::Knob k;k.jump(.6f);k.lift=.8f;for(auto&p:pixels)p=0;osd::drawSlider(pixels.data(),W,sl,k,style,1.f,style*.5f);
+            for(auto p:pixels)if(p){any=true;if(!osd::isFinal(p))final=false;}}
+        check(any&&final,"slider pixels have odd alpha and are premultiplied");}
+    {osd::GdiSession gdi;bool sizesOk=true,barsOk=true,premulOk=true,inkOk=true;
+        for(float k:{1.f,1.5f,2.f}){int W=int(std::lround(192*k)),H=int(std::lround(47*k));
+            for(int percent:{0,37,100}){auto img=osd::drawIndicatorSample(W,H,k,percent);sizesOk=sizesOk&&img.size()==size_t(W)*size_t(H);
+                RECT found{};float level=0;bool got=osd::findBar(img.data(),W,H,RECT{0,0,W,H},k,found,level);barsOk=barsOk&&got&&std::fabs(level-float(percent)/100.f)<=.05f; // (the round caps add a few pixels of colour at either end)
+                for(auto p:img){bool even=(p>>24)%2==0;uint32_t a=(p>>24)+(even?1u:0u);if(((p>>16)&255)>a||((p>>8)&255)>a||(p&255)>a)premulOk=false;if(!even&&!osd::isFinal(p))inkOk=false;} // (ink may sit one over its alpha: the owner's MarkInk drops alpha's low bit and keeps the colour)
+                osd::Slider sl;barsOk=barsOk&&osd::adoptBar(img,W,H,k,sl)&&!sl.bar.empty()&&sl.strip.right>sl.strip.left&&sl.strip.bottom<=H;}}
+        check(gdi.ok&&sizesOk,"indicator sample has the card size at 100-200%");check(gdi.ok&&barsOk,"bar found at 0/37/100%, level within 0.05");check(premulOk,"sample pixels are premultiplied");check(inkOk,"sample pixels are ink or final (even or odd alpha)");}
     // OSD: lens spec and chips
     lghost::Spec card;card.x=100;card.y=100;card.width=420;card.height=200;bool lensOk=true;
-    for(float scale:{1.f,1.5f,2.f,3.f}){card.scale=scale;card.width=int(std::lround(420*scale));card.height=int(std::lround(200*scale));auto lens=osd::lensSpec(card,scale);lensOk=lensOk&&lghost::wire::valid(lens)&&lens.kind==1&&lens.y>=card.y+card.height;}
-    check(lensOk,"lens spec valid at 100-300%");
+    for(float scale:{1.f,1.5f,2.f,3.f}){card.scale=scale;card.width=int(std::lround(420*scale));card.height=int(std::lround(200*scale));auto lens=osd::lensSpec(card,scale);lensOk=lensOk&&lghost::wire::valid(lens)&&lens.kind==1&&lens.y>=card.y+card.height&&lens.width==int(std::lround(192*scale))&&lens.height==int(std::lround(47*scale));}
+    check(lensOk,"lens spec valid at 100-300%, 192x47 DIP, below the card");
     int widths[3]={80,60,50};auto boxes=osd::chipBoxes(420,200,1.f,widths);std::vector<lghost::Button> chips;bool fits=true;
     for(size_t i=0;i<3;++i){const RECT&b=boxes[i];fits=fits&&b.left>=0&&b.right<=420&&b.top>=0&&b.bottom<=200&&(i==0||b.left>=boxes[i-1].right);
         chips.push_back(osd::chipButton(b,std::vector<uint8_t>(size_t(b.right-b.left)*size_t(b.bottom-b.top),255)));}
@@ -229,6 +257,7 @@ int selfTest(){lghost::Spec spec;auto frame=lghost::wire::frame(3,42,lghost::wir
     return bad?1:0;}
 }
 int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
+    osd::GdiSession gdi; // GDI+ for the indicator sample, shut down after the app is gone
     int argc{};auto argv=CommandLineToArgvW(GetCommandLineW(),&argc);if(!argv)return 2;
     if(argc==2&&!wcscmp(argv[1],L"--self-test")){LocalFree(argv);return selfTest();}
     App app;bool argsOk=argc==2&&!wcscmp(argv[1],L"--standalone");
@@ -236,12 +265,13 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         wchar_t*end{};auto h=wcstoull(argv[2],&end,10);if(*end){LocalFree(argv);return 2;}app.owner=reinterpret_cast<HWND>(h);auto requested=wcstoul(argv[4],&end,10);DWORD pid{};
         argsOk=!*end&&requested&&GetWindowThreadProcessId(app.owner,&pid)&&pid==requested;if(argsOk)app.parent.reset(OpenProcess(SYNCHRONIZE,FALSE,pid));argsOk=argsOk&&app.parent.value;app.ownerPid=pid;
     }LocalFree(argv);if(!argsOk)return 2;
+    app.pageEnabled=app.visible=!app.owner;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);WNDCLASSW cls{};cls.lpfnWndProc=proc;cls.hInstance=instance;cls.lpszClassName=L"LiquidGlass.LGHost.Client";cls.hCursor=LoadCursorW(nullptr,IDC_ARROW);cls.hbrBackground=reinterpret_cast<HBRUSH>(UINT_PTR(COLOR_WINDOW+1));
     if(!RegisterClassW(&cls))return 1;auto hwnd=CreateWindowExW(WS_EX_TOOLWINDOW,cls.lpszClassName,L"Connecting to LGEngineHost",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,100,100,600,150,nullptr,nullptr,instance,&app);if(!hwnd)return 1;
     gWindow=hwnd;gOwner=app.owner;
     try{wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,32768);std::wstring path=executable;path.resize(path.find_last_of(L"\\")+1);lghost::Options options;options.hostPath=lghost::bundledHostPath(path);options.suffix=L"lgcontrol11";options.notify=hwnd;options.message=HostEvent;
         app.buildUi(instance);
-        app.spec.scale=GetDpiForWindow(hwnd)/96.f;app.spec.width=MulDiv(420,GetDpiForWindow(hwnd),96);app.spec.height=MulDiv(app.owner?64:200,GetDpiForWindow(hwnd),96);app.place();
+        app.rescale();app.place();
         app.client=std::make_unique<lghost::Client>(options,app.spec);
         app.lens=osd::lensSpec(app.spec,app.spec.scale);app.lens.hover=false;lghost::Options lensOptions=options;lensOptions.message=OsdEvent;app.osdClient=std::make_unique<lghost::Client>(lensOptions,app.lens);
         app.apply();
@@ -250,7 +280,8 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
     }catch(...){DestroyWindow(hwnd);return 1;}
     if(app.parent.value)RegisterWaitForSingleObject(&app.wait,app.parent.value,parentGone,hwnd,INFINITE,WT_EXECUTEONLYONCE); // parent exit -> WM_CLOSE
     if(app.owner&&app.ownerPid){app.hooks[0]=SetWinEventHook(EVENT_OBJECT_SHOW,EVENT_OBJECT_HIDE,nullptr,ownerEvent,app.ownerPid,0,WINEVENT_OUTOFCONTEXT);
-        app.hooks[2]=SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE,EVENT_OBJECT_LOCATIONCHANGE,nullptr,ownerEvent,app.ownerPid,0,WINEVENT_OUTOFCONTEXT);app.hooks[1]=SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART,EVENT_SYSTEM_MINIMIZEEND,nullptr,ownerEvent,app.ownerPid,0,WINEVENT_OUTOFCONTEXT);}
+        app.hooks[2]=SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE,EVENT_OBJECT_LOCATIONCHANGE,nullptr,ownerEvent,app.ownerPid,0,WINEVENT_OUTOFCONTEXT);app.hooks[1]=SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART,EVENT_SYSTEM_MINIMIZEEND,nullptr,ownerEvent,app.ownerPid,0,WINEVENT_OUTOFCONTEXT);
+        app.hooks[3]=SetWinEventHook(EVENT_SYSTEM_FOREGROUND,EVENT_SYSTEM_FOREGROUND,nullptr,foregroundEvent,0,0,WINEVENT_OUTOFCONTEXT);}
     ShowWindow(hwnd,app.owner?SW_HIDE:SW_SHOWNORMAL);app.refresh();if(app.owner)PostMessageW(app.owner,lgpreview::Event,1,reinterpret_cast<LPARAM>(hwnd));
     MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}return app.failed?1:0;
 }
