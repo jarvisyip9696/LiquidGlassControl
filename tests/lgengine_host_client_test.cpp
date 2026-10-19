@@ -31,9 +31,19 @@ int main(int argc,char**argv){
         check(a->hostProcessId()!=0&&a->hostProcessId()==b->hostProcessId(),"two clients share the same authenticated host process");
         bool invalid=false;try{a->setContents(std::vector<uint32_t>(1));}catch(const std::invalid_argument&){invalid=true;}check(invalid,"incorrect shared bitmap size rejected");
         a->setPlace(-9000,-9000);a->show(false);check(pump([&]{return a->connected();},200),"state updates preserve connection");
-        unsigned beforeChanges=shown[1];
+        check(b->hostMinor()<=1&&b->light()>=0&&b->light()<=1,"host minor and light are in range");
+        unsigned idBefore=b->surfaceId();
         for(int change=0;change<12;++change){spec.look.dark=20+change;b->setSpec(spec);pump([]{return false;},30);}
-        check(pump([&]{return shown[1]>beforeChanges||failed[1];})&&shown[1]>beforeChanges&&!failed[1],"rapid spec replacement ignores retired surface events");
+        for(int step=1;step<=3;++step){int w=96+8*step,h=64+8*step;spec.width=w;spec.height=h;b->resize(w,h,std::vector<uint32_t>(size_t(w)*h,0));pump([]{return false;},60);}
+        pump([]{return false;},200);
+        check(idBefore!=0&&b->surfaceId()==idBefore&&!failed[1],"look and size changes keep the same surface");
+        b->setSlosh(1,60);b->kick(1);b->setBusy(true);b->setBusy(false);b->setPointerArea(RECT{0,0,10,10});b->setButtons(std::vector<lghost::Button>(),false);
+        pump([]{return false;},100);
+        check(b->connected()&&!failed[1],"1.1 setters are harmless on any host");
+        check(b->hostErrors()==0&&a->hostErrors()==0,"host sent no Error frames (types 10-17 are not sent to a minor-0 host)");
+        unsigned beforeKind=shown[1];
+        spec.kind=1;b->setSpec(spec);
+        check(pump([&]{return shown[1]>beforeKind||failed[1];})&&shown[1]>beforeKind&&!failed[1]&&b->surfaceId()!=idBefore,"kind change re-creates the surface (new id, new Shown)");
         unsigned beforeRestart=shown[1];
         unsigned oldHost=a->hostProcessId();lghost::Handle host(OpenProcess(PROCESS_TERMINATE|SYNCHRONIZE,FALSE,oldHost));
         check(host.value&&TerminateProcess(host.value,77),"stop only the dedicated suffixed test host");
