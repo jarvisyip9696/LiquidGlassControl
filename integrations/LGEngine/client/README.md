@@ -33,8 +33,26 @@ surface.show();
 
 Keep the client alive while the surface is needed. Its destructor disconnects
 and removes its surface; it does not stop the shared host. Call `setPlace` for
-position and `setContents` only when your content changes. `setSpec` recreates
-the surface; a size change clears old pixels, so submit the new sized bitmap.
+position and `setContents` only when your content changes. `setSpec` changes
+look, size, motion and update rates in place (protocol 1.1; the surface id from
+`surfaceId()` stays); only `kind`, `scale`, `label` and `inShots` (and, on a 1.0
+host, `fps`/`adapt`/`savePower`/`zoom`/`liquid`/`bounce`) re-create the surface.
+A size change clears old pixels: submit the new sized bitmap, or call
+`resize(w, h, pixels, flow)` to change size and contents in one step.
+`setContents(pixels, dirty)` takes the changed rect (empty = whole frame).
+
+Protocol 1.1 (`hostMinor()` is 1; against a 1.0 host these calls are ignored and
+`hide(false)` is a plain hide): `setSlosh(style, amount)` and `kick(way)`,
+`setButtons(buttons, carry)`, `setPointerArea(rect)`, `setBusy(bool)`,
+`hide(animate)` (false = Cut), `Spec::travel`/`indicator`, and the `LightMoved`
+event (LPARAM = light * 1000; `light()` holds the value). `lghost::wire::*`
+builds every payload, so `tests/lgengine_wire_test.cpp` (CMake option
+`LGENGINE_BUILD_TESTS`, no host needed) checks the bytes. After a failed first
+connect the client posts `Failed` after 3 attempts and stops (retrying a host
+blocked by Smart App Control would raise a toast each time); later losses retry
+with a 100 ms to 60 s backoff (reset by a CreateAck or a 10 s stable session). A host Error
+on Create, SetLook or an extra posts Failed with the error code in LPARAM and keeps the pipe; a rejected
+Create is not retried until setSpec changes the spec.
 Keep the notification HWND alive until after client destruction. Posted events
 may already be queued when destruction returns.
 
