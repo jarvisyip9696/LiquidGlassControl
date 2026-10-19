@@ -13,3 +13,8 @@ The user download contains the controller with its embedded engine. Self-tests
 are built as `LiquidGlassTests.exe` and are not included in the portable download.
 Build both with `./build.ps1 -BuildTests`; run `LiquidGlassTests.exe --self-test`.
 The complete source archive includes tests, licenses and third-party notices.
+
+0.13.0-beta.1 adds the integrated LGEngine page and full portable runtime. Its
+ZIP includes the adapter and pinned official host; a separate controller EXE does
+not include those companions. Both controller and host source archives accompany
+the prerelease, with the recorded host distribution authorization.

@@ -19,12 +19,15 @@ jobs:
         shell: pwsh
         run: ./prepare-winrt.ps1
       - name: Configure
-        run: cmake -S . -B build/cmake -A x64
+        run: cmake -S . -B build/cmake -A x64 -DLGENGINE_BUILD_EXAMPLE=ON -DLGENGINE_BUILD_TESTS=ON
       - name: Build
         run: cmake --build build/cmake --config Release
+      - name: Build and stage pinned LGEngine host
+        shell: pwsh
+        run: ./integrations/LGEngine/stage-host.ps1 -OutputDirectory build/cmake/Release/lgengine
       - name: Self-test and package
         shell: pwsh
-        run: ./package.ps1 -ExecutablePath build/cmake/Release/LiquidGlassControl.exe
+        run: ./package.ps1 -ExecutablePath build/cmake/Release/LiquidGlassControl.exe -IncludeLGEngine
       - name: Upload portable package
         uses: actions/upload-artifact@v7
         with:

@@ -1,4 +1,4 @@
-param([switch]$SkipBuild, [string]$ExecutablePath, [string]$OutputDirectory, [string]$TestExecutablePath)
+param([switch]$SkipBuild, [string]$ExecutablePath, [string]$OutputDirectory, [string]$TestExecutablePath, [switch]$IncludeLGEngine)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $version = [regex]::Match([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'src/app_version.h')), '(?m)^#define LG_VERSION "([^"]+)"').Groups[1].Value
@@ -38,18 +38,44 @@ foreach ($notice in @('LICENSING.md', 'CODE-SIGNING.md')) {
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'LICENSE') -Destination $stage
 # Corresponding source accompanies the GPL engine, with no local settings/logs.
 $sourceFiles = @('CMakeLists.txt','build.ps1','prepare-winrt.ps1','package.ps1','verify-localization.ps1','update-desktop.ps1','compact-workspace.py','README.md','CONTRIBUTING.md') | ForEach-Object { Join-Path $PSScriptRoot $_ }
-$sourceFiles += @('src','docs','assets','third_party','release','tests','integrations') | ForEach-Object { Join-Path $PSScriptRoot $_ }
+$sourceFiles += @('src','docs','assets','third_party','release','tests','integrations','.github') | ForEach-Object { Join-Path $PSScriptRoot $_ }
 $sourceFiles += Join-Path $PSScriptRoot 'LICENSE'
 $sourceZip = Join-Path $stage 'LiquidGlass-engine-source.zip'
 Compress-Archive -LiteralPath $sourceFiles -DestinationPath $sourceZip -CompressionLevel Optimal
 # Explicit file list prevents shipping settings, test reports, personal data or recovery journals.
 $files = @($exe, (Join-Path $stage 'Quick Start.txt'), (Join-Path $stage 'Create Desktop Shortcut.cmd'), (Join-Path $stage 'Third Party Notices.txt'), $sourceZip)
 $files += @('LICENSE', 'LICENSING.md', 'CODE-SIGNING.md') | ForEach-Object { Join-Path $stage $_ }
+$extraAssets = @()
+if ($IncludeLGEngine) {
+    $runtime = Join-Path (Split-Path -Parent $source) 'lgengine'
+    $runtimeStage = Join-Path $stage 'lgengine'
+    New-Item -ItemType Directory -Path $runtimeStage -Force | Out-Null
+    $pointer = Join-Path $runtime 'host-current.ini'
+    $hostLine = Get-Content -LiteralPath $pointer | Where-Object { $_ -match '^Executable=(LGEngineHost-[a-f0-9]{64}\.exe)$' } | Select-Object -First 1
+    if (-not $hostLine) { throw 'Missing or invalid LGEngine host pointer.' }
+    $hostName = $hostLine.Substring(11)
+    foreach ($runtimeFile in @('LiquidGlass.LGPreview.exe', 'LGEngineExample.exe', 'host-current.ini', $hostName)) {
+        Copy-Item -LiteralPath (Join-Path $runtime $runtimeFile) -Destination $runtimeStage
+    }
+    if ((Get-FileHash -LiteralPath (Join-Path $runtimeStage $hostName)).Hash.ToLowerInvariant() -ne $hostName.Substring(13,64)) { throw 'Packaged LGEngine host hash mismatch.' }
+    $files += $runtimeStage
+    $files += Join-Path $PSScriptRoot 'release/LGEngine Distribution.txt'
+    $upstream = Join-Path $PSScriptRoot 'build/LGEngine-2.7.12'
+    & (Join-Path $PSScriptRoot 'integrations/LGEngine/prepare-upstream.ps1') -SourceDirectory $upstream
+    $engineSourceZip = Join-Path $dist 'LGEngine-2.7.12.0-source.zip'
+    & git -C $upstream archive --format=zip --output=$engineSourceZip HEAD
+    if ($LASTEXITCODE -ne 0) { throw 'LGEngine source archive failed.' }
+    $files += $engineSourceZip
+    $extraAssets += $engineSourceZip
+}
+$publicSource = Join-Path $dist ("LiquidGlassControl-$version-source.zip")
+Copy-Item -LiteralPath $sourceZip -Destination $publicSource -Force
+$extraAssets += $publicSource
 $zip = Join-Path $dist ($name + '.zip')
 Compress-Archive -LiteralPath $files -DestinationPath $zip -CompressionLevel Optimal -Force
 $standalone = Join-Path $dist ($name + '.exe')
 Copy-Item -LiteralPath $exe -Destination $standalone -Force
-$hashes = foreach ($file in @($zip, $standalone)) {
+$hashes = foreach ($file in @($zip, $standalone) + $extraAssets) {
     $hash = Get-FileHash -LiteralPath $file -Algorithm SHA256
     '{0}  {1}' -f $hash.Hash.ToLowerInvariant(), [IO.Path]::GetFileName($file)
 }

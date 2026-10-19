@@ -1,39 +1,32 @@
-Liquid Glass Control 0.12.0-beta.1 — Experimental / 实验版
+Liquid Glass Control 0.13.0-beta.1 — Experimental / 实验版
 Windows 11 x64 · Portable / 免安装
 
 中文
-1. 解压到可写目录，双击 LiquidGlassControl.exe。不要在 ZIP 内运行。
-2. 可选：运行 Create Desktop Shortcut.cmd 创建桌面快捷方式。
-3. 首次默认英文，在 Settings → General → Interface language 选择 English / 简体中文 / 繁體中文 / Polski / Tiếng Việt。
-4. 系统玻璃页独立开关音量、亮度、任务栏、开始菜单、通知中心和资源管理器。
-5. Dock 动画和任务栏智能隐藏默认关闭，可在系统玻璃页单独开启。
-   胶囊任务栏为独立实验性开关，不移动系统图标；通知中心效果仍待确认。
-   设置 → 玻璃效果：分别调整模糊强度、着色、圆角和省电回退。
-6. 关闭窗口后保留托盘。卸载前使用 设置 → 关于 → 还原并退出。
+1. 完整解压 ZIP 到可写目录，双击 LiquidGlassControl.exe。保留 lgengine 子目录。
+2. 系统玻璃 → 效果开关：任务栏、开始菜单、通知中心、资源管理器、键盘切换及 Dock。
+3. 系统玻璃 → 材质调节：模糊、着色、圆角与省电设置。
+4. 系统玻璃 → LGEngine：入场动画、独立指示器动画、晃动、旋钮、重播和示例指示器。
+5. 开启音量／亮度指示器后，隐藏至托盘或切换分页仍会响应变化；选择会自动保存。
+6. 设置 → 常规：界面语言与配色。设置 → 关于 → 还原并退出：结束效果并退出。
+7. 可选运行 Create Desktop Shortcut.cmd 创建桌面快捷方式。
 
-独立 XAML 引擎无需 Windhawk，运行时在程序旁释放引擎 DLL，请保留它。
-玻璃开关保留任务栏布局；智能隐藏是独立功能，关闭会恢复原设置。
-测试本程序时请暂时停用 Windhawk 中对应的 Styler，避免诊断接口冲突。
-经典文件列表和部分自绘区域可能仍不透明，尚非完整 File Explorer Styler 效果。
-实验版本仍需实机验证。程序未签名，可能被应用程序控制策略拦截。
-升级先恢复本程序备份的旧 Windhawk 配置；这一步可能请求管理员授权。
-设置和恢复文件保存在程序旁。还原成功前，请勿删除恢复文件。
+示例指示器不会更改系统音量或亮度。普通 Windows 通知和原生音量提示不会被替换。
+亮度回调取决于硬件支持。无需 Windhawk；宿主使用 Windows 自带的 .NET Framework 4.x。
+不要只移动主 EXE，否则 LGEngine 功能缺少配套组件。程序未签名，系统策略可能阻止运行。
+升级前保留 settings.ini 和恢复记录，成功还原之前不要删除恢复文件。
+LGEngine 的分发授权和上游说明见 LGEngine Distribution.txt。
 
 English
-1. Extract the ZIP to a writable folder and open LiquidGlassControl.exe.
-2. Optional: run Create Desktop Shortcut.cmd. Keep the folder in place.
-3. Language: Settings → General → Interface language. Your choice is saved.
-4. System glass: independent volume, brightness, taskbar, Start, notification and Explorer switches.
-5. Dock hover and smart taskbar hide are separate, off-by-default switches.
-   Taskbar capsule is a separate experimental switch; it does not move icons. Notification-center styling is unconfirmed.
-   Settings → Glass: blur, tint, corners and battery-friendly fallback.
-6. Closing keeps the app in the tray. Before removal, use Settings → About → Restore and exit.
+1. Fully extract the ZIP to a writable directory and run LiquidGlassControl.exe. Keep lgengine/ beside it.
+2. System glass > Effects: shell materials, keyboard switcher and Dock animation.
+3. System glass > Material: blur, tint, corners and battery fallback.
+4. System glass > LGEngine: arrival, indicator arrival, slosh, knob, replay and sample.
+5. Enabled volume/brightness OSD works on other pages and in the tray. Settings save automatically.
+6. Settings > General changes language/colors. Settings > About > Restore and exit ends effects.
+7. Optional: run Create Desktop Shortcut.cmd.
 
-No Windhawk required. The embedded engine DLL is extracted beside the EXE at runtime.
-Glass preserves taskbar geometry; smart hide separately changes auto-hide and restores it on disable.
-Disable competing Windhawk Stylers before testing. Classic file lists and custom app content may stay opaque.
-This is not the complete File Explorer Styler. Live Windows 11 validation is pending.
-Unsigned builds may be blocked by application-control policy.
-Upgrade restores only the Windhawk settings saved by this app; that migration may request administrator approval.
-Keep settings.ini and recovery files beside the EXE until restoration succeeds.
-No third-party theme tools or mods are installed automatically.
+The sample does not change system levels. Windows toasts and the native volume flyout are not replaced.
+Brightness reporting depends on hardware. No Windhawk required; the host uses Windows .NET Framework 4.x.
+The separate EXE is controller-only. This is unsigned experimental software.
+Keep personal settings and recovery files during upgrades until restoration succeeds.
+See LGEngine Distribution.txt for the recorded host distribution authorization.

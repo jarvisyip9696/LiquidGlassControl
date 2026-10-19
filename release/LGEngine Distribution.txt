@@ -1,0 +1,15 @@
+LGEngine 2.7.12.0 by DK (@domk6966)
+Upstream: https://github.com/domk6966/LGEngine
+Source revision: dabe4cb3241a0cd079b254c83c9a06ff95885745
+
+The repository owner confirmed on 2026-10-18 that DK has authorized distribution
+of LGEngine source and the host EXE with this project. This records the owner's
+confirmation; it is not an independently collected upstream license statement.
+The upstream README says that a general license has not yet been chosen. This
+package does not relicense LGEngine or grant rights beyond that authorization.
+The original upstream source archive is included, with its notices preserved.
+
+The full portable ZIP includes the controller, preview adapter, host, C++ SDK
+example, controller source and upstream host source. Extract the entire folder.
+Do not move only the controller EXE if you want LGEngine features.
+The host uses .NET Framework 4.x supplied by Windows. No Windhawk is required.

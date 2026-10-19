@@ -14,6 +14,10 @@ inline Language read(const std::wstring&path){wchar_t code[32]{};GetPrivateProfi
 inline void save(const std::wstring&path){WritePrivateProfileStringW(L"UI",L"Language",codes[current],path.c_str());}
 struct Text{const wchar_t*en;const wchar_t*pl;const wchar_t*vi;};
 inline const Text catalog[]={
+{L"Cannot start LGEngine preview. Error: ",L"Nie można uruchomić podglądu LGEngine. Błąd: ",L"Không thể mở bản xem trước LGEngine. Lỗi: "},
+{L"LGEngine motion and indicators",L"Animacje i wskaźniki LGEngine",L"Chuyển động và chỉ báo LGEngine"},
+{L"Volume / brightness OSD in background",L"Wskaźnik głośności / jasności w tle",L"Chỉ báo âm lượng / độ sáng trong nền"},
+{L"Settings save automatically. When enabled, the OSD also works on other pages and in the tray.",L"Ustawienia zapisują się automatycznie. Włączony wskaźnik działa też na innych stronach i w zasobniku.",L"Cài đặt tự động lưu. Khi bật, chỉ báo vẫn hoạt động ở trang khác và trong khay hệ thống."},
 {L"Reset material sliders",L"Resetuj suwaki materiału",L"Đặt lại thanh trượt vật liệu"},
 {L"Keyboard layout switcher",L"Przełącznik układu klawiatury",L"Chuyển bố cục bàn phím"},
 {L"LGEngine preview did not connect. Check the adapter and Windows application control.",L"Podgląd LGEngine nie połączył się. Sprawdź adapter i kontrolę aplikacji Windows.",L"LGEngine chưa kết nối. Kiểm tra bộ điều hợp và kiểm soát ứng dụng Windows."},

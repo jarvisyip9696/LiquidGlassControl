@@ -10,8 +10,8 @@ $out = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 $exe = Join-Path $out 'LiquidGlass.LGPreview.exe'
 # The original standalone host contains the engine; the C++ client does not.
-$source = Join-Path $PSScriptRoot '../../build/LGEngine-upstream'
-& (Join-Path $PSScriptRoot 'enable-host-v11.ps1') -Root $source
+$source = Join-Path $PSScriptRoot '../../build/LGEngine-2.7.12'
+& (Join-Path $PSScriptRoot 'prepare-upstream.ps1') -SourceDirectory $source
 & (Join-Path $source 'build.ps1') -NoBench
 if (-not $?) { throw 'Original LGEngine host build failed.' }
 $builtHost = Join-Path $source 'bin/LGEngineHost.exe'
