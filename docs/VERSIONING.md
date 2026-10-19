@@ -23,3 +23,7 @@ the prerelease, with the recorded host distribution authorization.
 windows, settings are written only when changed, and the preview recovers after a
 host failure. Its text and icons are antialiased. LGEngine (source and host) is
 MIT-licensed, and its license text ships next to the host.
+
+0.13.0-beta.3 bundles the LGEngine host built from upstream `047aa55` (LGEngine
+2.7.13.0), which keeps the volume and brightness indicator above maximized
+windows. The controller code is unchanged.

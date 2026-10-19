@@ -1,6 +1,6 @@
-LGEngine 2.7.12.0 by DK (@domk6966)
+LGEngine 2.7.13.0 by DK (@domk6966)
 Upstream: https://github.com/domk6966/LGEngine
-Source revision: dabe4cb3241a0cd079b254c83c9a06ff95885745
+Source revision: 047aa555abac2063d7d7008b4127695c0fad0fb1
 
 LGEngine (source and host EXE) is licensed under the MIT License by its author,
 DK, who confirmed on 2026-10-19 that it may be redistributed with this project.

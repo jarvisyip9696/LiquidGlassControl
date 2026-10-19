@@ -15,7 +15,7 @@
 #include "../../../src/optical_labels.h"
 
 namespace {
-constexpr UINT HostEvent=WM_APP+60,OsdEvent=WM_APP+61,MsgVolume=WM_APP+62,MsgDevice=WM_APP+63,MsgOwner=WM_APP+64,MsgForeground=WM_APP+65;
+constexpr UINT HostEvent=WM_APP+60,OsdEvent=WM_APP+61,MsgVolume=WM_APP+62,MsgDevice=WM_APP+63,MsgOwner=WM_APP+64,MsgForeground=WM_APP+65,MsgFlyout=WM_APP+66;
 enum : int {IdArrival=101,IdIndicator,IdSlosh,IdKnob,IdReplay,IdSample,IdOn,IdLabel1=111,IdLabel2,IdLabel3,IdLabel4};
 enum : UINT_PTR {TimerAnim=2,TimerHide=3,TimerReplay=4,TimerRecheck=5};
 // Language order everywhere: English, Simplified Chinese, Traditional Chinese, Polish, Vietnamese.
@@ -23,14 +23,18 @@ using namespace opticalui;
 HWND gWindow{},gOwner{};
 void CALLBACK ownerEvent(HWINEVENTHOOK,DWORD,HWND hwnd,LONG object,LONG,DWORD,DWORD){if(hwnd&&hwnd==gOwner&&object==OBJID_WINDOW&&gWindow)PostMessageW(gWindow,MsgOwner,0,0);}
 void CALLBACK foregroundEvent(HWINEVENTHOOK,DWORD,HWND,LONG,LONG,DWORD,DWORD){if(gWindow)PostMessageW(gWindow,MsgForeground,0,0);}
+// Explorer showed one of its island windows: it may be Windows' own volume/brightness pop-up, appearing for the first time.
+void CALLBACK flyoutEvent(HWINEVENTHOOK,DWORD,HWND hwnd,LONG object,LONG child,DWORD,DWORD){wchar_t cls[64]{};if(hwnd&&object==OBJID_WINDOW&&child==CHILDID_SELF&&gWindow&&GetClassNameW(hwnd,cls,64)&&!wcscmp(cls,lgpreview::FlyoutClass))PostMessageW(gWindow,MsgFlyout,0,0);}
 VOID CALLBACK parentGone(PVOID window,BOOLEAN){PostMessageW(static_cast<HWND>(window),WM_CLOSE,0,0);}
 struct App {
     HWND window{},owner{};lghost::Handle parent;lgpreview::Settings settings;
-    std::unique_ptr<lghost::Client> client,osdClient;lghost::Spec spec,lens;bool visible=true,failed=false,pageEnabled=true,hostSeen=false,cardPlaced=false,lensPlaced=false;UINT specDpi=0;POINT cardAt{},lensAt{};
+    std::unique_ptr<lghost::Client> client,osdClient;lghost::Spec spec,lens;bool visible=true,failed=false,pageEnabled=true,hostSeen=false,cardPlaced=false,lensPlaced=false;UINT specDpi=0;
+    bool lensAtCard=false,deferring=false; // lensAtCard: the Sample button's sweep sits under the card, real level changes where Windows shows its indicator; deferring: Liquid Glass shows its own glass indicator, so the lens stands down
+    POINT cardAt{},lensAt{};
     UINT dpi()const{return owner?GetDpiForWindow(owner):GetDpiForWindow(window);}
     bool rescale(){UINT d=dpi();if(!d||d==specDpi)return false;specDpi=d;spec.scale=d/96.f;spec.width=MulDiv(420,int(d),96);spec.height=MulDiv(owner?64:200,int(d),96);return true;}
     bool osdLive()const{return osdShown||osdAnimating||state.sampling;}
-    HANDLE wait{};HWINEVENTHOOK hooks[4]{};HPOWERNOTIFY power{},power2{};DWORD displayState=1;ULONGLONG quietUntil=0;HFONT uiFont{};DWORD ownerPid{};unsigned labelLang=99;
+    HANDLE wait{};HWINEVENTHOOK hooks[5]{};HPOWERNOTIFY power{},power2{};DWORD displayState=1;ULONGLONG quietUntil=0;HFONT uiFont{};DWORD ownerPid{};unsigned labelLang=99;
     osd::State state;osd::AudioWatch audio;std::vector<uint32_t> osdFrame;osd::Slider slider;int drawnNumber=-1,drawnW=0,drawnH=0;float drawnK=0;wchar_t drawnGlyph=0;
     lghost::Look lensLook{5,32,90,68,30,24,100,50};int lensShape=0;ULONGLONG kickUntil=0; // the lens's own look and profile (Controls.shape), and when the last kick's slosh is over
     bool osdAnimating=false,osdShown=false,osdIn=false;LONGLONG lastTick=0; // osdIn: the lens is fully in (the Shown event), which is when the owner kicks it
@@ -46,8 +50,21 @@ struct App {
     void place(){RECT r{};GetWindowRect(window,&r);spec.x=r.left;spec.y=r.bottom+8;if(owner){POINT p{MulDiv(40,int(dpi()),96),MulDiv(365,int(dpi()),96)};ClientToScreen(owner,&p);spec.x=p.x;spec.y=p.y;}
         // Foreground and setting changes call this often: send a place only when it moved.
         if(client&&(!cardPlaced||cardAt.x!=spec.x||cardAt.y!=spec.y)){cardPlaced=true;cardAt=POINT{spec.x,spec.y};client->setPlace(spec.x,spec.y);}
-        if(osdClient){lens.x=spec.x+(spec.width-lens.width)/2;lens.y=spec.y+spec.height+int(std::lround(8*spec.scale));if(!visible){MONITORINFO mi{};mi.cbSize=sizeof(mi);if(GetMonitorInfoW(MonitorFromWindow(GetForegroundWindow(),MONITOR_DEFAULTTONEAREST),&mi)){lens.x=mi.rcWork.left+(mi.rcWork.right-mi.rcWork.left-lens.width)/2;lens.y=mi.rcWork.bottom-lens.height-int(std::lround(32*spec.scale));}}
+        if(osdClient){lens.x=spec.x+(spec.width-lens.width)/2;lens.y=spec.y+spec.height+int(std::lround(8*spec.scale));if(!lensAtCard||!visible)systemPlace();
             if(!lensPlaced||lensAt.x!=lens.x||lensAt.y!=lens.y){lensPlaced=true;lensAt=POINT{lens.x,lens.y};osdClient->setPlace(lens.x,lens.y);}}}
+    // Where Windows shows its own indicator: centred on its pop-up when there is one, else centred low on the primary work
+    // area; the plate's bottom 14 DIP above the bottom of either, as Windows draws it.
+    void systemPlace(){RECT r{};bool found=false;lgpreview::eachFlyout([&](HWND h){if(!found&&GetWindowRect(h,&r))found=true;});
+        if(!found){MONITORINFO mi{};mi.cbSize=sizeof(mi);if(!GetMonitorInfoW(MonitorFromPoint(POINT{0,0},MONITOR_DEFAULTTOPRIMARY),&mi))return;r=mi.rcWork;}
+        lens.x=r.left+(r.right-r.left-lens.width)/2;lens.y=r.bottom-lens.height-int(std::lround(14*spec.scale));}
+    // Windows' own pop-up stays invisible while the lens replaces it and comes back the moment it does not. While Liquid
+    // Glass runs (it hides the pop-up for its own glass indicator, and gives up for good on one it finds already hidden by
+    // someone else), the lens stands down and leaves the pop-up alone instead of showing a second indicator.
+    void syncFlyout(){bool was=deferring;deferring=lgpreview::flyoutOwner()==1||lgpreview::ownerRunning();bool want=osdOk()&&osdClient->connected()&&!deferring;
+        if(want){lgpreview::eachFlyout([](HWND h){lgpreview::hideFlyout(h);});lgpreview::restoreStrays();}else lgpreview::restoreFlyouts();
+        if(was!=deferring&&owner&&hostSeen)PostMessageW(owner,lgpreview::HostState,1,reinterpret_cast<LPARAM>(window));} // the owner reads the status again (bit 64) and says why the lens stays off
+    void hookShell(){if(hooks[4]){UnhookWinEvent(hooks[4]);hooks[4]=nullptr;}DWORD shell=0;HWND desktop=GetShellWindow();
+        if(desktop&&GetWindowThreadProcessId(desktop,&shell))hooks[4]=SetWinEventHook(EVENT_OBJECT_SHOW,EVENT_OBJECT_SHOW,nullptr,flyoutEvent,shell,0,WINEVENT_OUTOFCONTEXT);}
     // The preview window's own Win32 controls.
     void fill(int id,const wchar_t* const* items,int count,const wchar_t* first){
         int keep=sel(id);SendDlgItemMessageW(window,id,CB_RESETCONTENT,0,0);if(first)SendDlgItemMessageW(window,id,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(first));
@@ -113,10 +130,10 @@ struct App {
         spec.savePower=settings.savePower!=0;spec.hover=!rm;spec.zoom=10;spec.liquid=60;spec.bounce=45;spec.travel=-1;
         int arrival=sel(IdArrival),indicator=sel(IdIndicator)-1;spec.motion=rm?0:arrival;spec.indicator=rm?0:indicator;
         // Protocol v1 has background adaptation but no explicit light override.
-        spec.adapt=true;client->setSpec(spec);
+        spec.adapt=true;spec.inShots=true;client->setSpec(spec); // inShots: the card and the lens show in screenshots
         if(osdClient){ // the lens: its own look and profile (Controls), the owner's motion numbers (lensSpec), the arrival and indicator of the combos
             static const char* const profiles[]={"","Tighter rim","Thin lens","Flat pane"};
-            lens=osd::lensSpec(spec,spec.scale);lens.look=lensLook;lens.profile=profiles[lensShape<0||lensShape>3?0:lensShape];lens.savePower=settings.savePower!=0;lens.hover=false;
+            lens=osd::lensSpec(spec,spec.scale);lens.inShots=true;lens.look=lensLook;lens.profile=profiles[lensShape<0||lensShape>3?0:lensShape];lens.savePower=settings.savePower!=0;lens.hover=false;
             lens.motion=rm?0:arrival;lens.indicator=spec.indicator;osdClient->setSpec(lens);}
         cardPlaced=lensPlaced=false; // setSpec carried the spec's own place; the next place() sends the real one
         int slosh=rm?3:sel(IdSlosh);client->setSlosh(slosh,60);if(osdClient)osdClient->setSlosh(slosh,50);
@@ -131,6 +148,7 @@ struct App {
         bool now=pageEnabled&&!ownerAway&&!IsIconic(window)&&!(high.dwFlags&HCF_HIGHCONTRASTON);
         if(now!=visible){visible=now;client->show(now);}place();if(!osdOk()&&osdLive())osdStop();
         if(owner&&rescale()){place();apply();}
+        syncFlyout();
     }
     // OSD lens
     bool osdOk()const{HIGHCONTRASTW high{};high.cbSize=sizeof(high);SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(high),&high,0);return osdClient&&client&&indicatorOn()&&client->hostMinor()>=1&&!(high.dwFlags&HCF_HIGHCONTRASTON);}
@@ -154,11 +172,12 @@ struct App {
         if(!state.knob.active()&&!state.sampling&&GetTickCount64()>=kickUntil){KillTimer(window,TimerAnim);osdAnimating=false;osdClient->setBusy(false);}
     }
     void osdShowChange(int way){
-        if(!osdOk()){state.knob.jump(state.current());return;} // not shown: snap, so the next show does not glide from an old level
-        place();osdRender(!osdShown);osdKick(way);osdClient->show(true);osdShown=true;osdWake();SetTimer(window,TimerHide,1800,nullptr);
+        syncFlyout();
+        if(!osdOk()||deferring){state.knob.jump(state.current());return;} // not shown: snap, so the next show does not glide from an old level
+        lensAtCard=false;place();osdRender(!osdShown);osdKick(way);osdClient->show(true);osdShown=true;osdWake();SetTimer(window,TimerHide,1800,nullptr);
     }
     void sample(){ // a sweep on the lens only: nothing here reads or writes the system volume or brightness
-        if(!osdOk())return;place();KillTimer(window,TimerHide);state.startSample();osdRender(true);osdClient->show(true);osdShown=true;osdWake();
+        if(!osdOk())return;lensAtCard=visible;place();KillTimer(window,TimerHide);state.startSample();osdRender(true);osdClient->show(true);osdShown=true;osdWake();
     }
     void replay(){if(!client||!visible)return;client->hide(true);SetTimer(window,TimerReplay,UINT(spec.outMs+150),nullptr);}
     bool valid(lgpreview::Settings s){return s.version==2&&s.opacity>=5&&s.opacity<=90&&s.blur<=40&&s.radius<=28&&s.tint<=2&&s.savePower<=1&&s.reducedMotion<=1&&s.language<=4;}
@@ -167,6 +186,8 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
     auto app=reinterpret_cast<App*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));
     if(msg==WM_NCCREATE){app=static_cast<App*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams);app->window=hwnd;SetWindowLongPtrW(hwnd,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(app));}
     if(!app)return DefWindowProcW(hwnd,msg,w,l);
+    static const UINT taskbarCreated=RegisterWindowMessageW(L"TaskbarCreated");
+    if(msg==taskbarCreated&&taskbarCreated){app->hookShell();app->syncFlyout();return 0;} // Explorer restarted: a new process to watch, new pop-up windows
     try {switch(msg){
     case HostEvent:
         if(w==lghost::Failed){app->failed=true;SetWindowTextW(hwnd,app->title(unsigned(w)));
@@ -175,27 +196,31 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
             // Only the client giving up (never connected) is fatal; a rejected Create, look or extra keeps the pipe and the OSD lens.
             if(app->owner&&!app->hostSeen){PostMessageW(app->owner,lgpreview::Event,2,reinterpret_cast<LPARAM>(hwnd));app->client->show(false);if(app->osdLive())app->osdStop();}}
         else if(w==lghost::Lost||w==lghost::Shown)SetWindowTextW(hwnd,app->title(unsigned(w)));
-        else if(w==lghost::Connected||w==lghost::Restarted){app->hostSeen=true;if(app->owner)PostMessageW(app->owner,lgpreview::HostState,1,reinterpret_cast<LPARAM>(hwnd));app->content();app->osdRender(true);}return 0; // the host minor is known now: the chips and the lens can appear
-    case OsdEvent:if(w==lghost::LightMoved&&app->osdShown)app->osdRender(false);else if(w==lghost::Connected||w==lghost::Restarted){app->osdIn=false;app->osdRender(true);}
-        else if(w==lghost::Shown){if(app->osdShown)app->osdIn=true;}else if(w==lghost::Hidden){if(!app->osdShown)app->osdIn=false;}return 0;
+        else if(w==lghost::Connected||w==lghost::Restarted){app->hostSeen=true;if(app->owner)PostMessageW(app->owner,lgpreview::HostState,1,reinterpret_cast<LPARAM>(hwnd));app->content();app->osdRender(true);}
+        app->syncFlyout();return 0; // the host minor is known now: the chips and the lens can appear
+    case OsdEvent:if(w==lghost::LightMoved&&app->osdShown)app->osdRender(false);else if(w==lghost::Connected||w==lghost::Restarted){app->osdIn=false;app->osdRender(true);app->syncFlyout();}
+        else if(w==lghost::Shown){if(app->osdShown)app->osdIn=true;}else if(w==lghost::Hidden){if(!app->osdShown)app->osdIn=false;}
+        else if(w==lghost::Lost||w==lghost::Failed)app->syncFlyout(); // no lens to show: Windows' own pop-up comes back
+        return 0;
     case MsgVolume:{int way=app->state.onVolume(float(w)/1000.f,l!=0);if(way)app->osdShowChange(way);return 0;}
     case MsgDevice:{float level=0;bool mute=false;if(app->audio.attach()&&app->audio.read(level,mute))app->state.resetVolume(level,mute);return 0;}
     case MsgOwner:app->refresh();SetTimer(hwnd,TimerRecheck,400,nullptr);return 0; // the event can come before the minimize/restore finishes: look again once
     case MsgForeground:app->refresh();return 0;
+    case MsgFlyout:app->syncFlyout();return 0;
     case WM_POWERBROADCAST:
         if(w==PBT_POWERSETTINGCHANGE&&l){auto s=reinterpret_cast<POWERBROADCAST_SETTING*>(l);
             if(s->PowerSetting==osd::BrightnessGuid&&s->DataLength==sizeof(DWORD)){DWORD percent=0;memcpy(&percent,s->Data,sizeof(percent));int level=int(std::min<DWORD>(percent,100));bool quiet=app->displayState!=1||GetTickCount64()<app->quietUntil; // idle dimming and display changes move the brightness too: re-baseline silently
                 if(quiet)app->state.resetBrightness(level);else{int way=app->state.onBrightness(level);if(way)app->osdShowChange(way);}}
             else if(s->PowerSetting==osd::ConsoleDisplayGuid&&s->DataLength==sizeof(DWORD)){memcpy(&app->displayState,s->Data,sizeof(DWORD));app->quietUntil=GetTickCount64()+3000;}}
         return TRUE;
-    case WM_COPYDATA:{auto p=reinterpret_cast<COPYDATASTRUCT*>(l);if(reinterpret_cast<HWND>(w)==app->owner&&p&&p->dwData==lgpreview::StatusTag&&p->cbData==0){return (app->client&&app->client->hostMinor()>=1?1:0)|(app->visible?2:0)|(app->osdShown?4:0)|(IsWindowVisible(hwnd)?8:0)|(app->osdOk()?16:0)|(app->client&&app->client->connected()?32:0);}if(reinterpret_cast<HWND>(w)==app->owner&&p&&p->dwData==lgpreview::ControlsTag&&p->cbData==sizeof(lgpreview::Controls)&&p->lpData){lgpreview::Controls c;memcpy(&c,p->lpData,sizeof(c));if(c.arrival<0||c.arrival>8||c.indicator<0||c.indicator>9||c.slosh<0||c.slosh>3||c.knob<0||c.knob>2||c.action<0||c.action>2)return 0;
+    case WM_COPYDATA:{auto p=reinterpret_cast<COPYDATASTRUCT*>(l);if(reinterpret_cast<HWND>(w)==app->owner&&p&&p->dwData==lgpreview::StatusTag&&p->cbData==0){return (app->client&&app->client->hostMinor()>=1?1:0)|(app->visible?2:0)|(app->osdShown?4:0)|(IsWindowVisible(hwnd)?8:0)|(app->osdOk()?16:0)|(app->client&&app->client->connected()?32:0)|(app->deferring?64:0);}if(reinterpret_cast<HWND>(w)==app->owner&&p&&p->dwData==lgpreview::ControlsTag&&p->cbData==sizeof(lgpreview::Controls)&&p->lpData){lgpreview::Controls c;memcpy(&c,p->lpData,sizeof(c));if(c.arrival<0||c.arrival>8||c.indicator<0||c.indicator>9||c.slosh<0||c.slosh>3||c.knob<0||c.knob>2||c.action<0||c.action>2)return 0;
             for(int v:{c.dark,c.blur,c.refraction,c.rim,c.shadow,c.elevation})if(v<0||v>100)return 0;if(c.round<0||c.round>28||c.intensity<0||c.intensity>150||c.shape<0||c.shape>3)return 0;
             app->lensLook=lghost::Look{c.dark,c.blur,c.refraction,c.rim,c.shadow,c.round,c.intensity,c.elevation};app->lensShape=c.shape; // the lens's own look and profile: apply() sends them in place
             int ids[]={IdArrival,IdIndicator,IdSlosh,IdKnob};int values[]={c.arrival,c.indicator,c.slosh,c.knob};for(int i=0;i<4;++i)SendDlgItemMessageW(hwnd,ids[i],CB_SETCURSEL,values[i],0);CheckDlgButton(hwnd,IdOn,c.osd?BST_CHECKED:BST_UNCHECKED);app->pageEnabled=c.enabled!=0;app->refresh();app->apply();if(!c.osd&&app->osdLive())app->osdStop();if(c.action==1)app->replay();if(c.action==2)app->sample();return 1;}if(reinterpret_cast<HWND>(w)!=app->owner||!p||p->dwData!=lgpreview::WireTag||p->cbData!=sizeof(lgpreview::Settings)||!p->lpData)return 0;
         lgpreview::Settings next;memcpy(&next,p->lpData,sizeof(next));if(!app->valid(next))return 0;app->settings=next;app->apply();return lgpreview::digest(next);}
     case WM_COMMAND:{int id=LOWORD(w),code=HIWORD(w);
         if(code==CBN_SELCHANGE&&id>=IdArrival&&id<=IdKnob){app->apply();return 0;}
-        if(code==BN_CLICKED){if(id==IdReplay)app->replay();else if(id==IdSample)app->sample();else if(id==IdOn){EnableWindow(GetDlgItem(hwnd,IdSample),app->indicatorOn());if(!app->indicatorOn()&&app->osdLive())app->osdStop();}}
+        if(code==BN_CLICKED){if(id==IdReplay)app->replay();else if(id==IdSample)app->sample();else if(id==IdOn){EnableWindow(GetDlgItem(hwnd,IdSample),app->indicatorOn());if(!app->indicatorOn()&&app->osdLive())app->osdStop();app->syncFlyout();}}
         return 0;}
     case WM_TIMER:
         if(w==TimerRecheck){KillTimer(hwnd,TimerRecheck);app->refresh();}else if(w==TimerAnim)app->osdTick();
@@ -212,6 +237,7 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
         for(UINT_PTR timer:{TimerAnim,TimerHide,TimerReplay,TimerRecheck})KillTimer(hwnd,timer);
         if(app->wait){UnregisterWaitEx(app->wait,INVALID_HANDLE_VALUE);app->wait=nullptr;}
         for(auto&hook:app->hooks)if(hook){UnhookWinEvent(hook);hook=nullptr;}
+        lgpreview::restoreFlyouts(); // Windows' own pop-up comes back with the lens gone
         if(app->power){UnregisterPowerSettingNotification(app->power);app->power=nullptr;}if(app->power2){UnregisterPowerSettingNotification(app->power2);app->power2=nullptr;}
         app->audio.stop();app->osdClient.reset();app->client.reset();if(app->uiFont){DeleteObject(app->uiFont);app->uiFont=nullptr;}PostQuitMessage(0);return 0;
     case WM_CTLCOLORSTATIC:SetBkMode(reinterpret_cast<HDC>(w),TRANSPARENT);return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
@@ -269,11 +295,12 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);WNDCLASSW cls{};cls.lpfnWndProc=proc;cls.hInstance=instance;cls.lpszClassName=L"LiquidGlass.LGHost.Client";cls.hCursor=LoadCursorW(nullptr,IDC_ARROW);cls.hbrBackground=reinterpret_cast<HBRUSH>(UINT_PTR(COLOR_WINDOW+1));
     if(!RegisterClassW(&cls))return 1;auto hwnd=CreateWindowExW(WS_EX_TOOLWINDOW,cls.lpszClassName,L"Connecting to LGEngineHost",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,100,100,600,150,nullptr,nullptr,instance,&app);if(!hwnd)return 1;
     gWindow=hwnd;gOwner=app.owner;
+    lgpreview::restoreFlyouts(); // a run that ended without tidying may have left Windows' pop-up hidden
     try{wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,32768);std::wstring path=executable;path.resize(path.find_last_of(L"\\")+1);lghost::Options options;options.hostPath=lghost::bundledHostPath(path);options.suffix=L"lgcontrol11";options.notify=hwnd;options.message=HostEvent;
         app.buildUi(instance);
         app.rescale();app.place();
-        app.client=std::make_unique<lghost::Client>(options,app.spec);
-        app.lens=osd::lensSpec(app.spec,app.spec.scale);app.lens.hover=false;lghost::Options lensOptions=options;lensOptions.message=OsdEvent;app.osdClient=std::make_unique<lghost::Client>(lensOptions,app.lens);
+        app.spec.inShots=true;app.client=std::make_unique<lghost::Client>(options,app.spec);
+        app.lens=osd::lensSpec(app.spec,app.spec.scale);app.lens.inShots=true;app.lens.hover=false;lghost::Options lensOptions=options;lensOptions.message=OsdEvent;app.osdClient=std::make_unique<lghost::Client>(lensOptions,app.lens);
         app.apply();
         float level=0;bool mute=false;if(app.audio.start(hwnd,MsgVolume,MsgDevice)&&app.audio.read(level,mute))app.state.onVolume(level,mute); // the first reading only initialises
         app.power2=RegisterPowerSettingNotification(hwnd,&osd::ConsoleDisplayGuid,DEVICE_NOTIFY_WINDOW_HANDLE);app.power=RegisterPowerSettingNotification(hwnd,&osd::BrightnessGuid,DEVICE_NOTIFY_WINDOW_HANDLE);
@@ -282,6 +309,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
     if(app.owner&&app.ownerPid){app.hooks[0]=SetWinEventHook(EVENT_OBJECT_SHOW,EVENT_OBJECT_HIDE,nullptr,ownerEvent,app.ownerPid,0,WINEVENT_OUTOFCONTEXT);
         app.hooks[2]=SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE,EVENT_OBJECT_LOCATIONCHANGE,nullptr,ownerEvent,app.ownerPid,0,WINEVENT_OUTOFCONTEXT);app.hooks[1]=SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART,EVENT_SYSTEM_MINIMIZEEND,nullptr,ownerEvent,app.ownerPid,0,WINEVENT_OUTOFCONTEXT);
         app.hooks[3]=SetWinEventHook(EVENT_SYSTEM_FOREGROUND,EVENT_SYSTEM_FOREGROUND,nullptr,foregroundEvent,0,0,WINEVENT_OUTOFCONTEXT);}
+    app.hookShell();
     ShowWindow(hwnd,app.owner?SW_HIDE:SW_SHOWNORMAL);app.refresh();if(app.owner)PostMessageW(app.owner,lgpreview::Event,1,reinterpret_cast<LPARAM>(hwnd));
     MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}return app.failed?1:0;
 }

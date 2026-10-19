@@ -24,6 +24,7 @@ inline DWORD digest(Settings const&value){
     for(size_t i=0;i<sizeof(value);++i){hash^=bytes[i];hash*=16777619u;}
     return hash;
 }
+inline void restoreFlyouts(); // below, with the pop-up helpers
 class Controller {
     HANDLE process{},job{},waiter{};DWORD pid{};HWND remote{};Settings settings{};
     DWORD error{};HWND ownerWindow{};bool sent=false;Controls lastControls{};bool controlsSent=false;
@@ -97,6 +98,55 @@ public:
         if(job){CloseHandle(job);job=nullptr;}
         if(process){CloseHandle(process);process=nullptr;}
         remote=nullptr;pid=0;sent=false;controlsSent=false;
+        restoreFlyouts(); // the adapter may have been killed above (busy at WM_CLOSE): Windows' own pop-up comes back either way
     }
 };
+// Windows' own volume/brightness pop-up: a small topmost tool window of Explorer's (XamlExplorerHostIslandWindow),
+// centred on the bottom of the work area and reused every time (it exists, hidden, between uses). The LGEngine
+// indicator keeps it invisible (layered, alpha 1) while the lens replaces it, tagged with FlyoutMark so that the adapter,
+// a later run of it or the controller can always undo it. Liquid Glass (the engine owner's app) does the same with
+// OwnerMark when its own glass indicator replaces it; a pop-up it hides is never touched here.
+constexpr const wchar_t* FlyoutMark=L"LiquidGlassControl.Opacity";
+constexpr const wchar_t* OwnerMark=L"ToastMover.Opacity";
+constexpr const wchar_t* FlyoutClass=L"XamlExplorerHostIslandWindow";
+inline bool looksLikeFlyout(HWND h){ // the same test as Liquid Glass's Osd.cs LooksLikeIndicator
+    wchar_t cls[64]{};if(!GetClassNameW(h,cls,64)||wcscmp(cls,FlyoutClass)!=0)return false;
+    LONG_PTR ex=GetWindowLongPtrW(h,GWL_EXSTYLE);if((ex&(WS_EX_TOPMOST|WS_EX_TOOLWINDOW))!=(WS_EX_TOPMOST|WS_EX_TOOLWINDOW))return false;
+    RECT r{};if(!GetWindowRect(h,&r))return false;UINT dpi=GetDpiForWindow(h);float k=dpi?dpi/96.f:1.f;
+    float w=(r.right-r.left)/k,ht=(r.bottom-r.top)/k;if(w<100||w>380||ht<36||ht>96)return false;
+    MONITORINFO mi{};mi.cbSize=sizeof(mi);if(!GetMonitorInfoW(MonitorFromRect(&r,MONITOR_DEFAULTTONEAREST),&mi))return false;
+    float off=(r.left+r.right)/2.f-(mi.rcWork.left+mi.rcWork.right)/2.f;if(off<0)off=-off;
+    return off<=20*k&&r.bottom>=mi.rcWork.bottom-48*k&&r.bottom<=mi.rcWork.bottom+12*k;
+}
+template<class F> void eachFlyout(F f){ // Explorer's indicator pop-ups, hidden or shown
+    DWORD shell=0;HWND desktop=GetShellWindow();if(!desktop||!GetWindowThreadProcessId(desktop,&shell))return;
+    HWND h=nullptr;for(int guard=0;guard<500&&(h=FindWindowExW(nullptr,h,FlyoutClass,nullptr))!=nullptr;++guard){DWORD pid=0;GetWindowThreadProcessId(h,&pid);if(pid==shell&&looksLikeFlyout(h))f(h);}
+}
+inline bool responsive(HWND h){DWORD_PTR r=0;return SendMessageTimeoutW(h,WM_NULL,0,0,SMTO_ABORTIFHUNG,200,&r)!=0;}
+inline void restoreFlyout(HWND h){
+    if(!IsWindow(h)||!GetPropW(h,FlyoutMark))return;
+    SetLayeredWindowAttributes(h,0,255,LWA_ALPHA); // fully visible again from here
+    if(!responsive(h))return; // Explorer busy: the tag stays, so a later call (or run) finishes the tidying
+    SetWindowLongPtrW(h,GWL_EXSTYLE,GetWindowLongPtrW(h,GWL_EXSTYLE)&~LONG_PTR(WS_EX_LAYERED));RemovePropW(h,FlyoutMark);
+}
+inline bool hideFlyout(HWND h){
+    if(GetPropW(h,OwnerMark))return false; // Liquid Glass replaces it already
+    LONG_PTR ex=GetWindowLongPtrW(h,GWL_EXSTYLE);bool ours=GetPropW(h,FlyoutMark)!=nullptr;
+    if((ex&WS_EX_LAYERED)&&!ours)return false; // it manages its own transparency: not ours to touch
+    if(!(ex&WS_EX_LAYERED)){
+        if(!responsive(h)||!SetPropW(h,FlyoutMark,reinterpret_cast<HANDLE>(1)))return false;
+        SetWindowLongPtrW(h,GWL_EXSTYLE,ex|WS_EX_LAYERED);
+        if(!(GetWindowLongPtrW(h,GWL_EXSTYLE)&WS_EX_LAYERED)){RemovePropW(h,FlyoutMark);return false;}
+    }
+    if(!SetLayeredWindowAttributes(h,0,1,LWA_ALPHA)){restoreFlyout(h);return false;}
+    return true;
+}
+// Puts back every pop-up this app left invisible, wherever it is now (also after a crash or a kill).
+inline void restoreFlyouts(){HWND h=nullptr;for(int guard=0;guard<500&&(h=FindWindowExW(nullptr,h,FlyoutClass,nullptr))!=nullptr;++guard)if(GetPropW(h,FlyoutMark))restoreFlyout(h);}
+// Puts back the ones that no longer look like the indicator (moved, resized, reused by Explorer for something else).
+inline void restoreStrays(){HWND h=nullptr;for(int guard=0;guard<500&&(h=FindWindowExW(nullptr,h,FlyoutClass,nullptr))!=nullptr;++guard)if(GetPropW(h,FlyoutMark)&&!looksLikeFlyout(h))restoreFlyout(h);}
+// Liquid Glass is running (its single-instance mutex exists).
+inline bool ownerRunning(){HANDLE m=OpenMutexW(SYNCHRONIZE,FALSE,L"Local\\ToastMover.SingleInstance");if(!m)return false;CloseHandle(m);return true;}
+// Who keeps Windows' pop-up hidden: 0 = nobody (Windows shows it), 1 = Liquid Glass, 2 = this app's LGEngine indicator.
+inline int flyoutOwner(){int who=0;eachFlyout([&](HWND h){if(GetPropW(h,OwnerMark))who=1;else if(!who&&GetPropW(h,FlyoutMark))who=2;});return who;}
 }
