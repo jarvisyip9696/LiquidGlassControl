@@ -76,7 +76,7 @@ pass; see candidate validation.json for the tested binary hashes.
 
 No 10 ms latency, CPU speedup, power or visual-parity result is claimed here.
 This is not a no-.NET engine port. Evaluated protocol: LGEngine commit
-`b6e93053b3eb001b310273b1ece1e58ec448106d` (`GlassProtocol.cs`, `GlassSection.cs`,
+`dabe4cb3241a0cd079b254c83c9a06ff95885745` (`GlassProtocol.cs`, `GlassSection.cs`,
 `PipeTransport.cs`). Upstream has not chosen a license; the local candidate remains
 outside normal release packaging pending permission to distribute its host.
 
