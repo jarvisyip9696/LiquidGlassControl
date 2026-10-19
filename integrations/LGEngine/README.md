@@ -81,7 +81,7 @@ Dock 影响半径扩大至 2.5 个按钮宽度，峰值请求从 1.26 提升至 
 
 评估日期：2026-10-17。上游：https://github.com/domk6966/LGEngine
 
-评估版本：`b6e93053b3eb001b310273b1ece1e58ec448106d`。
+当前固定版本：LGEngine 2.7.12.0（protocol 1.1），commit `dabe4cb3241a0cd079b254c83c9a06ff95885745`。
 下载并修改的工作副本位于 `build/LGEngine-upstream`（不进入本项目发行包）。
 
 ## 第一阶段适配
@@ -138,11 +138,7 @@ LGEngine 光学窗口在主程序色调为默认项（目前标签为“跟随�
 
 ## 已修复的问题
 
-`fixes.patch` 已应用于上述工作副本，包含三项修复及上述显式色调接口：
-
-1. `GlassButton.Copy` 对 `Mask` 深拷贝，避免 `SetButtons` 发布后，调用方修改数组影响渲染线程的快照。
-2. `GlassService.Connect` 的 HostPath 校验拒绝 `C:relative.exe` 和 `\relative.exe`。原先仅使用 `Path.IsPathRooted`，这些依赖当前目录/驱动器的路径也会通过“完整路径”检查。
-3. `PipeTransport.StartDelayMs` 在加随机抖动后再次限制为 60000 ms。原实现先限基值再加抖动，实际最大接近 75 秒，与一分钟上限的文档承诺不符。
+`fixes.patch` 仅保留此原生候选端所需的显式外观模式扩展。LGEngine 2.7.12.0 已包含完整 HostPath 校验、60 秒重试上限和按钮遮罩深拷贝；这些修复不再重复打补丁。
 
 没有改动上游宿主协议、系统外观或安全策略。没有推送修改到上游。
 
@@ -201,7 +197,7 @@ LGEngine 光学窗口在主程序色调为默认项（目前标签为“跟随�
 
 ```powershell
 git clone https://github.com/domk6966/LGEngine.git build/LGEngine-upstream
-git -C build/LGEngine-upstream checkout b6e93053b3eb001b310273b1ece1e58ec448106d
+git -C build/LGEngine-upstream checkout dabe4cb3241a0cd079b254c83c9a06ff95885745
 git -C build/LGEngine-upstream apply ../../integrations/LGEngine/fixes.patch
 ./integrations/LGEngine/test.ps1
 ./build/LGEngine-upstream/build.ps1
