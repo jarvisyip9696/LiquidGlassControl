@@ -3,7 +3,7 @@
 #define NOMINMAX
 #endif
 // C++17 client for LGEngine protocol 1.1 (major and frame version 1; falls back to 1.0 against a host that does not
-// answer with a minor), evaluated at b6e93053 and extended for the 1.1 messages (types 10..17, event 0x24).
+// answer with a minor), evaluated at dabe4cb and extended for the 1.1 messages (types 10..17, event 0x24).
 // Screen capture, glass rendering and glass windows belong exclusively to the host.
 #include <windows.h>
 #include <sddl.h>
