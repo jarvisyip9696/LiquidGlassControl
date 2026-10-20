@@ -29,6 +29,12 @@ VOID CALLBACK parentGone(PVOID window,BOOLEAN){PostMessageW(static_cast<HWND>(wi
 struct App {
     HWND window{},owner{};lghost::Handle parent;lgpreview::Settings settings;
     std::unique_ptr<lghost::Client> client,osdClient;lghost::Spec spec,lens;bool visible=true,failed=false,pageEnabled=true,hostSeen=false,cardPlaced=false,lensPlaced=false;UINT specDpi=0;
+    // lensOptions has no host path: only the main client launches the host, so the two clients never race to start two.
+    // lensEver: the lens client connected once (it then reconnects by itself). lensRejected: connected, but the host refused its Create.
+    lghost::Options lensOptions;bool lensEver=false,lensRejected=false;
+    // Starts the lens client once the main client is connected, and again after a lens client that gave up without ever connecting.
+    bool startLens(){if(osdClient&&(lensEver||osdClient->connected()))return false;if(osdLive())osdStop();osdClient.reset();lensRejected=false;
+        try{osdClient=std::make_unique<lghost::Client>(lensOptions,lens);}catch(...){return false;}apply();return true;}
     bool lensAtCard=false,deferring=false; // lensAtCard: the Sample button's sweep sits under the card, real level changes where Windows shows its indicator; deferring: Liquid Glass shows its own glass indicator, so the lens stands down
     POINT cardAt{},lensAt{};
     UINT dpi()const{return owner?GetDpiForWindow(owner):GetDpiForWindow(window);}
@@ -60,7 +66,8 @@ struct App {
     // Windows' own pop-up stays invisible while the lens replaces it and comes back the moment it does not. While Liquid
     // Glass runs (it hides the pop-up for its own glass indicator, and gives up for good on one it finds already hidden by
     // someone else), the lens stands down and leaves the pop-up alone instead of showing a second indicator.
-    void syncFlyout(){bool was=deferring;deferring=lgpreview::flyoutOwner()==1||lgpreview::ownerRunning();bool want=osdOk()&&osdClient->connected()&&!deferring;
+    void syncFlyout(){if(lensRejected&&osdClient&&osdClient->surfaceId())lensRejected=false; // a later Create was accepted
+        bool was=deferring;deferring=lgpreview::flyoutOwner()==1||lgpreview::ownerRunning();bool want=osdOk()&&osdClient->connected()&&!deferring;
         if(want){lgpreview::eachFlyout([](HWND h){lgpreview::hideFlyout(h);});lgpreview::restoreStrays();}else lgpreview::restoreFlyouts();
         if(was!=deferring&&owner&&hostSeen)PostMessageW(owner,lgpreview::HostState,1,reinterpret_cast<LPARAM>(window));} // the owner reads the status again (bit 64) and says why the lens stays off
     void hookShell(){if(hooks[4]){UnhookWinEvent(hooks[4]);hooks[4]=nullptr;}DWORD shell=0;HWND desktop=GetShellWindow();
@@ -151,7 +158,7 @@ struct App {
         syncFlyout();
     }
     // OSD lens
-    bool osdOk()const{HIGHCONTRASTW high{};high.cbSize=sizeof(high);SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(high),&high,0);return osdClient&&client&&indicatorOn()&&client->hostMinor()>=1&&!(high.dwFlags&HCF_HIGHCONTRASTON);}
+    bool osdOk()const{HIGHCONTRASTW high{};high.cbSize=sizeof(high);SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(high),&high,0);return osdClient&&(!lensRejected||osdClient->surfaceId())&&client&&indicatorOn()&&client->hostMinor()>=1&&!(high.dwFlags&HCF_HIGHCONTRASTON);}
     void osdRender(bool full){
         // Glass.cs ShowPreview/RefreshPreview/LevelChanged: the sample is made at the card size and scale, the bar adopted out of it, and the number made again when the level (or the symbol) changes; only the slider strip moves otherwise.
         if(!osdClient)return;int W=lens.width,H=lens.height;float k=lens.scale;size_t count=size_t(W)*size_t(H);int number=state.percent();wchar_t glyph=state.glyph();
@@ -194,13 +201,18 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
             wchar_t executable[32768]{};GetModuleFileNameW(nullptr,executable,32768);std::wstring path=executable;path.resize(path.find_last_of(L"\\")+1);path+=L"host-client.log";
             auto file=_wfopen(path.c_str(),L"a");if(file){auto text=app->client->failureText();fprintf(file,"Win32 %lu: %s\n",(unsigned long)app->client->lastError(),text.c_str());fclose(file);}
             // Only the client giving up (never connected) is fatal; a rejected Create, look or extra keeps the pipe and the OSD lens.
-            if(app->owner&&!app->hostSeen){PostMessageW(app->owner,lgpreview::Event,2,reinterpret_cast<LPARAM>(hwnd));app->client->show(false);if(app->osdLive())app->osdStop();}}
+            // HostState 3 carries the Win32 code first, so the app can tell a policy-blocked host from a plain failure.
+            if(app->owner&&!app->hostSeen){PostMessageW(app->owner,lgpreview::HostState,3,LPARAM(app->client->lastError()));PostMessageW(app->owner,lgpreview::Event,2,reinterpret_cast<LPARAM>(hwnd));app->client->show(false);if(app->osdLive())app->osdStop();}}
         else if(w==lghost::Lost||w==lghost::Shown)SetWindowTextW(hwnd,app->title(unsigned(w)));
-        else if(w==lghost::Connected||w==lghost::Restarted){app->hostSeen=true;if(app->owner)PostMessageW(app->owner,lgpreview::HostState,1,reinterpret_cast<LPARAM>(hwnd));app->content();app->osdRender(true);}
+        else if(w==lghost::Connected||w==lghost::Restarted){app->hostSeen=true;if(app->owner)PostMessageW(app->owner,lgpreview::HostState,1,reinterpret_cast<LPARAM>(hwnd));if(!app->startLens()){app->content();app->osdRender(true);}}
         app->syncFlyout();return 0; // the host minor is known now: the chips and the lens can appear
-    case OsdEvent:if(w==lghost::LightMoved&&app->osdShown)app->osdRender(false);else if(w==lghost::Connected||w==lghost::Restarted){app->osdIn=false;app->osdRender(true);app->syncFlyout();}
+    case OsdEvent:if(w==lghost::LightMoved&&app->osdShown)app->osdRender(false);else if(w==lghost::Connected||w==lghost::Restarted){app->lensEver=true;app->lensRejected=false;app->osdIn=false;app->osdRender(true);app->syncFlyout();}
         else if(w==lghost::Shown){if(app->osdShown)app->osdIn=true;}else if(w==lghost::Hidden){if(!app->osdShown)app->osdIn=false;}
-        else if(w==lghost::Lost||w==lghost::Failed)app->syncFlyout(); // no lens to show: Windows' own pop-up comes back
+        else if(w==lghost::Lost||w==lghost::Failed){ // no lens to show: Windows' own pop-up comes back
+            // Failed with a host code while still connected and without a surface: the host refused the lens Create, so stop
+            // hiding Windows' pop-up. The code-less Failed comes just before a disconnect, which Lost handles.
+            if(w==lghost::Failed&&l)app->lensRejected=app->osdClient&&app->osdClient->connected()&&!app->osdClient->surfaceId();
+            if(!app->osdOk()&&app->osdLive())app->osdStop();app->syncFlyout();}
         return 0;
     case MsgVolume:{int way=app->state.onVolume(float(w)/1000.f,l!=0);if(way)app->osdShowChange(way);return 0;}
     case MsgDevice:{float level=0;bool mute=false;if(app->audio.attach()&&app->audio.read(level,mute))app->state.resetVolume(level,mute);return 0;}
@@ -300,7 +312,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         app.buildUi(instance);
         app.rescale();app.place();
         app.spec.inShots=true;app.client=std::make_unique<lghost::Client>(options,app.spec);
-        app.lens=osd::lensSpec(app.spec,app.spec.scale);app.lens.inShots=true;app.lens.hover=false;lghost::Options lensOptions=options;lensOptions.message=OsdEvent;app.osdClient=std::make_unique<lghost::Client>(lensOptions,app.lens);
+        app.lens=osd::lensSpec(app.spec,app.spec.scale);app.lens.inShots=true;app.lens.hover=false;app.lensOptions=options;app.lensOptions.message=OsdEvent;app.lensOptions.hostPath.clear(); // the lens client starts on HostEvent Connected
         app.apply();
         float level=0;bool mute=false;if(app.audio.start(hwnd,MsgVolume,MsgDevice)&&app.audio.read(level,mute))app.state.onVolume(level,mute); // the first reading only initialises
         app.power2=RegisterPowerSettingNotification(hwnd,&osd::ConsoleDisplayGuid,DEVICE_NOTIFY_WINDOW_HANDLE);app.power=RegisterPowerSettingNotification(hwnd,&osd::BrightnessGuid,DEVICE_NOTIFY_WINDOW_HANDLE);

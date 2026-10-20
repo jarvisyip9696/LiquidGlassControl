@@ -33,9 +33,18 @@ void queueGlass(bool discover){
     // Short bursts share one connection pass; disabling everything restores immediately.
     if(!glassConfig.features||!SetTimer(mainWindow,14,180,nullptr)){bool pending=glassPendingDiscover;applyGlass(pending);}
 }
+void saveGlassSettings(){
+    WritePrivateProfileStringW(L"Glass",L"Features",std::to_wstring(desiredGlassFeatures()).c_str(),iniPath.c_str());
+    WritePrivateProfileStringW(L"Glass",L"Opacity",std::to_wstring(glassConfig.opacity).c_str(),iniPath.c_str());
+    WritePrivateProfileStringW(L"Glass",L"Blur",std::to_wstring(glassConfig.blur).c_str(),iniPath.c_str());
+    WritePrivateProfileStringW(L"Glass",L"Radius",std::to_wstring(glassConfig.radius).c_str(),iniPath.c_str());
+    WritePrivateProfileStringW(L"Glass",L"Tint",std::to_wstring(glassConfig.tint).c_str(),iniPath.c_str());
+    WritePrivateProfileStringW(L"Glass",L"BatteryFriendly",batteryFriendly?L"1":L"0",iniPath.c_str());
+}
 void applyGlass(bool discover){
     syncOpticalPreview();
     KillTimer(mainWindow,14);glassPendingDiscover=false;
+    if(!selfTestMode)saveGlassSettings();
     if(selfTestMode||migrationJob||migrationNeeded()){updateNativeInfo();return;}
     glassConfig.features=desiredGlassFeatures();
     if(glassConfig.features&&!ensureEngine()){KillTimer(mainWindow,6);failedMaterials|=glassConfig.features;confirmedMaterials&=~glassConfig.features;fallbackMaterials&=~glassConfig.features;updateNativeInfo();return;}
@@ -50,12 +59,6 @@ void applyGlass(bool discover){
     if(engineReady){engine.publish(effective);if(discover)engine.discover();else engine.broadcast();}
     if(engineReady&&effective.features)SetTimer(mainWindow,20,2000,nullptr);else KillTimer(mainWindow,20);
     observeWindows();
-    WritePrivateProfileStringW(L"Glass",L"Features",std::to_wstring(glassConfig.features).c_str(),iniPath.c_str());
-    WritePrivateProfileStringW(L"Glass",L"Opacity",std::to_wstring(glassConfig.opacity).c_str(),iniPath.c_str());
-    WritePrivateProfileStringW(L"Glass",L"Blur",std::to_wstring(glassConfig.blur).c_str(),iniPath.c_str());
-    WritePrivateProfileStringW(L"Glass",L"Radius",std::to_wstring(glassConfig.radius).c_str(),iniPath.c_str());
-    WritePrivateProfileStringW(L"Glass",L"Tint",std::to_wstring(glassConfig.tint).c_str(),iniPath.c_str());
-    WritePrivateProfileStringW(L"Glass",L"BatteryFriendly",batteryFriendly?L"1":L"0",iniPath.c_str());
     updateNativeInfo();updateEffectLabels();
     if(glassConfig.features&~pausedFeatures){if(glassConfig.features&~pausedFeatures&~confirmedMaterials)SetTimer(mainWindow,6,3500,nullptr);message(tr(L"正在连接系统材质；各项会显示连接结果。请打开对应区域。",L"Connecting materials; each item shows its result. Open the selected surface."));}
     else if(pausedFeatures)message(tr(L"效果已按省电或系统辅助功能设置暂停。",L"Effects paused by battery saving or system accessibility settings."));
