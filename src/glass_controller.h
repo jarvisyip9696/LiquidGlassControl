@@ -82,12 +82,16 @@ class Controller {
     }
 public:
     ~Controller(){shutdown();}
+    // Shell processes pin the injected engine until they restart, so an older copy
+    // can stay locked; delete what is free now and retry the rest on a later start.
+    static void sweepEngines(const std::wstring&dir,const std::wstring&keep){WIN32_FIND_DATAW found{};HANDLE h=FindFirstFileW((dir+L"LiquidGlass.Engine-*.dll").c_str(),&found);if(h==INVALID_HANDLE_VALUE)return;do{auto path=dir+found.cFileName;if(_wcsicmp(path.c_str(),keep.c_str())!=0)DeleteFileW(path.c_str());}while(FindNextFileW(h,&found));FindClose(h);}
     bool initialize(const std::wstring&dir,bool nativeProbe=false){if(data)return true;endpoint=nativeProbe?L"LiquidGlass.Control.NativeProbe":L"LiquidGlass.Control";
 
         // Extract the exact engine embedded in this EXE. A versioned filename
         // allows an old shell session to release its DLL naturally on sign-out.
         auto resource=FindResourceW(nullptr,MAKEINTRESOURCEW(201),RT_RCDATA);if(!resource)return false;DWORD size=SizeofResource(nullptr,resource);auto bytes=LockResource(LoadResource(nullptr,resource));
         unsigned long long hash=14695981039346656037ull;for(DWORD i=0;i<size;++i){hash^=((const BYTE*)bytes)[i];hash*=1099511628211ull;}dllPath=dir+L"LiquidGlass.Engine-"+std::to_wstring(hash)+L".dll";
+        sweepEngines(dir,dllPath);
         windowClass=threadClassName(dllPath);bool identical=false;HANDLE existing=CreateFileW(dllPath.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);if(existing!=INVALID_HANDLE_VALUE){LARGE_INTEGER length{};GetFileSizeEx(existing,&length);if(length.QuadPart==size){std::vector<BYTE> content(size);DWORD n=0;if(ReadFile(existing,content.data(),size,&n,nullptr)&&n==size)identical=memcmp(content.data(),bytes,size)==0;}CloseHandle(existing);}
         if(!identical){HANDLE file=CreateFileW(dllPath.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if(file==INVALID_HANDLE_VALUE)return false;DWORD n=0;BOOL ok=WriteFile(file,bytes,size,&n,nullptr);CloseHandle(file);if(!ok||n!=size)return false;}
         DWORD previousMode=0;BOOL changedMode=SetThreadErrorMode(SEM_FAILCRITICALERRORS|SEM_NOOPENFILEERRORBOX,&previousMode);

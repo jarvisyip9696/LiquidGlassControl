@@ -97,7 +97,7 @@ inline const Text catalog[]={
 {L"Old theme not yet restored. Click Restore to retry; recovery files retained.",L"Stary motyw nie został przywrócony. Kliknij Przywróć. Kopie odzyskiwania zachowano.",L"Chưa khôi phục chủ đề cũ. Nhấn Khôi phục để thử lại; tệp khôi phục vẫn được giữ."},
 {L"Previous theme restore incomplete, code: ",L"Przywracanie poprzedniego motywu niepełne, kod: ",L"Chưa khôi phục xong chủ đề trước, mã lỗi: "},
 {L"Previous theme restored. Taskbar uses the original system layout.",L"Przywrócono poprzedni motyw. Pasek zadań używa oryginalnego układu systemu.",L"Đã khôi phục chủ đề trước. Thanh tác vụ dùng bố cục hệ thống gốc."},
-{L"Standalone engine could not load. Check that the app folder is writable.",L"Nie można załadować silnika. Sprawdź możliwość zapisu w folderze aplikacji.",L"Không tải được công cụ độc lập. Hãy kiểm tra quyền ghi vào thư mục ứng dụng."},
+{L"Standalone engine could not load. Check that AppData\\Local\\LiquidGlassControl\\Engine is writable.",L"Nie można załadować silnika. Sprawdź możliwość zapisu w AppData\\Local\\LiquidGlassControl\\Engine.",L"Không tải được công cụ độc lập. Hãy kiểm tra quyền ghi vào AppData\\Local\\LiquidGlassControl\\Engine."},
 {L"Cannot create tray icon; exiting.",L"Nie można utworzyć ikony w zasobniku. Zamykanie.",L"Không tạo được biểu tượng khay hệ thống; đang thoát."}
 };
 inline void replace(std::wstring&s,const wchar_t*from,const wchar_t*to){size_t at=0;while((at=s.find(from,at))!=std::wstring::npos){s.replace(at,wcslen(from),to);at+=wcslen(to);}}

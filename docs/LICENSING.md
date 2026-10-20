@@ -19,8 +19,8 @@ supersedes the 2026-10-18 note that recorded a distribution authorization only.
 
 LGEngine is not relicensed under this project's GPL-3.0-only; it stays MIT, and
 its copyright and permission notice must accompany every copy. The bundled
-LGEngine 2.7.13.0 corresponds to upstream commit
-`047aa555abac2063d7d7008b4127695c0fad0fb1`, which includes the upstream
+LGEngine 2.7.14.0 corresponds to upstream commit
+`2b07c0d9298d3e7637a44efe670eb20d46b30124`, which includes the upstream
 `LICENSE` file, so the portable package ships that file as
 `lgengine/LICENSE-LGEngine.txt`, next to the host, and the original upstream source
 archive carries it as `LICENSE`. `release/LGEngine LICENSE.txt` holds the same text

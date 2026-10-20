@@ -39,3 +39,10 @@ silently, property writes recover from a stale index, and a slow Start or
 notification host restart is re-attached. The controller tears down only when
 Windows really ends the session, and the LGEngine preview gives Windows' own
 volume pop-up back when the host refuses the lens.
+
+0.13.0-beta.6 bundles the LGEngine 2.7.14.0 host, which is per-monitor DPI
+aware: above 100% display scaling the volume and brightness glass was drawn
+off-screen. The shell engine DLL is now extracted to
+`%LOCALAPPDATA%\LiquidGlassControl\Engine` instead of the app folder, because
+Explorer keeps it loaded until it restarts and that locked the folder; older
+copies are deleted once nothing holds them.
