@@ -90,7 +90,8 @@ public:
         moved=r.PointerMoved([this](auto const&,auto const&args){point(args);});
         exited=r.PointerExited([this](auto const&,auto const&args){point(args,true);});attached=true;return true;
     }catch(...){return false;}}
-    void add(IInspectable*p_){try{winrt::Windows::Foundation::IInspectable obj{nullptr};winrt::copy_from_abi(obj,p_);auto e=obj.try_as<Element>();if(!e)return;for(auto&i:icons)if(i.element.get()==e)return;if(icons.size()>=256)return;
+    // Nothing calls remove() (the engine only adds): drop buttons that are gone first, or the 256 cap would stop magnifying new ones.
+    void add(IInspectable*p_){try{winrt::Windows::Foundation::IInspectable obj{nullptr};winrt::copy_from_abi(obj,p_);auto e=obj.try_as<Element>();if(!e)return;for(auto it=icons.begin();it!=icons.end();)if(!it->element.get()){unbind(*it);it=icons.erase(it);}else ++it;for(auto&i:icons)if(i.element.get()==e)return;if(icons.size()>=256)return;
         icons.push_back({winrt::make_weak(e),{},{1,1,1},{0,0,0},false,1});auto&i=icons.back();
         // Buttons can handle pointer movement before it reaches the taskbar root.
         try{i.entered=e.PointerEntered([this](auto const&,auto const&args){point(args);});i.moved=e.PointerMoved([this](auto const&,auto const&args){point(args);});i.exited=e.PointerExited([this](auto const&,auto const&args){point(args,true);});}

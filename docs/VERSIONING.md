@@ -46,3 +46,11 @@ off-screen. The shell engine DLL is now extracted to
 `%LOCALAPPDATA%\LiquidGlassControl\Engine` instead of the app folder, because
 Explorer keeps it loaded until it restarts and that locked the folder; older
 copies are deleted once nothing holds them.
+
+0.13.0-beta.7 keeps the LGEngine 2.7.14.0 host. Fast brightness or volume
+steps redraw the glass once per frame instead of once per step, the glass
+hides before sleep and when the display turns off, and the LGEngine sample
+card is placed outside the settings window. App glass gets two pages: Windows
+backdrop (now saved and reapplied at startup, with border and title colours)
+and Title-bar glass, an engine glass strip over the title bar of the chosen
+apps with its own look.
