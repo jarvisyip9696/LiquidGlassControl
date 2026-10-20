@@ -347,8 +347,8 @@ class Client {
             // A host may close its pipe while exiting after idle. Retry that initial handoff before declaring the service
             // unavailable. Deliberately NOT retried forever: if Smart App Control blocks the host exe, every new attempt would
             // pop a Smart App Control toast, so after 3 attempts that never connected we post Failed and stop. A launch the
-            // policy refused will be refused again: stop after the first one (lastError() keeps the code for the owner).
-            if(!ever&&(++initialAttempts>=3||policyBlocked(error))){post(Failed);return;}
+            // policy refused will be refused again: stop after the first one, also once a host has run (lastError() keeps the code for the owner).
+            if((!ever&&++initialAttempts>=3)||policyBlocked(error)){post(Failed);return;}
             if(WaitForSingleObject(stop.value,wire::backoffMs(attempt++,nextRandom()))==WAIT_OBJECT_0)return;
         }
     }

@@ -220,7 +220,7 @@ LRESULT CALLBACK themedControl(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
         if((m==WM_MOUSEMOVE||m==WM_LBUTTONDOWN||m==WM_LBUTTONUP)&&IsWindowEnabled(h)){trackHover(h);TCHITTESTINFO hit{};hit.pt={static_cast<short>(LOWORD(l)),static_cast<short>(HIWORD(l))};int index=TabCtrl_HitTest(h,&hit);auto mo=motionOf(h);if(mo->hotTab!=index){mo->hotTab=index;InvalidateRect(h,nullptr,FALSE);}for(int i=0;i<3;++i)setMotion(h,kTabHover0+i,index==i?1.f:0.f);}
         if(m==WM_MOUSELEAVE){RemovePropW(h,L"LG.Hover");motionOf(h)->hotTab=-1;for(int i=0;i<3;++i)setMotion(h,kTabHover0+i,0.f);InvalidateRect(h,nullptr,FALSE);}
     }
-    if(!comboControl&&m==WM_PAINT){ControlPaint paint(h);HDC dc=paint.dc;RECT r;GetClientRect(h,&r);FillRect(dc,&r,(h==settingsTabs||h==systemTabs)?cardBrush:background);for(int i=0;i<TabCtrl_GetItemCount(h);++i){DRAWITEMSTRUCT item{};item.CtlType=ODT_TAB;item.CtlID=GetDlgCtrlID(h);item.itemID=i;item.hwndItem=h;item.hDC=dc;item.itemAction=ODA_DRAWENTIRE;if(showFocus(h)&&TabCtrl_GetCurFocus(h)==i)item.itemState=ODS_FOCUS;TabCtrl_GetItemRect(h,i,&item.rcItem);drawModernControl(&item);}return 0;}
+    if(!comboControl&&m==WM_PAINT){ControlPaint paint(h);HDC dc=paint.dc;RECT r;GetClientRect(h,&r);FillRect(dc,&r,(h==settingsTabs||h==systemTabs||h==appTabs)?cardBrush:background);for(int i=0;i<TabCtrl_GetItemCount(h);++i){DRAWITEMSTRUCT item{};item.CtlType=ODT_TAB;item.CtlID=GetDlgCtrlID(h);item.itemID=i;item.hwndItem=h;item.hDC=dc;item.itemAction=ODA_DRAWENTIRE;if(showFocus(h)&&TabCtrl_GetCurFocus(h)==i)item.itemState=ODS_FOCUS;TabCtrl_GetItemRect(h,i,&item.rcItem);drawModernControl(&item);}return 0;}
     if(m==WM_ERASEBKGND){RECT r;GetClientRect(h,&r);FillRect(reinterpret_cast<HDC>(w),&r,background);return 1;}
     if(m==WM_PAINT&&comboControl){
         ControlPaint paint(h);HDC dc=paint.dc;RECT r;GetClientRect(h,&r);
@@ -277,7 +277,7 @@ bool drawModernControl(DRAWITEMSTRUCT* item){
     // light up an unrelated middle tab when jumping across two positions.
     float tabCover=0.f;
     if(tab){
-        int selected=item->hwndItem==systemTabs?systemSection:item->hwndItem==settingsTabs?(settingsPage==2?1:0):currentPage;
+        int selected=item->hwndItem==appTabs?appSection:item->hwndItem==systemTabs?systemSection:item->hwndItem==settingsTabs?(settingsPage==2?1:0):currentPage;
         int last=(int)(INT_PTR)GetPropW(item->hwndItem,L"LG.Sel")-1;
         if(last!=selected){
             if(last>=0){stepMotion(item->hwndItem);float progress=mo->v[kSelect];for(int i=0;i<3;++i)mo->tabWeights[i]=mo->tabFromWeights[i]+((i==last?1.f:0.f)-mo->tabFromWeights[i])*progress;}
@@ -290,7 +290,7 @@ bool drawModernControl(DRAWITEMSTRUCT* item){
         tabCover=mo->tabFromWeights[index]+((index==selected?1.f:0.f)-mo->tabFromWeights[index])*mo->v[kSelect];
         mo->tabWeights[index]=tabCover;
     }
-    HBRUSH base=CreateSolidBrush(tab?((item->hwndItem==settingsTabs||item->hwndItem==systemTabs)?cardColor():highContrast()?GetSysColor(COLOR_WINDOW):tint(palette().accent,18)):cardColor());FillRect(dc,&r,base);DeleteObject(base);
+    HBRUSH base=CreateSolidBrush(tab?((item->hwndItem==settingsTabs||item->hwndItem==systemTabs||item->hwndItem==appTabs)?cardColor():highContrast()?GetSysColor(COLOR_WINDOW):tint(palette().accent,18)):cardColor());FillRect(dc,&r,base);DeleteObject(base);
     if(tab)hoverAmount=disabled?0.f:mo->v[kTabHover0+(int)item->itemID];
     // Stable geometry keeps text and edges crisp while colors ease.
     int inset=MulDiv(2,dpi,96);InflateRect(&r,-inset,-inset);

@@ -14,6 +14,12 @@ constexpr ULONG_PTR StatusTag = 0x4c475033;
 struct Controls { int arrival=5, indicator=5, slosh=0, knob=2, enabled=1, osd=1, action=0;
     int dark=5, blur=32, refraction=90, rim=68, shadow=30, round=24, intensity=100, elevation=50, shape=0; };
 static_assert(sizeof(Controls)==16*sizeof(int),"LGEngine controls wire size");
+// App glass > Title-bar glass: the engine strip over the title bar of the active window that App glass chose.
+// target: that window (0 = none, hide). inset: margin in DIPs (0-16). Look: its own sliders, separate from [LGEngine].
+constexpr ULONG_PTR AppGlassTag = 0x4c475034;
+struct AppGlass { int on=0, inset=0, reserved1=0, reserved2=0; unsigned long long target=0;
+    int dark=0, blur=0, refraction=70, rim=60, shadow=0, round=8, intensity=100, elevation=0; };
+static_assert(sizeof(AppGlass)==56,"LGEngine app glass wire size");
 struct Settings {
     DWORD version=2, opacity=35, blur=12, radius=12, tint=0;
     DWORD savePower=1, reducedMotion=0, language=0;
@@ -27,7 +33,7 @@ inline DWORD digest(Settings const&value){
 inline void restoreFlyouts(); // below, with the pop-up helpers
 class Controller {
     HANDLE process{},job{},waiter{};DWORD pid{};HWND remote{};Settings settings{};
-    DWORD error{};HWND ownerWindow{};bool sent=false;Controls lastControls{};bool controlsSent=false;
+    DWORD error{};HWND ownerWindow{};bool sent=false;Controls lastControls{};bool controlsSent=false;AppGlass lastApp{};bool appSent=false;
     bool validRemote()const{DWORD source=0;return remote&&running()&&GetWindowThreadProcessId(remote,&source)&&source==pid;}
     static void CALLBACK exitedCallback(PVOID window,BOOLEAN){PostMessageW(static_cast<HWND>(window),HostState,2,0);}
 public:
@@ -47,6 +53,14 @@ public:
         if(ok){lastControls=value;lastControls.action=0;controlsSent=true;}
         return ok;
     }
+    bool appGlass(AppGlass value){
+        if(!validRemote())return false;
+        if(appSent&&memcmp(&lastApp,&value,sizeof(AppGlass))==0)return true;
+        COPYDATASTRUCT data{AppGlassTag,sizeof(value),&value};DWORD_PTR result=0;
+        bool ok=SendMessageTimeoutW(remote,WM_COPYDATA,reinterpret_cast<WPARAM>(ownerWindow),reinterpret_cast<LPARAM>(&data),SMTO_ABORTIFHUNG|SMTO_BLOCK,200,&result)&&result==1;
+        if(ok){lastApp=value;appSent=true;}
+        return ok;
+    }
     bool running()const{return process&&WaitForSingleObject(process,0)==WAIT_TIMEOUT;}
     bool exited()const{return process&&!running();}
     bool connected()const{return validRemote();}
@@ -56,7 +70,7 @@ public:
     bool accept(HWND window) {
         DWORD source=0;GetWindowThreadProcessId(window,&source);
         if(!running()||!window||source!=pid)return false;
-        remote=window;sent=false;controlsSent=false;return true;
+        remote=window;sent=false;controlsSent=false;appSent=false;return true;
     }
     bool publish(Settings value){
         bool unchanged=memcmp(&settings,&value,sizeof(Settings))==0;
@@ -97,7 +111,7 @@ public:
         if(waiter){UnregisterWaitEx(waiter,nullptr);waiter=nullptr;}
         if(job){CloseHandle(job);job=nullptr;}
         if(process){CloseHandle(process);process=nullptr;}
-        remote=nullptr;pid=0;sent=false;controlsSent=false;
+        remote=nullptr;pid=0;sent=false;controlsSent=false;appSent=false;
         restoreFlyouts(); // the adapter may have been killed above (busy at WM_CLOSE): Windows' own pop-up comes back either way
     }
 };

@@ -98,7 +98,14 @@ inline const Text catalog[]={
 {L"Previous theme restore incomplete, code: ",L"Przywracanie poprzedniego motywu niepełne, kod: ",L"Chưa khôi phục xong chủ đề trước, mã lỗi: "},
 {L"Previous theme restored. Taskbar uses the original system layout.",L"Przywrócono poprzedni motyw. Pasek zadań używa oryginalnego układu systemu.",L"Đã khôi phục chủ đề trước. Thanh tác vụ dùng bố cục hệ thống gốc."},
 {L"Standalone engine could not load. Check that AppData\\Local\\LiquidGlassControl\\Engine is writable.",L"Nie można załadować silnika. Sprawdź możliwość zapisu w AppData\\Local\\LiquidGlassControl\\Engine.",L"Không tải được công cụ độc lập. Hãy kiểm tra quyền ghi vào AppData\\Local\\LiquidGlassControl\\Engine."},
-{L"Cannot create tray icon; exiting.",L"Nie można utworzyć ikony w zasobniku. Zamykanie.",L"Không tạo được biểu tượng khay hệ thống; đang thoát."}
+{L"Cannot create tray icon; exiting.",L"Nie można utworzyć ikony w zasobniku. Zamykanie.",L"Không tạo được biểu tượng khay hệ thống; đang thoát."},
+{L"Apps & backdrop",L"Aplikacje i tło",L"Ứng dụng và nền"},{L"Title-bar glass",L"Szkło paska tytułu",L"Kính thanh tiêu đề"},{L"Inset",L"Margines",L"Lề"},
+{L"Border: default",L"Obramowanie: domyślne",L"Viền: mặc định"},{L"Border: none",L"Obramowanie: brak",L"Viền: không"},{L"Border: accent",L"Obramowanie: akcent",L"Viền: màu nhấn"},{L"Border: light",L"Obramowanie: jasne",L"Viền: sáng"},{L"Border: dark",L"Obramowanie: ciemne",L"Viền: tối"},
+{L"Title text: default",L"Tekst tytułu: domyślny",L"Chữ tiêu đề: mặc định"},{L"Title text: light",L"Tekst tytułu: jasny",L"Chữ tiêu đề: sáng"},{L"Title text: dark",L"Tekst tytułu: ciemny",L"Chữ tiêu đề: tối"},
+{L"LGEngine glass over the title bar of the active app window",L"Szkło LGEngine na pasku tytułu aktywnego okna aplikacji",L"Kính LGEngine trên thanh tiêu đề của cửa sổ ứng dụng đang hoạt động"},
+{L"Uses the apps chosen on the Apps & backdrop tab (Apply). Shows on the active window only and hides while it moves. Keep Blur low so the title stays readable.",L"Używa aplikacji wybranych na karcie Aplikacje i tło (Zastosuj). Widoczne tylko w aktywnym oknie i ukrywane podczas jego przesuwania. Utrzymuj niskie Rozmycie, aby tytuł pozostał czytelny.",L"Dùng các ứng dụng đã chọn ở tab Ứng dụng và nền (Áp dụng). Chỉ hiện trên cửa sổ đang hoạt động và ẩn khi cửa sổ di chuyển. Giữ Độ mờ thấp để tiêu đề dễ đọc."},
+{L"Restoring the old theme; try App glass again in a moment.",L"Przywracanie starego motywu; spróbuj ponownie użyć Szkła aplikacji za chwilę.",L"Đang khôi phục chủ đề cũ; hãy thử lại Kính ứng dụng sau giây lát."},
+{L"No matching window is open. The rule is saved and applies when one opens.",L"Brak pasującego otwartego okna. Reguła jest zapisana i zadziała po otwarciu takiego okna.",L"Chưa có cửa sổ phù hợp đang mở. Quy tắc đã lưu và sẽ áp dụng khi cửa sổ mở."}
 };
 inline void replace(std::wstring&s,const wchar_t*from,const wchar_t*to){size_t at=0;while((at=s.find(from,at))!=std::wstring::npos){s.replace(at,wcslen(from),to);at+=wcslen(to);}}
 inline const Text* findTranslation(const wchar_t*english){
