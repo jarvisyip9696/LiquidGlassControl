@@ -27,3 +27,15 @@ MIT-licensed, and its license text ships next to the host.
 0.13.0-beta.3 bundles the LGEngine host built from upstream `047aa55` (LGEngine
 2.7.13.0), which keeps the volume and brightness indicator above maximized
 windows. The controller code is unchanged.
+
+0.13.0-beta.4 fixes the controller: App glass Restore reverts only App glass, the
+background indicator switch works again, a host blocked by Smart App Control is
+reported once (no retry toasts) instead of showing as connected, and the status
+line stays on the page it belongs to and names the acrylic fallback.
+
+0.13.0-beta.5 fixes the Explorer engine subscription: a failed subscription is
+retried with backoff and shown on the affected items instead of repeating
+silently, property writes recover from a stale index, and a slow Start or
+notification host restart is re-attached. The controller tears down only when
+Windows really ends the session, and the LGEngine preview gives Windows' own
+volume pop-up back when the host refuses the lens.

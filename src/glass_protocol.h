@@ -79,7 +79,8 @@ inline Surface identify(const std::wstring&name,const std::wstring&type,int host
     if(host==2&&(name==L"PageContent"||name==L"FullScreenPageRoot"))return NotificationClear;
     if(host==2&&(name==L"NotificationCenterGrid"||name==L"CalendarCenterGrid"))return NotificationPlate;
     if(host==2&&(name==L"ControlCenterGrid"||name==L"ControlCenterRegion"||name==L"ToastBackgroundBorder"||name==L"ToastBackgroundBorder2"||name==L"CalendarControlScrollViewer"||name==L"CalendarHeaderMinimizedOverlay"||name==L"NotificationCenterTopBanner"||name==L"ListContent"))return NotificationAuxiliary;
-    if(host==3&&(name==L"PART_LayoutRoot"||name==L"RootContainer"||name==L"NavigationBarControlGrid"||name==L"DetailsViewControlRootGrid"||name==L"GalleryRootGrid"))return ExplorerClear;
+    // PART_LayoutRoot is a common template part name; like Explorer Styler, clear only the Grid one.
+    if(host==3&&((name==L"PART_LayoutRoot"&&type==L"Microsoft.UI.Xaml.Controls.Grid")||name==L"RootContainer"||name==L"NavigationBarControlGrid"||name==L"DetailsViewControlRootGrid"||name==L"GalleryRootGrid"))return ExplorerClear;
     if(host==3&&(name==L"FileExplorerAddressBarGrid"||name==L"FileExplorerSearchBox"||name==L"CommandBarControlRootGrid"||name==L"FileExplorerCommandBar"||name==L"NavigationBarControlGrid"||name==L"HomeViewRootGrid"||name==L"GalleryRootGrid"||name==L"DetailsViewControlRootGrid"||name==L"GalleryViewControl"))return ExplorerPlate;
     return NoSurface;
 }

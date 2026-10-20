@@ -58,7 +58,7 @@ HWINEVENTHOOK windowEvents{};unsigned attributeWrites=0;std::set<HWND> pendingWi
 bool volumeOn=false,brightnessOn=false,startupAnimation=true,startupPlayed=false;ULONGLONG startupTime=0;
 HWND settingsTabs{},systemTabs{};int systemSection=0,settingsPage=0,buildingSettings=-1;std::vector<HWND> settingsControls[4];std::map<std::wstring,HICON> appIcons;
 void selectSystemSection(int section);void labelSectionTabs();
-glass::Controller engine;glass::Config glassConfig;bool explorerOn=false,dockOn=false,keyboardOn=false,batteryFriendly=true;HANDLE migrationJob{};HPOWERNOTIFY powerNotification{},acNotification{};bool engineReady=false,engineAttempted=false;
+glass::Controller engine;glass::Config glassConfig;bool explorerOn=false,explorerByApp=false,dockOn=false,keyboardOn=false,batteryFriendly=true;HANDLE migrationJob{};HPOWERNOTIFY powerNotification{},acNotification{};bool engineReady=false,engineAttempted=false;
 DWORD confirmedMaterials=0,failedMaterials=0,pausedFeatures=0,fallbackMaterials=0;
 constexpr GUID PowerSavingStatus={0xe00958c0,0xc213,0x4ace,{0xac,0x77,0xfe,0xcc,0xed,0x2e,0xee,0xa5}};
 bool glassPendingDiscover=false;
@@ -117,29 +117,40 @@ void saveLookSlider(int id){
     if(selfTestMode||nativeProbeMode||id<OptLook1||id>OptLook8)return;
     WritePrivateProfileStringW(L"LGEngine",lookKey[id-OptLook1],std::to_wstring((int)SendDlgItemMessageW(mainWindow,id,TBM_GETPOS,0,0)).c_str(),iniPath.c_str());
 }
-void message(const std::wstring& s){SetWindowTextW(status,s.c_str());}
+// A status line belongs to the page it came from (-1 = the page now shown); other pages show it blank, not stale.
+std::wstring statusText;int statusPage=0;
+void message(const std::wstring& s,int page=-1){statusText=s;statusPage=page<0?currentPage:page;SetWindowTextW(status,statusPage==currentPage?s.c_str():L"");}
+void refreshStatus(){SetWindowTextW(status,statusPage==currentPage?statusText.c_str():L"");}
 void updateOpticalButtons(){
     if(!opticalUiReady||!mainWindow||!GetDlgItem(mainWindow,OptReplay)||!GetDlgItem(mainWindow,OptSample))return;
     // Status bits from the child: 32 = its host is connected, 1 = that host speaks protocol 1.1 (the sample lens needs it).
     bool live=opticalPreview.synchronized();unsigned bits=live?opticalPreview.status():0;
-    EnableWindow(GetDlgItem(mainWindow,OptReplay),live&&(bits&32));EnableWindow(GetDlgItem(mainWindow,OptSample),live&&(bits&1)&&IsDlgButtonChecked(mainWindow,OptOn)==BST_CHECKED);
-    static bool standDownShown=false;bool standDown=(bits&64)!=0;if(standDown&&!standDownShown)message(tr(L"Liquid Glass 已在显示它自己的玻璃音量指示器，因此此指示器保持关闭。要使用此指示器，请在 Liquid Glass 中关闭其玻璃指示器。",L"Liquid Glass is already showing its own glass volume indicator, so this one stays off. Turn off the glass indicator in Liquid Glass to use this one."));standDownShown=standDown;
+    EnableWindow(GetDlgItem(mainWindow,OptReplay),live&&(bits&32));EnableWindow(GetDlgItem(mainWindow,OptSample),live&&(bits&33)==33&&IsDlgButtonChecked(mainWindow,OptOn)==BST_CHECKED);
+    static bool standDownShown=false;bool standDown=(bits&64)!=0;if(standDown&&!standDownShown)message(tr(L"Liquid Glass 已在显示它自己的玻璃音量指示器，因此此指示器保持关闭。要使用此指示器，请在 Liquid Glass 中关闭其玻璃指示器。",L"Liquid Glass is already showing its own glass volume indicator, so this one stays off. Turn off the glass indicator in Liquid Glass to use this one."),1);standDownShown=standDown;
 }
-unsigned opticalFailures=0;ULONGLONG opticalRetryAt=0;std::wstring opticalFailureText;bool opticalHostSeen=false;
+unsigned opticalFailures=0;ULONGLONG opticalRetryAt=0;std::wstring opticalFailureText;bool opticalHostSeen=false;DWORD opticalHostError=0;
+// 4551 = Smart App Control / WDAC, 1260 = blocked by policy, 577 = invalid image hash: retrying only pops more toasts.
+bool opticalPolicyBlocked(){return opticalHostError==4551||opticalHostError==1260||opticalHostError==577;}
 void opticalFailed(const std::wstring& text){
     if(mainWindow)KillTimer(mainWindow,16);
     opticalStartup=0;opticalPreview.stop();opticalHostSeen=false;++opticalFailures;
     ULONGLONG wait=std::min<ULONGLONG>(30000ull<<std::min(opticalFailures-1,4u),600000ull);opticalRetryAt=GetTickCount64()+wait;
     // Timer 22 retries once the backoff has passed; the count resets only when a host really connects.
     if(mainWindow){if(opticalFailures<3)SetTimer(mainWindow,22,UINT(wait+50),nullptr);else KillTimer(mainWindow,22);}
-    opticalFailureText=text;message(text);updateOpticalButtons();
+    opticalFailureText=text;message(text,1);updateOpticalButtons();
+}
+// "Connected" only once the adapter's host has said Hello; before that the adapter alone is up.
+// A stored "waiting" line is upgraded even off the LGEngine section, so it never comes back stale.
+void opticalConnectedMessage(){
+    std::wstring waiting=tr(L"LGEngine 预览已启动，正在等待引擎宿主...",L"LGEngine preview started; waiting for the engine host...");
+    if((currentPage==1&&systemSection==2)||(statusPage==1&&statusText==waiting))message(opticalHostSeen?tr(L"LGEngine 预览已连接；光学参数只影响预览。",L"LGEngine preview connected; optical controls affect the preview only."):waiting,1);
 }
 bool opticalMayStart(bool user){
     if(user){opticalFailures=0;return true;}
     return opticalFailures==0||(opticalFailures<3&&GetTickCount64()>=opticalRetryAt);
 }
 bool startOptical(){
-    if(opticalPreview.start(mainWindow)){opticalStartup=GetTickCount64();SetTimer(mainWindow,16,500,nullptr);return true;}
+    if(opticalPreview.start(mainWindow)){opticalHostError=0;opticalHostSeen=false;opticalStartup=GetTickCount64();SetTimer(mainWindow,16,500,nullptr);return true;}
     DWORD code=opticalPreview.lastError();
     if(code==ERROR_FILE_NOT_FOUND||code==ERROR_PATH_NOT_FOUND){opticalFailed(tr(L"未找到 LGEngine 运行时（程序旁没有 lgengine 文件夹）。LGEngine 页面和指示器需要完整的便携 ZIP。",L"LGEngine runtime not found (no lgengine folder next to the app). The LGEngine page and the indicator need the full portable ZIP."));opticalFailures=3;KillTimer(mainWindow,22);}
     else opticalFailed(std::wstring(tr(L"无法启动 LGEngine 预览，错误：",L"Cannot start LGEngine preview. Error: "))+std::to_wstring(code));
@@ -181,7 +192,7 @@ void updateNativeInfo(){
     for(int i=0;i<8;++i){HWND h=GetDlgItem(mainWindow,ids[i]);if(!h)continue;SendMessageW(h,BM_SETCHECK,states[i]?BST_CHECKED:BST_UNCHECKED,0);EnableWindow(h,!pending&&!migrationNeeded());InvalidateRect(h,nullptr,FALSE);}
     int headings[]={VolumeHeading,BrightnessHeading,TaskbarHeading,StartHeading,NotificationHeading,ExplorerHeading,DockHeading,KeyboardHeading};const wchar_t*zh[]={L"音量提示",L"亮度提示",L"任务栏",L"开始菜单",L"通知中心与日历",L"资源管理器",L"Dock 悬停动画",L"键盘布局切换"};const wchar_t*en[]={L"Volume indicator",L"Brightness indicator",L"Taskbar",L"Start menu",L"Notification center and calendar",L"File Explorer",L"Dock hover animation",L"Keyboard layout switcher"};
     int flyOwner=lgpreview::flyoutOwner();
-    for(int i=0;i<8;++i){DWORD bit=i==2?(glass::Taskbar|glass::Capsule):i==7?glass::Keyboard:1u<<i;std::wstring text=tr(zh[i],en[i]);bool flyBit=bit==glass::Volume||bit==glass::Brightness;if(states[i])text+=(pausedFeatures&bit)?tr(L" · 已暂停",L" · Paused"):(flyBit&&flyOwner==1)?tr(L" · 已被 Liquid Glass 隐藏",L" · Hidden by Liquid Glass"):(flyBit&&flyOwner==2)?tr(L" · 已由 LGEngine 指示器替代",L" · Replaced by the LGEngine indicator"):(flyBit&&!(confirmedMaterials&bit)&&!(failedMaterials&bit))?tr(L" · 等待系统指示器",L" · Waiting for the indicator"):(failedMaterials&bit)?tr(L" · 未生效",L" · Not applied"):(fallbackMaterials&bit)?tr(L" · 亚克力（模糊固定）",L" · Acrylic (fixed blur)"):((confirmedMaterials&bit)==bit)?(i==6?tr(L" · 已应用",L" · Applied"):tr(L" · 已应用（自定义模糊）",L" · Applied (custom blur)")):tr(L" · 等待连接",L" · Connecting");SetWindowTextW(GetDlgItem(mainWindow,headings[i]),text.c_str());}
+    for(int i=0;i<8;++i){DWORD bit=i==2?(glass::Taskbar|glass::Capsule):i==7?glass::Keyboard:1u<<i;std::wstring text=tr(zh[i],en[i]);bool flyBit=bit==glass::Volume||bit==glass::Brightness;if(states[i])text+=(pausedFeatures&bit)?tr(L" · 已暂停",L" · Paused"):(flyBit&&flyOwner==1)?tr(L" · 已被 Liquid Glass 隐藏",L" · Hidden by Liquid Glass"):(flyBit&&flyOwner==2&&opticalHostSeen)?tr(L" · 已由 LGEngine 指示器替代",L" · Replaced by the LGEngine indicator"):(flyBit&&!(confirmedMaterials&bit)&&!(failedMaterials&bit))?tr(L" · 等待系统指示器",L" · Waiting for the indicator"):(failedMaterials&bit)?tr(L" · 未生效",L" · Not applied"):(fallbackMaterials&bit)?tr(L" · 亚克力（模糊固定）",L" · Acrylic (fixed blur)"):((confirmedMaterials&bit)==bit)?(i==6?tr(L" · 已应用",L" · Applied"):tr(L" · 已应用（自定义模糊）",L" · Applied (custom blur)")):tr(L" · 等待连接",L" · Connecting");SetWindowTextW(GetDlgItem(mainWindow,headings[i]),text.c_str());}
 
     for(int id:{TaskbarHint,StartHint,NotificationHint})SetWindowTextW(GetDlgItem(mainWindow,id),L"");
 }
@@ -202,7 +213,7 @@ void CALLBACK windowChanged(HWINEVENTHOOK,DWORD,HWND h,LONG object,LONG child,DW
 }
 void observeWindows(){bool need=enabled||glassConfig.features;if(need&&!windowEvents)windowEvents=SetWinEventHook(EVENT_OBJECT_CREATE,EVENT_OBJECT_SHOW,nullptr,windowChanged,0,0,WINEVENT_OUTOFCONTEXT|WINEVENT_SKIPOWNPROCESS);else if(!need&&windowEvents){UnhookWinEvent(windowEvents);windowEvents=nullptr;KillTimer(mainWindow,3);windowScanPending=false;pendingWindows.clear();}}
 void selectPage(int page){
-    if(page<0||page>2)return;bool changed=currentPage!=page;finishPageMotion();currentPage=page;
+    if(page<0||page>2)return;bool changed=currentPage!=page;finishPageMotion();currentPage=page;refreshStatus();
     SendMessageW(mainWindow,WM_SETREDRAW,FALSE,0);
     for(int p=0;p<3;++p)for(HWND h:pageControls[p])ShowWindow(h,p==page?SW_SHOWNA:SW_HIDE);
     if(page!=1)syncOpticalControls();if(page==2)selectSettingsPage(settingsPage);
@@ -310,14 +321,22 @@ void apply(){
     setRulesActive(false);restoreWindows();if(!originals.empty())return;
     mode=nextMode;selectedExe=exe;int idx=selection(material);backdrop=idx==0?3:idx==1?2:idx==2?4:1;
     corner=selection(corners)==0?2:selection(corners)==1?3:1;
-    if(usesExplorer(mode,selectedExe)){explorerOn=true;applyGlass();}
+    // explorerByApp: App glass turned File Explorer on, so App glass may turn it off again (never a System glass choice).
+    if(usesExplorer(mode,selectedExe)){if(!explorerOn)explorerByApp=true;explorerOn=true;applyGlass();}
+    else if(explorerByApp){explorerByApp=false;explorerOn=false;applyGlass();}
     setRulesActive(true);sync(true);
 }
-void restoreAll(bool exit){
-    opticalSuspended=true;if(!exit)CheckDlgButton(mainWindow,OptOn,BST_UNCHECKED);opticalPreview.stop();KillTimer(mainWindow,16);opticalStartup=0;updateOpticalButtons();
+// The App glass Restore button: reverts only what App glass applied. System glass and the indicator are left alone
+// (the tray menu's Restore still calls restoreAll).
+void restoreApps(){
     if(migrationJob)return;
     setRulesActive(false);restoreWindows();if(!originals.empty())return;
-    if(!nativeProbeMode&&!taskbar_recovery::restore(iniPath)){message(tr(L"任务栏恢复失败，恢复记录已保留。",L"Taskbar restore failed; recovery record retained."));return;}dockOn=false;WritePrivateProfileStringW(L"Taskbar",L"AutoHide",L"0",iniPath.c_str());volumeOn=brightnessOn=explorerOn=keyboardOn=false;for(bool&on:shellOn)on=false;glassConfig.features=0;WritePrivateProfileStringW(L"Glass",L"Features",L"0",iniPath.c_str());applyGlass(false);
+    if(explorerByApp){explorerByApp=false;explorerOn=false;applyGlass();}
+}
+void restoreAll(bool exit){
+    if(migrationJob)return;
+    setRulesActive(false);restoreWindows();if(!originals.empty())return;
+    if(!nativeProbeMode&&!taskbar_recovery::restore(iniPath)){message(tr(L"任务栏恢复失败，恢复记录已保留。",L"Taskbar restore failed; recovery record retained."));return;}opticalSuspended=true;if(!exit)CheckDlgButton(mainWindow,OptOn,BST_UNCHECKED);opticalPreview.stop();KillTimer(mainWindow,16);opticalStartup=0;updateOpticalButtons();if(!selfTestMode&&!nativeProbeMode)WritePrivateProfileStringW(L"LGEngine",L"IndicatorOn",L"0",iniPath.c_str());dockOn=false;WritePrivateProfileStringW(L"Taskbar",L"AutoHide",L"0",iniPath.c_str());volumeOn=brightnessOn=explorerOn=explorerByApp=keyboardOn=false;for(bool&on:shellOn)on=false;glassConfig.features=0;WritePrivateProfileStringW(L"Glass",L"Features",L"0",iniPath.c_str());applyGlass(false);
     if(migrationNeeded()){exitAfterRestore=exit;migrateLegacy();return;}
     message(tr(L"已还原所有效果。",L"All effects restored."));if(exit)DestroyWindow(mainWindow);
 }
@@ -469,12 +488,13 @@ int selfTest(){
 #endif
 void show(){
     BOOL systemMotion=!reducedMotion();
-    if(!startupPlayed&&startupAnimation&&systemMotion){startupPlayed=true;startupTime=GetTickCount64();SetWindowLongPtrW(mainWindow,GWL_EXSTYLE,GetWindowLongPtrW(mainWindow,GWL_EXSTYLE)|WS_EX_LAYERED);SetLayeredWindowAttributes(mainWindow,0,0,LWA_ALPHA);ShowWindow(mainWindow,SW_SHOW);if(!SetTimer(mainWindow,4,uiFrameInterval(),nullptr)){SetLayeredWindowAttributes(mainWindow,0,255,LWA_ALPHA);SetWindowLongPtrW(mainWindow,GWL_EXSTYLE,GetWindowLongPtrW(mainWindow,GWL_EXSTYLE)&~WS_EX_LAYERED);}}else{startupPlayed=true;ShowWindow(mainWindow,SW_SHOW);}refresh();SetForegroundWindow(mainWindow);
+    if(!startupPlayed&&startupAnimation&&systemMotion){startupPlayed=true;startupTime=GetTickCount64();SetWindowLongPtrW(mainWindow,GWL_EXSTYLE,GetWindowLongPtrW(mainWindow,GWL_EXSTYLE)|WS_EX_LAYERED);SetLayeredWindowAttributes(mainWindow,0,0,LWA_ALPHA);ShowWindow(mainWindow,IsIconic(mainWindow)?SW_RESTORE:SW_SHOW);if(!SetTimer(mainWindow,4,uiFrameInterval(),nullptr)){SetLayeredWindowAttributes(mainWindow,0,255,LWA_ALPHA);SetWindowLongPtrW(mainWindow,GWL_EXSTYLE,GetWindowLongPtrW(mainWindow,GWL_EXSTYLE)&~WS_EX_LAYERED);}}else{startupPlayed=true;ShowWindow(mainWindow,IsIconic(mainWindow)?SW_RESTORE:SW_SHOW);}refresh();SetForegroundWindow(mainWindow);
 }
 void menu(){HMENU m=CreatePopupMenu();AppendMenuW(m,MF_STRING,1,tr(L"打开设置",L"Open settings"));AppendMenuW(m,MF_STRING,2,tr(L"还原",L"Restore"));AppendMenuW(m,MF_STRING,3,tr(L"还原并退出",L"Restore and exit"));POINT p;GetCursorPos(&p);SetForegroundWindow(mainWindow);int n=TrackPopupMenu(m,TPM_RETURNCMD|TPM_RIGHTBUTTON,p.x,p.y,0,mainWindow,nullptr);DestroyMenu(m);if(n==1)show();if(n==2)restoreAll();if(n==3)restoreAll(true);PostMessageW(mainWindow,WM_NULL,0,0);}
 LRESULT CALLBACK proc(HWND h,UINT msg,WPARAM w,LPARAM l){
     static UINT attachAck=RegisterWindowMessageW(glass::AttachAckMessage);if(msg==attachAck){engine.acknowledge((DWORD)w);return 0;}
-    static UINT engineStatus=RegisterWindowMessageW(glass::StatusMessage);if(msg==engineStatus){DWORD flags=(DWORD)w&glassConfig.features&~pausedFeatures;if(!flags)return 0;bool unchanged=FAILED((HRESULT)l)?(failedMaterials&flags)==flags:((confirmedMaterials&flags)==flags&&!(failedMaterials&flags)&&((fallbackMaterials&flags)==((HRESULT)l==S_FALSE?flags:0)));if(unchanged)return 0;if(FAILED((HRESULT)l)){failedMaterials|=flags;confirmedMaterials&=~flags;message(tr(L"部分系统材质未生效，请查看各项连接状态。",L"Some shell materials were not applied. Check each connection status."));}else{confirmedMaterials|=flags;failedMaterials&=~flags;if((HRESULT)l==S_FALSE)fallbackMaterials|=flags;else fallbackMaterials&=~flags;message(tr(L"系统材质属性已写入，请查看对应区域的外观。",L"Shell material properties written. Check the selected surface appearance."));}updateNativeInfo();return 0;}
+    static UINT engineStatus=RegisterWindowMessageW(glass::StatusMessage);if(msg==engineStatus){static HRESULT shownEngineError=S_OK;if(!w){if(FAILED((HRESULT)l)&&glassConfig.features&&(HRESULT)l!=shownEngineError){shownEngineError=(HRESULT)l;wchar_t text[256]{};swprintf(text,256,tr(L"系统外壳引擎报告错误 0x%08lX，详情见 glass-engine 日志。",L"The shell engine reported error 0x%08lX. Details are in the glass-engine log."),(unsigned long)l);message(text,1);}return 0;}if(SUCCEEDED((HRESULT)l))shownEngineError=S_OK; // glass works again: the same error is news next time
+    DWORD flags=(DWORD)w&glassConfig.features&~pausedFeatures;if(!flags)return 0;bool unchanged=FAILED((HRESULT)l)?(failedMaterials&flags)==flags:((confirmedMaterials&flags)==flags&&!(failedMaterials&flags)&&((fallbackMaterials&flags)==((HRESULT)l==S_FALSE?flags:0)));if(unchanged)return 0;if(FAILED((HRESULT)l)){failedMaterials|=flags;confirmedMaterials&=~flags;message(tr(L"部分系统材质未生效，请查看各项连接状态。",L"Some shell materials were not applied. Check each connection status."),1);}else{confirmedMaterials|=flags;failedMaterials&=~flags;if((HRESULT)l==S_FALSE)fallbackMaterials|=flags;else fallbackMaterials&=~flags;message((HRESULT)l==S_FALSE?tr(L"系统材质已改用亚克力后备（模糊固定）。",L"Shell materials applied with the acrylic fallback (fixed blur)."):tr(L"系统材质属性已写入，请查看对应区域的外观。",L"Shell material properties written. Check the selected surface appearance."),1);}updateNativeInfo();return 0;}
     static UINT restart=RegisterWindowMessageW(L"TaskbarCreated");if(msg==restart){Shell_NotifyIconW(NIM_ADD,&tray);Shell_NotifyIconW(NIM_SETVERSION,&tray);if(glassConfig.features)engine.discover();return 0;}
     switch(msg){
     case WM_PRINTCLIENT:printControlClient(h,reinterpret_cast<HDC>(w));return 0;
@@ -497,36 +517,39 @@ LRESULT CALLBACK proc(HWND h,UINT msg,WPARAM w,LPARAM l){
         case VolumeOn:volumeOn=!volumeOn;queueGlass();break;
         case BrightnessOn:brightnessOn=!brightnessOn;queueGlass();break;
         case OptArrival:case OptIndicator:case OptSlosh:case OptKnob:case OptShape:if(HIWORD(w)==CBN_SELCHANGE){saveOpticalCombo(LOWORD(w));syncOpticalControls();}break;
-        case OptReplay:syncOpticalControls(1);break;case OptSample:syncOpticalControls(2);break;case OptOn:{bool boxOn=IsDlgButtonChecked(mainWindow,OptOn)==BST_CHECKED;if(!selfTestMode&&!nativeProbeMode)WritePrivateProfileStringW(L"LGEngine",L"IndicatorOn",boxOn?L"1":L"0",iniPath.c_str());opticalSuspended=false;if(boxOn)opticalMayStart(true);syncOpticalPreview();updateOpticalButtons();break;}
-        case OpticalPreview:opticalSuspended=false;opticalMayStart(true);selectSystemSection(2);break;
+        case OptReplay:syncOpticalControls(1);break;case OptSample:syncOpticalControls(2);break;case OptOn:{bool boxOn=IsDlgButtonChecked(mainWindow,OptOn)!=BST_CHECKED;CheckDlgButton(mainWindow,OptOn,boxOn?BST_CHECKED:BST_UNCHECKED);/* owner-drawn switch: the click itself does not flip it */if(!selfTestMode&&!nativeProbeMode)WritePrivateProfileStringW(L"LGEngine",L"IndicatorOn",boxOn?L"1":L"0",iniPath.c_str());opticalSuspended=false;if(boxOn)opticalMayStart(true);syncOpticalPreview();updateOpticalButtons();break;}
+        case OpticalPreview:opticalSuspended=false;if(!opticalPolicyBlocked())opticalMayStart(true);selectSystemSection(2);break; // a policy block retries only from the OptOn switch
         case RestoreOriginal:resetGlassDefaults();break;
         case KeyboardToggle:keyboardOn=!keyboardOn;queueGlass();break;
         case DockToggle:dockOn=!dockOn;queueGlass();break;
 
-        case ExplorerToggle:explorerOn=!explorerOn;queueGlass();break;
+        case ExplorerToggle:explorerOn=!explorerOn;explorerByApp=false;queueGlass();break;
         case TaskbarToggle:case StartToggle:case NotificationToggle:{int kind=LOWORD(w)-TaskbarToggle;shellOn[kind]=!shellOn[kind];queueGlass();break;}
         case ExitApp:restoreAll(true);break;
         case Refresh:refresh();break;case Apply:if(!nativeProbeMode)apply();break;
-        case Restore:restoreAll();break;
+        case Restore:restoreApps();break;
         case Pause:ShowWindow(h,SW_HIDE);break;
         }return 0;
     case WM_HSCROLL:{int look=l?GetDlgCtrlID((HWND)l)-OptLook1:-1;if(look>=0&&look<8){updateLookLabels();syncOpticalControls();if(LOWORD(w)!=TB_THUMBTRACK)saveLookSlider(OptLook1+look);return 0;}}if((HWND)l==GetDlgItem(h,OpacitySlider)||(HWND)l==GetDlgItem(h,RadiusSlider)||(HWND)l==GetDlgItem(h,BlurSlider)){glassConfig.opacity=(DWORD)SendMessageW(GetDlgItem(h,OpacitySlider),TBM_GETPOS,0,0);glassConfig.radius=(DWORD)SendMessageW(GetDlgItem(h,RadiusSlider),TBM_GETPOS,0,0);glassConfig.blur=(DWORD)SendMessageW(GetDlgItem(h,BlurSlider),TBM_GETPOS,0,0);updateEffectLabels();if(LOWORD(w)==TB_ENDTRACK||LOWORD(w)==TB_THUMBPOSITION||LOWORD(w)==TB_LINEUP||LOWORD(w)==TB_LINEDOWN||LOWORD(w)==TB_PAGEUP||LOWORD(w)==TB_PAGEDOWN)applyGlass(false);}return 0;
     case WM_POWERBROADCAST:if(w==PBT_POWERSETTINGCHANGE||w==PBT_APMPOWERSTATUSCHANGE){refreshUiPreferences();applyGlass(false);}return TRUE;
     case WM_SETTINGCHANGE:case WM_THEMECHANGED:case WM_SYSCOLORCHANGE:syncOpticalPreview();refreshUiPreferences();applyColorTheme(colorTheme,false);if(engineReady)applyGlass(false);break;
     case glass::HostExitedMessage:if(engine.hostExited((DWORD)w)){confirmedMaterials&=~(glass::Start|glass::Notifications);fallbackMaterials&=~(glass::Start|glass::Notifications);updateNativeInfo();SetTimer(h,18,250,nullptr);SetTimer(h,6,3500,nullptr);}return 0;
-    case WM_TIMER:if(w==kMotionTimer){tickControlMotion();return 0;}if(w==21){KillTimer(h,21);engine.retryPackages();return 0;}if(w==20){engine.tick();return 0;}if(w==18){KillTimer(h,18);if(engine.recoverHosts())SetTimer(h,18,500,nullptr);return 0;}if(w==22){KillTimer(h,22);syncOpticalPreview();return 0;}if(w==16){if(opticalPreview.connected()&&!opticalPreview.synchronized())syncOpticalPreview();if(opticalPreview.synchronized()){KillTimer(h,16);if(currentPage==1&&systemSection==2)message(tr(L"LGEngine 预览已连接；光学参数只影响预览。",L"LGEngine preview connected; optical controls affect the preview only."));updateOpticalButtons();}else if(!opticalStartup)KillTimer(h,16);else if(!opticalPreview.running()||GetTickCount64()-opticalStartup>15000)opticalFailed(tr(L"LGEngine 预览未能连接，请检查适配器及 Windows 应用控制状态。",L"LGEngine preview did not connect. Check the adapter and Windows application control."));return 0;}
-        if(w==14){bool discover=glassPendingDiscover;applyGlass(discover);}else if(w==12){tickColorTheme();}else if(w==13){tickPageMotion();}else if(w==4){float t=std::min(1.f,(GetTickCount64()-startupTime)/220.f),ease=1-powf(1-t,4);SetLayeredWindowAttributes(h,0,(BYTE)(255*ease),LWA_ALPHA);if(t>=1){KillTimer(h,4);SetWindowLongPtrW(h,GWL_EXSTYLE,GetWindowLongPtrW(h,GWL_EXSTYLE)&~WS_EX_LAYERED);RedrawWindow(h,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);}}else if(w==3){KillTimer(h,3);windowScanPending=false;auto windows=std::move(pendingWindows);pendingWindows.clear();sync(false);if(glassConfig.features)for(auto window:windows)if(IsWindow(window))engine.discoverWindow(window);}else if(w==2)pollMigration();else if(w==5){KillTimer(h,5);engine.expireHooks(true);}else if(w==6){KillTimer(h,6);failedMaterials|=glassConfig.features&~pausedFeatures&~confirmedMaterials&~(glass::Volume|glass::Brightness);updateNativeInfo();if(failedMaterials)message(tr(L"部分区域尚未连接，已标记为未生效；打开对应区域后可重试。",L"Some surfaces are not connected and are marked Not applied; open them and retry."));}return 0;
+    case WM_TIMER:if(w==kMotionTimer){tickControlMotion();return 0;}if(w==21){KillTimer(h,21);engine.retryPackages();return 0;}if(w==20){engine.tick();return 0;}if(w==18){KillTimer(h,18);if(UINT next=engine.recoverHosts())SetTimer(h,18,next,nullptr);return 0;}if(w==22){KillTimer(h,22);syncOpticalPreview();return 0;}if(w==16){if(opticalPreview.connected()&&!opticalPreview.synchronized())syncOpticalPreview();if(opticalPreview.synchronized()){KillTimer(h,16);opticalConnectedMessage();updateOpticalButtons();}else if(!opticalStartup)KillTimer(h,16);else if(!opticalPreview.running()||GetTickCount64()-opticalStartup>15000)opticalFailed(tr(L"LGEngine 预览未能连接，请检查适配器及 Windows 应用控制状态。",L"LGEngine preview did not connect. Check the adapter and Windows application control."));return 0;}
+        if(w==14){bool discover=glassPendingDiscover;applyGlass(discover);}else if(w==12){tickColorTheme();}else if(w==13){tickPageMotion();}else if(w==4){float t=std::min(1.f,(GetTickCount64()-startupTime)/220.f),ease=1-powf(1-t,4);SetLayeredWindowAttributes(h,0,(BYTE)(255*ease),LWA_ALPHA);if(t>=1){KillTimer(h,4);SetWindowLongPtrW(h,GWL_EXSTYLE,GetWindowLongPtrW(h,GWL_EXSTYLE)&~WS_EX_LAYERED);RedrawWindow(h,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);}}else if(w==3){KillTimer(h,3);windowScanPending=false;auto windows=std::move(pendingWindows);pendingWindows.clear();sync(false);if(glassConfig.features)for(auto window:windows)if(IsWindow(window))engine.discoverWindow(window);}else if(w==2)pollMigration();else if(w==5){KillTimer(h,5);engine.expireHooks(true);}else if(w==6){KillTimer(h,6);failedMaterials|=glassConfig.features&~pausedFeatures&~confirmedMaterials&~(glass::Volume|glass::Brightness);updateNativeInfo();if(failedMaterials)message(tr(L"部分区域尚未连接，已标记为未生效；打开对应区域后可重试。",L"Some surfaces are not connected and are marked Not applied; open them and retry."),1);}return 0;
     case lgpreview::HostState:
-        if(w==1&&opticalPreview.owns(reinterpret_cast<HWND>(l))){opticalHostSeen=true;opticalFailures=0;opticalFailureText.clear();KillTimer(h,22);updateOpticalButtons();}
+        if(w==1&&opticalPreview.owns(reinterpret_cast<HWND>(l))){opticalHostSeen=true;opticalHostError=0;opticalFailures=0;opticalFailureText.clear();KillTimer(h,22);opticalConnectedMessage();updateOpticalButtons();updateNativeInfo();}
+        // 3 = the adapter's host launch failed with this Win32 code; it arrives just before Event 2.
+        else if(w==3&&opticalPreview.running())opticalHostError=(DWORD)l;
         else if(w==2&&opticalPreview.exited()){lgpreview::restoreFlyouts();opticalFailed(opticalHostSeen?tr(L"LGEngine 预览意外停止，稍后将自动重启。",L"LGEngine preview stopped unexpectedly; it restarts shortly."):tr(L"LGEngine 预览未能连接，请检查适配器及 Windows 应用控制状态。",L"LGEngine preview did not connect. Check the adapter and Windows application control."));}
 return 0;
-    case lgpreview::Event:if((w==1||w==2)&&opticalPreview.accept(reinterpret_cast<HWND>(l))){if(w==1){syncOpticalPreview();if(opticalPreview.synchronized()){KillTimer(h,16);if(currentPage==1&&systemSection==2)message(tr(L"LGEngine 预览已连接；光学参数只影响预览。",L"LGEngine preview connected; optical controls affect the preview only."));}updateOpticalButtons();}else opticalFailed(tr(L"LGEngine 宿主不可用；详情见 lgengine\\host-client.log。关闭再打开“指示器”即可重试。",L"LGEngine host unavailable; details in lgengine\\host-client.log. Turn Indicator off and on to retry."));}return 0;
+    case lgpreview::Event:if((w==1||w==2)&&opticalPreview.accept(reinterpret_cast<HWND>(l))){if(w==1){syncOpticalPreview();if(opticalPreview.synchronized()){KillTimer(h,16);opticalConnectedMessage();}updateOpticalButtons();}else if(opticalPolicyBlocked()){opticalFailed(tr(L"LGEngine 宿主被智能应用控制（Windows 应用程序控制）阻止。玻璃指示器保持关闭，继续使用 Windows 自带的弹窗。",L"LGEngine host blocked by Smart App Control (Windows application control). The glass indicator stays off; Windows' own pop-up is used."));opticalFailures=3;KillTimer(h,22);updateNativeInfo();}else opticalFailed(tr(L"LGEngine 宿主不可用；详情见 lgengine\\host-client.log。关闭再打开“指示器”即可重试。",L"LGEngine host unavailable; details in lgengine\\host-client.log. Turn Indicator off and on to retry."));}return 0;
     case WM_APP+1:if(LOWORD(l)==WM_CONTEXTMENU)menu();else if(LOWORD(l)==NIN_SELECT||LOWORD(l)==NIN_KEYSELECT)show();return 0;
     case WM_APP+2:show();return 0;
     case WM_APP+3:if(migrationJob)return 0;setRulesActive(false);restoreWindows();if(!originals.empty()){show();return 0;}if(!taskbar_recovery::restore(iniPath)){show();return 0;}WritePrivateProfileStringW(L"Taskbar",L"AutoHide",L"0",iniPath.c_str());engine.shutdown();DestroyWindow(h);return 0;
     case WM_APP+5:migrateLegacy();return 0;
     case WM_CLOSE:ShowWindow(h,SW_HIDE);return 0;
-    case WM_QUERYENDSESSION:taskbar_recovery::restore(iniPath);setRulesActive(false);restoreWindows();engine.shutdown();return TRUE;
+    case WM_QUERYENDSESSION:return TRUE; // another app may still cancel the shutdown: tear down only once it is certain
+    case WM_ENDSESSION:if(w){taskbar_recovery::restore(iniPath);setRulesActive(false);restoreWindows();engine.shutdown();}return 0;
     case WM_CTLCOLORLISTBOX:{SetBkColor(reinterpret_cast<HDC>(w),cardColor());SetTextColor(reinterpret_cast<HDC>(w),textColor());return reinterpret_cast<LRESULT>(cardBrush);}
     case WM_CTLCOLORSTATIC:case WM_CTLCOLORBTN:{int id=GetDlgCtrlID(reinterpret_cast<HWND>(l));bool common=id==Header||id==Status;SetBkMode(reinterpret_cast<HDC>(w),TRANSPARENT);SetTextColor(reinterpret_cast<HDC>(w),highContrast()?textColor():id==Header?textColor():palette().pressed);return reinterpret_cast<LRESULT>(common?background:cardBrush);}
     case WM_DESTROY:

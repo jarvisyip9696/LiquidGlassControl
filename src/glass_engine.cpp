@@ -48,7 +48,8 @@ constexpr GUID ReleaseId={0x735941a2,0x3ee3,0x495a,{0x8d,0xa9,0x97,0x26,0x27,0x0
 struct CacheRelease:IUnknown{virtual HRESULT STDMETHODCALLTYPE Unregister(InstanceHandle)=0;};
 HMODULE selfModule{};HANDLE mapping{};glass::Config*shared{};HANDLE ownerHandle{},ownerWait{};DWORD ownerPid{};SRWLOCK configLock=SRWLOCK_INIT;
 HANDLE statusMapping{};glass::Status*sharedStatus{};
-void trace(const char*stage,HRESULT hr){static volatile LONG errors=0;if(SUCCEEDED(hr)||InterlockedIncrement(&errors)>32)return;wchar_t path[32768]{};GetModuleFileNameW(selfModule,path,32768);std::wstring file=path;file.resize(file.find_last_of(L"\\")+1);file+=L"glass-engine-"+std::to_wstring(GetCurrentProcessId())+L".log";HANDLE h=CreateFileW(file.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if(h!=INVALID_HANDLE_VALUE){char text[256]{};int n=snprintf(text,sizeof(text),"%s: 0x%08lx\r\n",stage,(unsigned long)hr);DWORD written=0;WriteFile(h,text,n,&written,nullptr);CloseHandle(h);}}
+// Budget per stage (32 lines) and overall (1024), so one noisy stage cannot hide every later failure.
+void trace(const char*stage,HRESULT hr){if(SUCCEEDED(hr))return;static std::map<std::string,unsigned> counts;static unsigned total=0;static SRWLOCK traceLock=SRWLOCK_INIT;AcquireSRWLockExclusive(&traceLock);bool fresh=total<1024&&++counts[stage]<=32;if(fresh)++total;ReleaseSRWLockExclusive(&traceLock);if(!fresh)return;wchar_t path[32768]{};GetModuleFileNameW(selfModule,path,32768);std::wstring file=path;file.resize(file.find_last_of(L"\\")+1);file+=L"glass-engine-"+std::to_wstring(GetCurrentProcessId())+L".log";HANDLE h=CreateFileW(file.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if(h!=INVALID_HANDLE_VALUE){char text[256]{};int n=snprintf(text,sizeof(text),"%s: 0x%08lx\r\n",stage,(unsigned long)hr);DWORD written=0;WriteFile(h,text,n,&written,nullptr);CloseHandle(h);}}
 std::atomic<bool> nativeInspectionOnly{false};
 UINT refreshMsg{};std::atomic<bool> injecting[2]{};
 // Name of the process hosting this engine copy, so logs show which shell host matched a surface.
@@ -71,6 +72,13 @@ void refreshWindows(){HWND h=nullptr;while((h=FindWindowExW(HWND_MESSAGE,h,threa
 void CALLBACK ownerEnded(void*,BOOLEAN){refreshWindows();}
 HWND ownerWindow(){auto h=FindWindowW(nativeInspectionOnly?L"LiquidGlass.Control.NativeProbe":L"LiquidGlass.Control",nullptr);DWORD pid=0;if(h)GetWindowThreadProcessId(h,&pid);return pid==ownerPid?h:nullptr;}
 void report(HRESULT hr,DWORD feature=0){note(L"report feature="+std::to_wstring(feature)+L" hr="+std::to_wstring((long)hr)+L" exe="+hostExe());AcquireSRWLockShared(&configLock);if(sharedStatus&&feature){if(FAILED(hr)){InterlockedOr(&sharedStatus->failed,feature);InterlockedExchange(&sharedStatus->error,hr);InterlockedAnd(&sharedStatus->success,~feature);}else{InterlockedAnd(&sharedStatus->failed,~feature);InterlockedOr(&sharedStatus->success,feature);if(hr==S_FALSE)InterlockedOr(&sharedStatus->fallback,feature);else InterlockedAnd(&sharedStatus->fallback,~feature);}}ReleaseSRWLockShared(&configLock);auto h=ownerWindow();if(h)PostMessageW(h,RegisterWindowMessageW(glass::StatusMessage),feature,(LPARAM)hr);}
+// Features a host kind serves: 0 classic explorer, 1 Start, 2 ShellExperienceHost/ShellHost, 3 modern explorer.
+DWORD hostMask(int host){return host==0?(glass::Taskbar|glass::Volume|glass::Brightness|glass::Dock|glass::Explorer|glass::Capsule|glass::Keyboard):host==1?glass::Start:host==2?(glass::Notifications|glass::Keyboard):(glass::Explorer|glass::Keyboard);}
+int hostKind(bool modern){wchar_t exe[MAX_PATH]{};GetModuleFileNameW(nullptr,exe,MAX_PATH);std::wstring path=exe;if(glass::startHost(glass::runtimeName(path)))return 1;if(path.find(L"ShellExperienceHost.exe")!=std::wstring::npos||path.find(L"ShellHost.exe")!=std::wstring::npos)return 2;return modern?3:0;}
+// Reports a failure against the features this host serves, so the controller can show it on those items.
+// A host's failure marks only the features no other host serves: Keyboard (hosts 0, 2, 3) and host 0's share of Explorer can still work elsewhere.
+DWORD ownedMask(int host){return hostMask(host)&~(glass::Keyboard|(host==0?glass::Explorer:0));}
+void reportHost(HRESULT hr,int host){glass::Config c;DWORD features=0;if(snapshot(c)==Read::Ok)features=c.features&ownedMask(host);report(hr,features);}
 // Caller holds configLock exclusively. Releases every owner-scoped resource; safe on a partially connected state.
 void releaseOwnerLocked(){
     if(ownerWait){UnregisterWaitEx(ownerWait,INVALID_HANDLE_VALUE);ownerWait=nullptr;}
@@ -105,17 +113,29 @@ bool connect(DWORD pid){
     ReleaseSRWLockExclusive(&configLock);return true;
 }
 struct Saved {unsigned index{};bool local=false;Ptr<IInspectable> value;winrt::Windows::UI::Xaml::DependencyProperty direct{nullptr};};
-struct Node {bool nativeProbed=false;int notificationRoot=-1;std::vector<const wchar_t*> imported;Ptr<IWeakReference> weak;glass::Surface surface=glass::NoSurface;std::map<std::wstring,Saved> saved;std::map<std::wstring,std::function<void()>> watchers;std::wstring capsuleGeometry;std::shared_ptr<liquid::CapsuleLayout> capsuleLayout;DWORD appliedSignature=0;bool composition=false,fallback=false;HRESULT lastReport=S_FALSE;bool reported=false;HRESULT lastCapsule=E_NOINTERFACE;bool capsuleReported=false,capsuleDirty=true;};
+struct Node {InstanceHandle key{};bool nativeProbed=false;int notificationRoot=-1;std::vector<const wchar_t*> imported;Ptr<IWeakReference> weak;glass::Surface surface=glass::NoSurface;std::map<std::wstring,Saved> saved;std::map<std::wstring,std::function<void()>> watchers;std::wstring capsuleGeometry;std::shared_ptr<liquid::CapsuleLayout> capsuleLayout;DWORD appliedSignature=0;bool composition=false,fallback=false;HRESULT lastReport=S_FALSE;bool reported=false;HRESULT lastCapsule=E_NOINTERFACE;bool capsuleReported=false,capsuleDirty=true;};
 class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
     std::atomic<ULONG> refs{1};Ptr<IUnknown> site;Ptr<IXamlDiagnostics> diag;Ptr<IVisualTreeService2> service;Ptr<CacheRelease> cache;
     struct Thread {Session*session{};HWND window{};std::map<InstanceHandle,Node> nodes;std::set<InstanceHandle> release;ULONGLONG lastMutation=0,releaseStarted=0;std::deque<std::pair<winrt::weak_ref<winrt::Windows::UI::Xaml::FrameworkElement>,int>> nativeProbes;lghost::NativeCaptureLane nativeLane;std::shared_ptr<lghost::NativeInspectionControl> nativeControl;uint64_t nativeToken=0;bool updating=false,updateQueued=false;bool taskbarPanel=false,unifiedCapsule=false;InstanceHandle notificationRoots[2]{};unsigned retries{};LONG observedSequence=-1;DWORD observedFeatures=0;bool heartbeatTimer=false;liquid::DockAnimation dock;~Thread(){if(nativeControl)nativeControl->cancel();for(auto&n:nodes)for(auto&w:n.second.watchers)w.second();}};
     std::map<DWORD,Thread*> threads;SRWLOCK lock=SRWLOCK_INIT;bool modern=false;int host=0;std::atomic<HRESULT> lastError{S_OK};std::atomic<unsigned> writes{0};
     std::atomic<bool> subscribed{false},subscriptionWorker{false};
     std::atomic<unsigned> compatibilityReports{0};
-    std::atomic<LONG> notification{S_FALSE};
-    void notify(HRESULT hr){if(notification.exchange(hr)!=hr)report(hr);}
+    // Advise failures back off (1, 2, 4, 8, 16 s) on a pool timer and stop after 6; a new desired state or a new attach starts a fresh budget.
+    std::atomic<unsigned> subscriptionFailures{0};std::atomic<ULONGLONG> retryAt{0};PTP_TIMER retryTimer{};std::atomic<bool> unadviseFailed{false};
+    std::atomic<unsigned long long> notification{~0ull};
+    void notify(HRESULT hr,DWORD feature){unsigned long long key=((unsigned long long)feature<<32)|(DWORD)hr;if(notification.exchange(key)!=key)report(hr,feature);}
     void unregister(InstanceHandle h){if(cache&&h)cache->Unregister(h);}
-    bool wantsSubscription(){if(!cache&&compatibilityReports.load()>=8192)return false;glass::Config c;auto state=snapshot(c);if(state==Read::Transient)return subscribed.load();if(state!=Read::Ok)return false;DWORD mask=host==0?(glass::Taskbar|glass::Volume|glass::Brightness|glass::Dock|glass::Explorer|glass::Capsule|glass::Keyboard):host==1?glass::Start:host==2?(glass::Notifications|glass::Keyboard):(glass::Explorer|glass::Keyboard);return (c.features&mask)!=0;}
+    bool wantsSubscription(){glass::Config c;auto state=snapshot(c);if(state==Read::Transient)return subscribed.load();if(state!=Read::Ok)return false;bool wanted=(c.features&hostMask(host))!=0;
+        // Off and unsubscribed: the next On starts a fresh compatibility budget.
+        if(!wanted&&!subscribed.load())compatibilityReports=0;
+        return wanted&&(cache||compatibilityReports.load()<8192);}
+    void markSubscribed(bool on){subscribed=on;AcquireSRWLockShared(&configLock);if(sharedStatus){if(on)InterlockedOr(&sharedStatus->subscribed,1<<host);else InterlockedAnd(&sharedStatus->subscribed,~(1<<host));}ReleaseSRWLockShared(&configLock);}
+    // Sessions stay in `sessions` for the life of the process, so the pool timer never outlives this object.
+    void armRetry(DWORD ms){if(!retryTimer)retryTimer=CreateThreadpoolTimer([](PTP_CALLBACK_INSTANCE,void*ctx,PTP_TIMER){static_cast<Session*>(ctx)->ensureSubscription();},this,nullptr);if(!retryTimer)return;ULARGE_INTEGER due;due.QuadPart=(ULONGLONG)(-(LONGLONG)ms*10000);FILETIME at{due.LowPart,due.HighPart};SetThreadpoolTimer(retryTimer,&at,0,0);}
+    // Runs on the subscription worker. A failed Advise leaves the callback unsubscribed and backs off. A refused Unadvise
+    // leaves it subscribed (the sink may still be registered, so a later On must not Advise it twice) and is not retried
+    // before a new attach: repeating it only returned E_UNEXPECTED again.
+    void subscriptionFailed(bool wanted,HRESULT hr){if(!wanted){unadviseFailed=true;return;}markSubscribed(false);unsigned n=++subscriptionFailures;if(n<6){DWORD delay=1000u<<(n-1);retryAt=GetTickCount64()+delay;armRetry(delay+50);}glass::Config c;notify(hr,snapshot(c)==Read::Ok?c.features&ownedMask(host):0);}
     static LRESULT CALLBACK windowProc(HWND h,UINT msg,WPARAM w,LPARAM l){
         auto t=(Thread*)GetWindowLongPtrW(h,GWLP_USERDATA);
         if(msg==WM_NCCREATE){t=(Thread*)((CREATESTRUCTW*)l)->lpCreateParams;SetWindowLongPtrW(h,GWLP_USERDATA,(LONG_PTR)t);}
@@ -129,6 +149,7 @@ class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
             if(msg==WM_APP+7){if(!t->nativeControl||uint64_t(w)!=t->nativeToken)return 0;KillTimer(h,21);t->nativeLane.complete(t->nativeToken);t->nativeControl.reset();if(!t->nativeProbes.empty())PostMessageW(h,WM_APP+6,0,0);return 0;}
             if(msg==WM_APP+6){glass::Config config;if(!t->session->nativeProbeEnabled()||snapshot(config)!=Read::Ok||!config.features){t->nativeProbes.clear();KillTimer(h,21);t->nativeLane.cancel();if(t->nativeControl)t->nativeControl->cancel();return 0;}if(t->nativeControl||t->nativeProbes.empty())return 0;auto request=t->nativeProbes.front();t->nativeProbes.pop_front();t->nativeToken=t->nativeLane.begin(GetTickCount64());auto token=t->nativeToken;t->nativeControl=std::make_shared<lghost::NativeInspectionControl>();if(!SetTimer(h,21,1500,nullptr)){t->nativeLane.cancel();t->nativeControl.reset();t->nativeProbes.clear();return 0;}
                 if(auto e=request.first.get()){int surface=request.second;lghost::inspectNativeContent(e,[h,surface,token](HRESULT hr,lghost::NativeContentInfo info){note(L"native-probe surface="+std::to_wstring(surface)+L" hr="+std::to_wstring(long(hr))+L" stage="+std::wstring(info.stage)+L" pixelWidth="+std::to_wstring(info.pixelWidth)+L" pixelHeight="+std::to_wstring(info.pixelHeight)+L" bytes="+std::to_wstring(info.bytes)+L" geometry="+std::to_wstring(info.geometry)+L" width="+std::to_wstring(info.width)+L" height="+std::to_wstring(info.height)+L" rootWidth="+std::to_wstring(info.rootWidth)+L" rootHeight="+std::to_wstring(info.rootHeight)+L" ink="+std::to_wstring(info.ink)+L" opaque="+std::to_wstring(info.opaque)+L" unchanged="+std::to_wstring(info.unchanged));PostMessageW(h,WM_APP+7,WPARAM(token),0);},t->nativeControl);}else PostMessageW(h,WM_APP+7,WPARAM(token),0);return 0;}
+            if(msg==WM_APP+5){t->session->ensureSubscription();return 0;}
             if(msg==WM_APP+2)return (LRESULT)t->session->writes.load();
             if(msg==WM_APP+3)return (LRESULT)t->session->lastError.load();
             if(msg==WM_NCDESTROY){auto s=t->session;AcquireSRWLockExclusive(&s->lock);s->threads.erase(GetCurrentThreadId());ReleaseSRWLockExclusive(&s->lock);SetWindowLongPtrW(h,GWLP_USERDATA,0);delete t;}
@@ -148,21 +169,34 @@ class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
         Ptr<XamlReader> reader;const wchar_t*cls=modern?L"Microsoft.UI.Xaml.Markup.XamlReader":L"Windows.UI.Xaml.Markup.XamlReader";
         HSTRING className{};WindowsCreateString(cls,(UINT32)wcslen(cls),&className);HRESULT hr=RoGetActivationFactory(className,ReaderIds[modern?1:0],reinterpret_cast<void**>(reader.put()));
         if(FAILED(hr)&&modern){auto mod=GetModuleHandleW(L"Microsoft.UI.Xaml.dll");auto fn=mod?reinterpret_cast<HRESULT(WINAPI*)(HSTRING,IActivationFactory**)>(GetProcAddress(mod,"DllGetActivationFactory")):nullptr;Ptr<IActivationFactory> factory;if(fn&&SUCCEEDED(fn(className,factory.put())))hr=factory->QueryInterface(ReaderIds[1],reinterpret_cast<void**>(reader.put()));}
-        WindowsDeleteString(className);if(FAILED(hr)||!reader){lastError=hr;notify(hr);return {};}
+        WindowsDeleteString(className);if(FAILED(hr)||!reader){lastError=hr;notify(hr,feature);return {};}
         bool dark=c.tint==2;if(c.tint==0){DWORD light=1,size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"AppsUseLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);dark=!light;}
         auto color=dark?L"#FF18202C":L"#FFF4F7FC";std::wstring xml;
         if(transparent)xml=L"<SolidColorBrush xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Color=\"Transparent\"/>";
         else xml=L"<AcrylicBrush xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" "+std::wstring(modern?L"":L"BackgroundSource=\"HostBackdrop\" ")+L"TintColor=\""+std::wstring(color)+L"\" TintOpacity=\""+std::to_wstring(c.opacity/100.0)+L"\" FallbackColor=\""+color+L"\" AlwaysUseFallback=\""+(c.economy?L"True":L"False")+L"\"/>";
-        HSTRING source{};WindowsCreateString(xml.c_str(),(UINT32)xml.size(),&source);Ptr<IInspectable> result;hr=reader->Load(source,result.put());WindowsDeleteString(source);if(FAILED(hr)){lastError=hr;notify(hr);}return result;
+        HSTRING source{};WindowsCreateString(xml.c_str(),(UINT32)xml.size(),&source);Ptr<IInspectable> result;hr=reader->Load(source,result.put());WindowsDeleteString(source);if(FAILED(hr)){lastError=hr;notify(hr,feature);}return result;
     }
-    bool save(Node&n,InstanceHandle h,const std::wstring&prop,unsigned&index){
-        auto existing=n.saved.find(prop);if(existing!=n.saved.end()){index=existing->second.index;return true;}
-        unsigned ns=0,nv=0;PropertyChainSource*s=nullptr;PropertyChainValue*v=nullptr;HRESULT hr=service->GetPropertyValuesChain(h,&ns,&s,&nv,&v);if(FAILED(hr)){trace("snapshot property",hr);return false;}
-        bool local=false,binding=false,found=false;
+    // prop's effective entry in this handle's value chain; found=false when the chain does not list it.
+    HRESULT chain(InstanceHandle h,const std::wstring&prop,unsigned&index,bool&local,bool&binding,bool&found){
+        unsigned ns=0,nv=0;PropertyChainSource*s=nullptr;PropertyChainValue*v=nullptr;HRESULT hr=service->GetPropertyValuesChain(h,&ns,&s,&nv,&v);if(FAILED(hr))return hr;
+        local=binding=found=false;
         for(unsigned i=0;i<nv;++i)if(v[i].PropertyName&&prop==v[i].PropertyName&&!v[i].Overridden){index=v[i].Index;found=true;local=v[i].PropertyChainIndex<ns&&s[v[i].PropertyChainIndex].Source==BaseValueSourceLocal;binding=(v[i].MetadataBits&IsValueBindingExpression)!=0;break;}
         for(unsigned i=0;i<ns;++i){SysFreeString(s[i].TargetType);SysFreeString(s[i].Name);SysFreeString(s[i].SrcInfo.FileName);SysFreeString(s[i].SrcInfo.Hash);}CoTaskMemFree(s);
         for(unsigned i=0;i<nv;++i){SysFreeString(v[i].Type);SysFreeString(v[i].DeclaringType);SysFreeString(v[i].ValueType);SysFreeString(v[i].ItemType);SysFreeString(v[i].Value);SysFreeString(v[i].PropertyName);}CoTaskMemFree(v);
-        if(!found){trace("property missing from chain",(HRESULT)nv);return false;}if(binding){trace("binding skipped",S_FALSE);return false;}Saved old;old.index=index;old.local=local;
+        return S_OK;
+    }
+    // The index saved from an earlier handle of this element can be refused on a new handle (ERROR_NOT_FOUND): look it up
+    // again on this handle and retry once. clear: ClearProperty instead of SetProperty.
+    HRESULT write(Node&n,InstanceHandle h,const std::wstring&prop,InstanceHandle value,unsigned&index,bool clear=false){
+        HRESULT hr=clear?service->ClearProperty(h,index):service->SetProperty(h,value,index);if(hr!=HRESULT_FROM_WIN32(ERROR_NOT_FOUND))return hr;
+        bool local=false,binding=false,found=false;unsigned fresh=index;if(FAILED(chain(h,prop,fresh,local,binding,found))||!found||fresh==index)return hr;
+        trace("property index refreshed",hr);index=fresh;auto saved=n.saved.find(prop);if(saved!=n.saved.end())saved->second.index=fresh;
+        return clear?service->ClearProperty(h,index):service->SetProperty(h,value,index);
+    }
+    bool save(Node&n,InstanceHandle h,const std::wstring&prop,unsigned&index){
+        auto existing=n.saved.find(prop);if(existing!=n.saved.end()){index=existing->second.index;return true;}
+        bool local=false,binding=false,found=false;HRESULT hr=chain(h,prop,index,local,binding,found);if(FAILED(hr)){trace("snapshot property",hr);return false;}
+        if(!found){trace("property missing from chain",S_FALSE);return false;}if(binding){trace("binding skipped",S_FALSE);return false;}Saved old;old.index=index;old.local=local;
         if(local){InstanceHandle value=0;hr=service->GetProperty(h,index,&value);if(FAILED(hr))return false;if(value){old.value=from(value);unregister(value);if(!old.value)return false;}}
         n.saved.emplace(prop,std::move(old));return true;
     }
@@ -175,13 +209,13 @@ class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
     bool set(Node&n,InstanceHandle h,const std::wstring&prop,IInspectable*value,bool required=true){
         HRESULT hr=(host==2||n.surface==glass::KeyboardPlate)&&prop==L"Background"?setNotificationBackground(n,h,value):E_NOTIMPL;
         if(hr==E_NOTIMPL){unsigned index=0;if(!save(n,h,prop,index)){if(required)report(E_INVALIDARG,glass::feature(n.surface));return false;}
-            InstanceHandle v=0;if(value&&FAILED(diag->RegisterInstance(value,&v)))return false;hr=service->SetProperty(h,v,index);if(v)unregister(v);}
+            InstanceHandle v=0;if(value&&FAILED(diag->RegisterInstance(value,&v)))return false;hr=write(n,h,prop,v,index);if(v)unregister(v);}
         trace("set property",hr);if(FAILED(hr)){lastError=hr;if(required)report(hr,glass::feature(n.surface));}else{++writes;// S_OK: custom composition blur applied. S_FALSE: system acrylic, whose blur strength cannot be set by this engine.
 if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::feature(n.surface)&&n.surface!=glass::StartOverlay&&n.surface!=glass::TaskbarOverlay&&n.surface!=glass::StartClear&&n.surface!=glass::NotificationClear&&n.surface!=glass::ExplorerClear){n.lastReport=n.composition?S_OK:S_FALSE;n.reported=true;report(n.lastReport,glass::feature(n.surface));}}return SUCCEEDED(hr);
     }
     void restore(Node&n,InstanceHandle h){for(auto i=n.saved.begin();i!=n.saved.end();){auto&v=i->second;HRESULT hr=S_OK;InstanceHandle old=0;
             if(v.direct){try{Ptr<IInspectable> p;if(n.weak)n.weak->Resolve(__uuidof(IInspectable),p.put());if(p){winrt::Windows::Foundation::IInspectable object{nullptr},value{nullptr};winrt::copy_from_abi(object,p.p);if(v.value)winrt::copy_from_abi(value,v.value.p);auto target=object.as<winrt::Windows::UI::Xaml::DependencyObject>();if(v.local)target.SetValue(v.direct,value);else target.ClearValue(v.direct);}}catch(...){hr=winrt::to_hresult();}}
-            else if(v.local){if(v.value)hr=diag->RegisterInstance(v.value.p,&old);if(SUCCEEDED(hr))hr=service->SetProperty(h,old,v.index);if(old)unregister(old);}else hr=service->ClearProperty(h,v.index);
+            else if(v.local){if(v.value)hr=diag->RegisterInstance(v.value.p,&old);if(SUCCEEDED(hr))hr=write(n,h,i->first,old,v.index);if(old)unregister(old);}else hr=write(n,h,i->first,0,v.index,true);
             trace("restore property",hr);if(SUCCEEDED(hr))i=n.saved.erase(i);else{lastError=hr;report(hr,glass::feature(n.surface));++i;}}if(n.saved.empty()){for(auto&w:n.watchers)w.second();n.watchers.clear();n.capsuleGeometry.clear();n.appliedSignature=0;n.reported=false;n.capsuleReported=false;}
     }
     Ptr<IInspectable> markup(const std::wstring&xml){
@@ -229,7 +263,7 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         n.capsuleGeometry.clear();
         for(auto i=n.saved.begin();i!=n.saved.end();){bool mine=false;for(auto name:names)if(i->first==name)mine=true;if(!mine){++i;continue;}
             auto&v=i->second;HRESULT hr=S_OK;InstanceHandle old=0;
-            if(v.local){if(v.value)hr=diag->RegisterInstance(v.value.p,&old);if(SUCCEEDED(hr))hr=service->SetProperty(h,old,v.index);if(old)unregister(old);}else hr=service->ClearProperty(h,v.index);
+            if(v.local){if(v.value)hr=diag->RegisterInstance(v.value.p,&old);if(SUCCEEDED(hr))hr=write(n,h,i->first,old,v.index);if(old)unregister(old);}else hr=write(n,h,i->first,0,v.index,true);
             if(SUCCEEDED(hr))i=n.saved.erase(i);else{lastError=hr;++i;}}
     }
     // Reversible XAML transforms move app and tray hit targets together; the native taskbar window stays unchanged.
@@ -358,7 +392,8 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         if(applied&&(n.surface==glass::VolumePlate||n.surface==glass::BrightnessPlate||n.surface==glass::OsdPlate)){
             if(!n.watchers.count(L"OsdPillRadius"))try{
                 auto p=from(h);winrt::Windows::Foundation::IInspectable object{nullptr};winrt::copy_from_abi(object,p.p);
-                auto applyRadius=[this,h](float r){auto&t=thread();auto i=t.nodes.find(h);if(i!=t.nodes.end())typed(i->second,h,L"CornerRadius",L"CornerRadius",std::to_wstring(r));};
+                // Runs later, after this update's handle h was released: find the node by its key and register a live handle.
+                auto applyRadius=[this,key=n.key](float r){auto&t=thread();auto i=t.nodes.find(key);if(i==t.nodes.end()||!i->second.weak)return;Ptr<IInspectable> p;i->second.weak->Resolve(__uuidof(IInspectable),p.put());InstanceHandle live=0;if(p&&SUCCEEDED(diag->RegisterInstance(p.p,&live))){typed(i->second,live,L"CornerRadius",L"CornerRadius",std::to_wstring(r));releaseLater(t,live);}};
                 std::function<void()> cleanup;
                 if(modern){if(auto e=object.try_as<winrt::Microsoft::UI::Xaml::FrameworkElement>())cleanup=liquid::watchPillRadius(e,applyRadius);}
                 else if(auto e=object.try_as<winrt::Windows::UI::Xaml::FrameworkElement>())cleanup=liquid::watchPillRadius(e,applyRadius);
@@ -373,7 +408,7 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         // tray clip. Keep geometry outside the material-selection branch.
         if(applied&&!modern&&n.surface==glass::TaskbarRoot&&!iconPanel&&!joinedTray&&(c.features&glass::Capsule)&&!n.watchers.count(L"CapsuleClip")){try{auto p=from(h);auto cleanup=liquid::clipCapsule(p.p);if(cleanup)n.watchers.emplace(L"CapsuleClip",std::move(cleanup));}catch(...){trace("tray capsule clip",winrt::to_hresult());}}
         if(applied)note(L"surface="+std::to_wstring((int)n.surface)+L" path="+(!n.imported.empty()?L"imported":n.composition?L"composition":n.fallback?L"acrylic-after-composition-error":L"acrylic")+L" blur="+std::to_wstring(c.blur)+L" opacity="+std::to_wstring(c.opacity)+L" tint="+std::to_wstring(c.tint)+L" radius="+std::to_wstring(c.radius));
-        if(applied){n.appliedSignature=signature;for(auto property:{L"Background",L"Fill",L"BorderBrush",L"Stroke"})if(n.saved.count(property)&&!n.watchers.count(property))try{auto p=from(h);auto&t=thread();auto callback=liquid::watch(p.p,modern,property,[&t,h]{if(t.updating)return;auto node=t.nodes.find(h);if(node!=t.nodes.end()){node->second.appliedSignature=0;scheduleUpdate(t);}});if(callback)n.watchers.emplace(property,std::move(callback));}catch(...){trace("watch property",winrt::to_hresult());}}
+        if(applied){n.appliedSignature=signature;for(auto property:{L"Background",L"Fill",L"BorderBrush",L"Stroke"})if(n.saved.count(property)&&!n.watchers.count(property))try{auto p=from(h);auto&t=thread();auto callback=liquid::watch(p.p,modern,property,[&t,key=n.key]{if(t.updating)return;auto node=t.nodes.find(key);if(node!=t.nodes.end()){node->second.appliedSignature=0;scheduleUpdate(t);}});if(callback)n.watchers.emplace(property,std::move(callback));}catch(...){trace("watch property",winrt::to_hresult());}}
     }
     void update(Thread&t){if(t.updating)return;glass::Config c;Read state=snapshot(c);
         // A torn read keeps the current surfaces (no flicker while a slider is dragged). Retries are bounded; a controller that stays unreadable is treated as gone and effects are restored.
@@ -390,11 +425,15 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         t.updating=false;ensureSubscription();
     }
 public:
-    void ensureSubscription(){
-        if(!service||wantsSubscription()==subscribed.load()||subscriptionWorker.exchange(true))return;
+    // Advise/Unadvise stay on a fresh MTA worker: called on the XAML thread, Advise waits for that same thread and hangs.
+    // fresh: a new attach (bootstrap) gets a new retry budget.
+    void ensureSubscription(bool fresh=false){
+        if(!service)return;bool wanted=wantsSubscription();if(fresh||!wanted){subscriptionFailures=0;retryAt=0;}if(fresh)unadviseFailed=false;
+        if(wanted==subscribed.load()||(!wanted&&unadviseFailed.load())||(wanted&&(subscriptionFailures.load()>=6||GetTickCount64()<retryAt.load()))||subscriptionWorker.exchange(true))return;
         AddRef();auto worker=CreateThread(nullptr,0,[](void*ctx)->DWORD{auto s=(Session*)ctx;CoInitializeEx(nullptr,COINIT_MULTITHREADED);
             for(int attempts=0;attempts<4;++attempts){bool wanted=s->wantsSubscription();if(wanted==s->subscribed.load())break;
-                HRESULT hr=S_OK;if(wanted){xaml_subscription::Scope scope(s->service.p);hr=scope.status();if(SUCCEEDED(hr))hr=s->service->AdviseVisualTreeChange(s);}else hr=s->service->UnadviseVisualTreeChange(s);trace("subscription result",hr);s->lastError=hr;if(FAILED(hr)){s->notify(hr);break;}s->subscribed=wanted;AcquireSRWLockShared(&configLock);if(sharedStatus){if(wanted)InterlockedOr(&sharedStatus->subscribed,1<<s->host);else InterlockedAnd(&sharedStatus->subscribed,~(1<<s->host));}ReleaseSRWLockShared(&configLock);}
+                HRESULT hr=S_OK;if(wanted){xaml_subscription::Scope scope(s->service.p);hr=scope.status();if(SUCCEEDED(hr))hr=s->service->AdviseVisualTreeChange(s);}else hr=s->service->UnadviseVisualTreeChange(s);trace(wanted?"subscription advise":"subscription unadvise",hr);s->lastError=hr;if(FAILED(hr)){s->subscriptionFailed(wanted,hr);break;}
+                if(wanted){s->subscriptionFailures=0;s->notification=~0ull;}s->markSubscribed(wanted);}
             s->subscriptionWorker=false;s->Release();CoUninitialize();return 0;
         },this,0,nullptr);if(worker)CloseHandle(worker);else{subscriptionWorker=false;Release();}
     }
@@ -403,18 +442,21 @@ public:
     HRESULT STDMETHODCALLTYPE GetSite(REFIID id,void**out)override{return site?site->QueryInterface(id,out):E_FAIL;}
     HRESULT STDMETHODCALLTYPE SetSite(IUnknown*p)override{
         if(!p)return S_OK;site=Ptr<IUnknown>(p);p->AddRef();HRESULT hr=p->QueryInterface(__uuidof(IXamlDiagnostics),reinterpret_cast<void**>(diag.put()));if(FAILED(hr)){trace("IXamlDiagnostics",hr);return hr;}
-        hr=diag->QueryInterface(__uuidof(IVisualTreeService3),reinterpret_cast<void**>(service.put()));trace("visual tree service 3",hr);if(FAILED(hr))return hr;
+        // Read the framework first: a failed attach must free its injection slot, or the next attach request never retries it.
+        BSTR init=nullptr;DWORD owner=0;bool named=SUCCEEDED(diag->GetInitializationData(&init))&&init;if(named){std::wstring v=init;modern=v.find(L"modern")!=std::wstring::npos;owner=wcstoul(v.c_str(),nullptr,10);SysFreeString(init);}
+        auto fail=[&](const char*stage,HRESULT e){trace(stage,e);if(named){injecting[modern]=false;reportHost(e,hostKind(modern));}return e;};
+        hr=diag->QueryInterface(__uuidof(IVisualTreeService3),reinterpret_cast<void**>(service.put()));if(FAILED(hr))return fail("visual tree service 3",hr);
         hr=diag->QueryInterface(ReleaseId,reinterpret_cast<void**>(cache.put()));trace("cache release (optional)",hr);
-        BSTR init=nullptr;if(SUCCEEDED(diag->GetInitializationData(&init))&&init){std::wstring v=init;modern=v.find(L"modern")!=std::wstring::npos;DWORD owner=wcstoul(v.c_str(),nullptr,10);SysFreeString(init);if(!connect(owner))return E_FAIL;}
-        if(!shared)return E_FAIL;wchar_t exe[MAX_PATH]{};GetModuleFileNameW(nullptr,exe,MAX_PATH);std::wstring path=exe;
-        if(glass::startHost(glass::runtimeName(path)))host=1;else if(path.find(L"ShellExperienceHost.exe")!=std::wstring::npos||path.find(L"ShellHost.exe")!=std::wstring::npos)host=2;else host=modern?3:0;
+        if(named&&!connect(owner))return fail("connect owner",E_FAIL);
+        if(!shared)return fail("no shared config",E_FAIL);host=hostKind(modern);
         AcquireSRWLockShared(&configLock);if(sharedStatus)InterlockedOr(&sharedStatus->connected,1<<host);ReleaseSRWLockShared(&configLock);
         // Keep one reusable session per framework, rather than creating a new
         // diagnostics tree on every On/Off cycle. Off unsubscribes callbacks.
         AddRef();AcquireSRWLockExclusive(&sessionsLock);sessions.push_back(this);ReleaseSRWLockExclusive(&sessionsLock);ensureSubscription();return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnVisualTreeChange(ParentChildRelation relation,VisualElement element,VisualMutationType mutation)override{
-        try{auto&t=thread();if(!cache&&++compatibilityReports>=8192)ensureSubscription();if(mutation==Add){auto surface=glass::identify(element.Name?element.Name:L"",element.Type?element.Type:L"",host);
+        // Out of compatibility budget: unsubscribe once, from the thread's queue rather than inside this callback.
+        try{auto&t=thread();if(!cache&&++compatibilityReports==8192)PostMessageW(t.window,WM_APP+5,0,0);if(mutation==Add){auto surface=glass::identify(element.Name?element.Name:L"",element.Type?element.Type:L"",host);
                 if(host==0&&surface==glass::NoSurface)surface=glass::identify(element.Name?element.Name:L"",element.Type?element.Type:L"",3);
                 if(host==0&&surface==glass::NoSurface&&element.Name&&wcscmp(element.Name,L"RootGrid")==0&&relation.Parent){auto parent=from(relation.Parent);HSTRING type{};if(parent&&SUCCEEDED(parent->GetRuntimeClassName(&type))){auto name=WindowsGetStringRawBuffer(type,nullptr);if(name&&wcscmp(name,L"Taskbar.TaskbarFrame")==0){surface=glass::TaskbarRoot;t.taskbarPanel=true;}WindowsDeleteString(type);}}
 
@@ -422,7 +464,7 @@ public:
                 auto target=from(element.Handle);auto imported=target&&imported_glass::candidate(imported_glass::theme(host),{element.Type?element.Type:L"",element.Name?element.Name:L""})?importedStyles(target.p):std::vector<const wchar_t*>{};
                 if(!imported.empty()&&surface==glass::NoSurface)surface=host==1?glass::StartPlate:host==2?glass::NotificationAuxiliary:host==3?glass::ExplorerPlate:glass::TaskbarAuxiliary;
                 if(surface!=glass::NoSurface){auto p=std::move(target);Ptr<IWeakReferenceSource> source;if(p&&SUCCEEDED(p->QueryInterface(__uuidof(IWeakReferenceSource),reinterpret_cast<void**>(source.put())))){
-                    Node n;if(host==2&&element.Name){if(wcscmp(element.Name,L"NotificationCenterGrid")==0)n.notificationRoot=0;else if(wcscmp(element.Name,L"CalendarCenterGrid")==0)n.notificationRoot=1;if(n.notificationRoot>=0)t.notificationRoots[n.notificationRoot]=element.Handle;}n.imported=std::move(imported);n.surface=surface;source->GetWeakReference(n.weak.put());auto old=t.nodes.find(element.Handle);if(old!=t.nodes.end()){t.updating=true;restore(old->second,element.Handle);t.updating=false;if(!old->second.saved.empty()){releaseLater(t,element.Handle);return S_OK;}}t.nodes[element.Handle]=std::move(n);
+                    Node n;if(host==2&&element.Name){if(wcscmp(element.Name,L"NotificationCenterGrid")==0)n.notificationRoot=0;else if(wcscmp(element.Name,L"CalendarCenterGrid")==0)n.notificationRoot=1;if(n.notificationRoot>=0)t.notificationRoots[n.notificationRoot]=element.Handle;}n.key=element.Handle;n.imported=std::move(imported);n.surface=surface;source->GetWeakReference(n.weak.put());auto old=t.nodes.find(element.Handle);if(old!=t.nodes.end()){t.updating=true;restore(old->second,element.Handle);t.updating=false;if(!old->second.saved.empty()){releaseLater(t,element.Handle);return S_OK;}}t.nodes[element.Handle]=std::move(n);
                     glass::Config c;if(snapshot(c)==Read::Ok){t.updating=true;apply(t.nodes[element.Handle],element.Handle,c);t.updating=false;}
                 }}glass::Config keyboardConfig;if(snapshot(keyboardConfig)==Read::Ok&&(keyboardConfig.features&glass::Keyboard))for(auto const&entry:t.nodes)if(entry.second.surface==glass::KeyboardPlate&&!entry.second.appliedSignature){scheduleUpdate(t);break;}releaseLater(t,element.Handle);releaseLater(t,relation.Parent);
             }else if(mutation==Remove){auto i=t.nodes.find(element.Handle);if(i!=t.nodes.end()){t.updating=true;restore(i->second,element.Handle);t.updating=false;for(auto&w:i->second.watchers)w.second();t.nodes.erase(i);}releaseLater(t,element.Handle);}
@@ -441,7 +483,9 @@ DWORD WINAPI attachFramework(void*arg){int modern=(int)(INT_PTR)arg;CoInitialize
     auto fn=module?reinterpret_cast<decltype(&InitializeXamlDiagnosticsEx)>(GetProcAddress(module,"InitializeXamlDiagnosticsEx")):nullptr;
     HRESULT result=E_FAIL;if(fn){wchar_t path[32768]{};GetModuleFileNameW(selfModule,path,32768);auto init=std::to_wstring(ownerPid)+(modern?L" modern":L" classic");
         for(int i=1;i<=128;++i){auto endpoint=std::wstring(modern?L"WinUIVisualDiagConnection":L"VisualDiagConnection")+std::to_wstring(i);result=fn(endpoint.c_str(),GetCurrentProcessId(),L"",path,glass::runtimeTapId(runtimePath()),init.c_str());if(result!=HRESULT_FROM_WIN32(ERROR_NOT_FOUND))break;}
-    }trace(modern?"initialize modern":"initialize system",result);if(FAILED(result)){injecting[modern]=false;report(result);}CoUninitialize();return 0;
+    }trace(modern?"initialize modern":"initialize system",result);
+    // No endpoint yet (no XAML content in this framework) is not a failure to show: free the slot so the next attach request retries.
+    if(FAILED(result)){injecting[modern]=false;if(result!=HRESULT_FROM_WIN32(ERROR_NOT_FOUND))reportHost(result,hostKind(modern!=0));}CoUninitialize();return 0;
 }
 }
 extern "C" HRESULT WINAPI DllGetClassObject(REFCLSID id,REFIID iid,void**p){if(id!=glass::TapId&&id!=glass::runtimeTapId(runtimePath()))return CLASS_E_CLASSNOTAVAILABLE;auto f=new Factory;auto hr=f->QueryInterface(iid,p);f->Release();return hr;}
@@ -480,7 +524,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI GlassConnectTest(){
     return connected&&idle()?S_OK:E_FAIL;
 }
 void bootstrap(DWORD owner){if(connect(owner)){
-        AcquireSRWLockShared(&sessionsLock);for(auto s:sessions)s->ensureSubscription();ReleaseSRWLockShared(&sessionsLock);
+        AcquireSRWLockShared(&sessionsLock);for(auto s:sessions)s->ensureSubscription(true);ReleaseSRWLockShared(&sessionsLock);
         for(int modern=0;modern<2;++modern)if(GetModuleHandleW(modern?L"Microsoft.Internal.FrameworkUdk.dll":L"Windows.UI.Xaml.dll")&&!injecting[modern].exchange(true)){HANDLE t=CreateThread(nullptr,0,attachFramework,(void*)(INT_PTR)modern,0,nullptr);if(t)CloseHandle(t);else injecting[modern]=false;}
         refreshWindows();
     auto controller=ownerWindow();if(controller)PostMessageW(controller,RegisterWindowMessageW(glass::AttachAckMessage),GetCurrentThreadId(),0);

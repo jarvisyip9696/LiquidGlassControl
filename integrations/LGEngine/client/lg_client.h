@@ -336,6 +336,8 @@ class Client {
                 lightNow=std::min(1.f,std::max(0.f,level));post(LightMoved,LPARAM(std::lround(lightNow.load()*1000.f)));}
         }}catch(...){cancel();throw;}cancel();
     }
+    // 4551 = Smart App Control / App Control for Business, 1260 = blocked by group policy, 577 = invalid image signature.
+    static bool policyBlocked(DWORD e){return e==4551||e==1260||e==577;}
     void run(){bool ever=false;unsigned attempt=0,initialAttempts=0;
         while(WaitForSingleObject(stop.value,0)!=WAIT_OBJECT_0){
             try{if(connect()){online=true;post(ever?Restarted:Connected);ever=true;ULONGLONG up=GetTickCount64();runConnection(attempt);if(GetTickCount64()-up>=10000)attempt=0;}}
@@ -344,8 +346,9 @@ class Client {
             bool was=online.exchange(false);clearSection();wake.reset();pipe.reset();hostPid=0;minorHost=0;if(was)post(Lost);
             // A host may close its pipe while exiting after idle. Retry that initial handoff before declaring the service
             // unavailable. Deliberately NOT retried forever: if Smart App Control blocks the host exe, every new attempt would
-            // pop a Smart App Control toast, so after 3 attempts that never connected we post Failed and stop.
-            if(!ever&&++initialAttempts>=3){post(Failed);return;}
+            // pop a Smart App Control toast, so after 3 attempts that never connected we post Failed and stop. A launch the
+            // policy refused will be refused again: stop after the first one (lastError() keeps the code for the owner).
+            if(!ever&&(++initialAttempts>=3||policyBlocked(error))){post(Failed);return;}
             if(WaitForSingleObject(stop.value,wire::backoffMs(attempt++,nextRandom()))==WAIT_OBJECT_0)return;
         }
     }
