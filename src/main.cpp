@@ -174,13 +174,19 @@ bool usesExplorer(int selectedMode,const std::wstring&exe){return selectedMode==
 bool explorerBackupExists(){auto dir=iniPath.substr(0,iniPath.find_last_of(L"\\")+1);return GetFileAttributesW((dir+L"explorer-background-originals.bin").c_str())!=INVALID_FILE_ATTRIBUTES;}
 bool nativeBackupExists(){auto dir=iniPath.substr(0,iniPath.find_last_of(L"\\")+1);return GetFileAttributesW((dir+L"native-osd-originals.bin").c_str())!=INVALID_FILE_ATTRIBUTES||GetFileAttributesW((dir+L"native-osd-switches.bin").c_str())!=INVALID_FILE_ATTRIBUTES;}
 std::wstring settingsDir(){return iniPath.substr(0,iniPath.find_last_of(L"\\")+1);}
+// Explorer and the shell hosts keep the injected engine DLL loaded until they
+// restart. Extract it per user, outside the app folder, so that folder can
+// always be moved or deleted while the shell is running.
+std::wstring engineDir(){wchar_t base[MAX_PATH]{};DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",base,MAX_PATH);if(!n||n>=MAX_PATH)return settingsDir();std::wstring dir=std::wstring(base)+L"\\LiquidGlassControl\\";CreateDirectoryW(dir.c_str(),nullptr);dir+=L"Engine\\";if(!CreateDirectoryW(dir.c_str(),nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS)return settingsDir();return dir;}
 // A switch the user turns on after a failed engine load tries the load again (once per click).
 bool engineToggleOn(int id){int ids[]={VolumeOn,BrightnessOn,TaskbarToggle,StartToggle,NotificationToggle,ExplorerToggle,DockToggle,KeyboardToggle};bool on[]={volumeOn,brightnessOn,shellOn[0],shellOn[1],shellOn[2],explorerOn,dockOn,keyboardOn};for(int i=0;i<8;++i)if(id==ids[i])return !on[i];return false;}
 bool ensureEngine(){
     if(selfTestMode)return false;
     if(engineReady)return true;if(engineAttempted)return false;engineAttempted=true;
-    engineReady=engine.initialize(settingsDir(),nativeProbeMode);
-    if(!engineReady){message(engine.policyBlocked()?tr(L"Windows 应用程序控制策略阻止了引擎，请使用受信任签名或管理员批准的版本。",L"Windows application-control policy blocked the engine. A trusted signed or administrator-approved build is required."):tr(L"独立引擎无法加载，请检查程序所在目录是否可写。",L"Standalone engine could not load. Check that the app folder is writable."));engine.shutdown();}
+    auto runtimeDir=engineDir();engineReady=engine.initialize(runtimeDir,nativeProbeMode);
+    // Clean up copies that 0.13.0-beta.5 and earlier extracted beside the EXE.
+    if(_wcsicmp(runtimeDir.c_str(),settingsDir().c_str())!=0)glass::Controller::sweepEngines(settingsDir(),L"");
+    if(!engineReady){message(engine.policyBlocked()?tr(L"Windows 应用程序控制策略阻止了引擎，请使用受信任签名或管理员批准的版本。",L"Windows application-control policy blocked the engine. A trusted signed or administrator-approved build is required."):tr(L"独立引擎无法加载，请检查 AppData\\Local\\LiquidGlassControl\\Engine 是否可写。",L"Standalone engine could not load. Check that AppData\\Local\\LiquidGlassControl\\Engine is writable."));engine.shutdown();}
     return engineReady;
 }
 bool shellBackupExists(){for(int i=0;i<3;++i)if(full_themes::pending(i,settingsDir())||shell_materials::exists(i,settingsDir()))return true;return false;}

@@ -81,7 +81,7 @@ Dock 影响半径扩大至 2.5 个按钮宽度，峰值请求从 1.26 提升至 
 
 评估日期：2026-10-17。上游：https://github.com/domk6966/LGEngine
 
-当前固定版本：LGEngine 2.7.13.0（protocol 1.1），commit `047aa555abac2063d7d7008b4127695c0fad0fb1`。
+当前固定版本：LGEngine 2.7.14.0（protocol 1.1），commit `2b07c0d9298d3e7637a44efe670eb20d46b30124`。
 下载并修改的工作副本位于 `build/LGEngine-upstream`（不进入本项目发行包）。
 
 ## 第一阶段适配
@@ -197,7 +197,7 @@ LGEngine 光学窗口在主程序色调为默认项（目前标签为“跟随�
 
 ```powershell
 git clone https://github.com/domk6966/LGEngine.git build/LGEngine-upstream
-git -C build/LGEngine-upstream checkout 047aa555abac2063d7d7008b4127695c0fad0fb1
+git -C build/LGEngine-upstream checkout 2b07c0d9298d3e7637a44efe670eb20d46b30124
 git -C build/LGEngine-upstream apply ../../integrations/LGEngine/fixes.patch
 ./integrations/LGEngine/test.ps1
 ./build/LGEngine-upstream/build.ps1

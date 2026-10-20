@@ -39,7 +39,7 @@ def release():
 def assets():
     folder = ROOT / 'dist' / VERSION
     names = [f'LiquidGlassControl-{VERSION}-win11-x64.zip', f'LiquidGlassControl-{VERSION}-win11-x64.exe',
-        f'LiquidGlassControl-{VERSION}-source.zip', 'LGEngine-2.7.13.0-source.zip', 'SHA256SUMS.txt']
+        f'LiquidGlassControl-{VERSION}-source.zip', 'LGEngine-2.7.14.0-source.zip', 'SHA256SUMS.txt']
     paths = [folder / name for name in names]
     if not all(path.is_file() for path in paths):
         raise SystemExit('Missing release asset')

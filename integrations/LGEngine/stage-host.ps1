@@ -1,6 +1,6 @@
 param([Parameter(Mandatory)][string]$OutputDirectory)
 $ErrorActionPreference = 'Stop'
-$source = Join-Path $PSScriptRoot '../../build/LGEngine-2.7.13'
+$source = Join-Path $PSScriptRoot '../../build/LGEngine-2.7.14'
 & (Join-Path $PSScriptRoot 'prepare-upstream.ps1') -SourceDirectory $source
 & (Join-Path $source 'build.ps1') -HostOnly
 if (-not $?) { throw 'LGEngine host compilation failed.' }
