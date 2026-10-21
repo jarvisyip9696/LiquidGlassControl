@@ -1,4 +1,4 @@
-Liquid Glass Control 0.13.0-beta.7 — Experimental / 实验版
+Liquid Glass Control 0.13.0 — Experimental / 实验版
 Windows 11 x64 · Portable / 免安装
 
 中文
@@ -27,6 +27,6 @@ English
 
 The sample does not change system levels. Windows toasts and the native volume flyout are not replaced.
 Brightness reporting depends on hardware. No Windhawk required; the host uses Windows .NET Framework 4.x.
-The separate EXE is controller-only. This is unsigned experimental software.
+This is unsigned experimental software.
 Keep personal settings and recovery files during upgrades until restoration succeeds.
 See LGEngine Distribution.txt for LGEngine's MIT license and upstream notes.

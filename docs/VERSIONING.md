@@ -54,3 +54,12 @@ card is placed outside the settings window. App glass gets two pages: Windows
 backdrop (now saved and reapplied at startup, with border and title colours)
 and Title-bar glass, an engine glass strip over the title bar of the chosen
 apps with its own look.
+
+0.13.0 is the first full release of the 0.13 line (staged as beta.8). Its
+release page carries only the portable ZIP; the ZIP still includes both source
+archives and the license texts, and GitHub adds the tagged source. It bundles the
+LGEngine 2.7.15.0 host, whose glass edges are smoother. The settings window is simpler: three pages without sub-tabs, and
+each System glass effect is one row with a switch and its own settings behind
+an arrow. The volume and brightness glass moves into the Volume and Brightness
+switches, the notification center and calendar glass work on their own, and
+Title-bar glass and App glass hold up better.
