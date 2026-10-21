@@ -589,11 +589,12 @@ int selfTest(){
     passed=glass::selfTestSnapshot()&&passed;
     passed=passed&&glass::notificationHostWindow(L"ShellHost.exe",L"ControlCenterWindow")&&glass::notificationHostWindow(L"ShellExperienceHost.exe",L"Windows.UI.Core.CoreWindow")&&!glass::notificationHostWindow(L"ShellHost.exe",L"Windows.UI.Core.CoreWindow")&&!glass::notificationHostWindow(L"ShellExperienceHost.exe",L"ControlCenterWindow")&&!glass::notificationHostWindow(L"other.exe",L"ControlCenterWindow");
     {auto quick=glass::identify(L"ControlCenterRegion",L"Windows.UI.Xaml.Controls.Grid",2);auto calendar=glass::identify(L"CalendarCenterGrid",L"Windows.UI.Xaml.Controls.Grid",2);auto notification=glass::identify(L"NotificationCenterGrid",L"Windows.UI.Xaml.Controls.Grid",2);
-    passed=passed&&quick==glass::NotificationAuxiliary&&glass::active(quick,glass::Notifications)&&glass::feature(quick)==0&&calendar==glass::NotificationPlate&&notification==glass::NotificationPlate&&glass::feature(calendar)==glass::Notifications&&!glass::active(quick,glass::Start);}
+    passed=passed&&quick==glass::NotificationAuxiliary&&glass::active(quick,glass::Notifications)&&glass::feature(quick)==0&&calendar==glass::CalendarPlate&&notification==glass::NotificationPlate&&glass::feature(calendar)==glass::Calendar&&glass::active(calendar,glass::Calendar)&&!glass::active(calendar,glass::Notifications)&&!glass::active(quick,glass::Start);}
     passed=passed&&glass::startHost(L"SearchHost.exe")&&glass::startHost(L"SearchApp.exe")&&glass::startHost(L"StartMenuExperienceHost.exe")&&!glass::startHost(L"explorer.exe");
     record("feature bounds and consistent configuration snapshots");
-    // Owner-drawn switches must keep checked state through real button commands.
-    {bool before=dockOn;HWND toggle=GetDlgItem(mainWindow,DockToggle);bool wasEnabled=IsWindowEnabled(toggle)!=FALSE;EnableWindow(toggle,TRUE);SendMessageW(toggle,BM_CLICK,0,0);passed=passed&&dockOn!=before&&SendMessageW(toggle,BM_GETCHECK,0,0)==(dockOn?BST_CHECKED:BST_UNCHECKED);EnableWindow(toggle,TRUE);SendMessageW(toggle,BM_CLICK,0,0);passed=passed&&dockOn==before;EnableWindow(toggle,wasEnabled);KillTimer(mainWindow,14);glassPendingDiscover=false;}
+    // Owner-drawn switches must keep checked state through real button commands. The command is sent as the switch's own BN_CLICKED: BM_CLICK needs an active, shown window, and the test window stays hidden.
+    {bool before=dockOn;HWND toggle=GetDlgItem(mainWindow,DockToggle);auto click=[&]{SendMessageW(mainWindow,WM_COMMAND,MAKEWPARAM(DockToggle,BN_CLICKED),reinterpret_cast<LPARAM>(toggle));};click();passed=passed&&toggle&&dockOn!=before&&SendMessageW(toggle,BM_GETCHECK,0,0)==(dockOn?BST_CHECKED:BST_UNCHECKED);click();passed=passed&&dockOn==before&&SendMessageW(toggle,BM_GETCHECK,0,0)==(dockOn?BST_CHECKED:BST_UNCHECKED);KillTimer(mainWindow,14);glassPendingDiscover=false;}
+    record("owner-drawn switches keep checked state through button commands");
     // Reset tuning preserves selected effects and writes factory material values.
     {auto savedPath=iniPath;auto savedConfig=glassConfig;bool savedBattery=batteryFriendly;iniPath=settingsDir()+L"reset-tuning-self-test.ini";
     bool savedLinked[glass::FamilyCount];std::copy(std::begin(glassLookLinked),std::end(glassLookLinked),savedLinked);
@@ -602,10 +603,11 @@ int selfTest(){
     selectPage(1);expandSystemRow(2);SendDlgItemMessageW(mainWindow,LookOpacity,TBM_SETPOS,TRUE,70);SendDlgItemMessageW(mainWindow,LookBlur,TBM_SETPOS,TRUE,30);savePanel(false);
     passed=passed&&!glassLookLinked[glass::TaskbarLook]&&glassConfig.looks[glass::TaskbarLook].opacity==70&&GetPrivateProfileIntW(L"Glass.Taskbar",L"Blur",-1,iniPath.c_str())==30&&glassLookLinked[glass::StartLook];
     expandSystemRow(7);SendDlgItemMessageW(mainWindow,DockScale,TBM_SETPOS,TRUE,180);savePanel(true);passed=passed&&glassConfig.dockScale==180&&GetPrivateProfileIntW(L"Glass.Dock",L"Scale",-1,iniPath.c_str())==180;
+    record("per-surface and Dock sliders save live");
     expandSystemRow(2);SendMessageW(mainWindow,WM_COMMAND,RestoreOriginal,0);
     passed=passed&&glassConfig.opacity==35&&glassConfig.blur==12&&glassConfig.radius==12&&glassConfig.tint==2&&!batteryFriendly&&glassConfig.features==(glass::Keyboard|glass::Taskbar)&&GetPrivateProfileIntW(L"Glass",L"Opacity",999,iniPath.c_str())==35&&glassLookLinked[glass::TaskbarLook]&&glassConfig.dockScale==126&&SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETPOS,0,0)==35&&SendDlgItemMessageW(mainWindow,LookBlur,TBM_GETPOS,0,0)==12&&SendDlgItemMessageW(mainWindow,DockScale,TBM_GETPOS,0,0)==126;
     DeleteFileW(iniPath.c_str());iniPath=savedPath;glassConfig=savedConfig;batteryFriendly=savedBattery;std::copy(std::begin(savedLinked),std::end(savedLinked),glassLookLinked);expandSystemRow(-1);loadLookPanel();selectPage(0);}
-    record("per-surface and Dock sliders save live; Reset all looks relinks and restores defaults");
+    record("Reset all looks relinks and restores defaults");
     // Rapid switch changes publish only the final requested mask after batching.
     {auto savedConfig=glassConfig;bool oldVolume=volumeOn,oldBrightness=brightnessOn,oldExplorer=explorerOn,oldDock=dockOn,oldKeyboard=keyboardOn;bool oldShell[3]={shellOn[0],shellOn[1],shellOn[2]};DWORD oldExtra=glassExtraFeatures;
     // Volume/Brightness no longer reach the XAML engine; Calendar is its own bit, independent of Notifications.
@@ -710,7 +712,7 @@ int selfTest(){
 
         expandSystemRow(2);RemovePropW(tabs,L"LG.Sel");passed=saveUiProof(mainWindow,settingsDir()+L"ui-system-material.bmp")&&passed;
         l10n::current=l10n::Simplified;localize();RemovePropW(tabs,L"LG.Sel");passed=saveUiProof(mainWindow,settingsDir()+L"ui-system-material-zh.bmp")&&passed;
-        expandSystemRow(0);passed=IsWindowVisible(GetDlgItem(mainWindow,OptArrival))&&!IsWindowVisible(GetDlgItem(mainWindow,LookOpacity))&&saveUiProof(mainWindow,settingsDir()+L"ui-lgengine-zh.bmp")&&passed;selectPage(2);passed=!IsWindowVisible(GetDlgItem(mainWindow,OptArrival))&&passed;
+        expandSystemRow(0);passed=shown(OptArrival)&&!shown(LookOpacity)&&saveUiProof(mainWindow,settingsDir()+L"ui-lgengine-zh.bmp")&&passed;selectPage(2);passed=!shown(OptArrival)&&passed; // by style: the test window is never shown, so IsWindowVisible is always false
         l10n::current=savedLanguage;localize();expandSystemRow(-1);selectPage(0);record("system glass pages render using native controls without a host overlay");}
     passed=allPassed;
     std::wstring report=iniPath.substr(0,iniPath.find_last_of(L"\\")+1)+L"self-test.txt";
