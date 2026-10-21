@@ -599,11 +599,17 @@ int selfTest(){
     {auto savedPath=iniPath;auto savedConfig=glassConfig;bool savedBattery=batteryFriendly;iniPath=settingsDir()+L"reset-tuning-self-test.ini";
     bool savedLinked[glass::FamilyCount];std::copy(std::begin(glassLookLinked),std::end(glassLookLinked),savedLinked);
     glassConfig.opacity=80;glassConfig.blur=38;glassConfig.radius=25;glassConfig.tint=2;glassConfig.features=glass::Keyboard|glass::Taskbar;batteryFriendly=false;
-    // The Taskbar row's own sliders save an unlinked look; the Dock sliders save the dock; Reset all looks relinks and restores both.
+    // The Taskbar row's own sliders save an unlinked look; the Dock sliders save the dock; Reset all looks relinks and restores both. A failing part lists the values it saw.
     selectPage(1);expandSystemRow(2);SendDlgItemMessageW(mainWindow,LookOpacity,TBM_SETPOS,TRUE,70);SendDlgItemMessageW(mainWindow,LookBlur,TBM_SETPOS,TRUE,30);savePanel(false);
-    passed=passed&&!glassLookLinked[glass::TaskbarLook]&&glassConfig.looks[glass::TaskbarLook].opacity==70&&GetPrivateProfileIntW(L"Glass.Taskbar",L"Blur",-1,iniPath.c_str())==30&&glassLookLinked[glass::StartLook];
-    expandSystemRow(7);SendDlgItemMessageW(mainWindow,DockScale,TBM_SETPOS,TRUE,180);savePanel(true);passed=passed&&glassConfig.dockScale==180&&GetPrivateProfileIntW(L"Glass.Dock",L"Scale",-1,iniPath.c_str())==180;
-    record("per-surface and Dock sliders save live");
+    {int row=systemOpen,slider=(int)SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETPOS,0,0),blur=(int)GetPrivateProfileIntW(L"Glass.Taskbar",L"Blur",-1,iniPath.c_str());std::string name="Taskbar row sliders save its own look";
+    passed=!glassLookLinked[glass::TaskbarLook]&&glassConfig.looks[glass::TaskbarLook].opacity==70&&blur==30;
+    if(!passed){char d[128];snprintf(d,sizeof(d)," (row %d, slider %d, opacity %lu, linked %d, ini blur %d)",row,slider,(unsigned long)glassConfig.looks[glass::TaskbarLook].opacity,glassLookLinked[glass::TaskbarLook]?1:0,blur);name+=d;}record(name.c_str());}
+    {std::string name="other surfaces stay on the shared look";passed=glassLookLinked[glass::StartLook]&&glassLookLinked[glass::NotificationLook]&&glassLookLinked[glass::CalendarLook]&&glassLookLinked[glass::ExplorerLook];
+    if(!passed){char d[64];snprintf(d,sizeof(d)," (linked %d%d%d%d%d)",glassLookLinked[0]?1:0,glassLookLinked[1]?1:0,glassLookLinked[2]?1:0,glassLookLinked[3]?1:0,glassLookLinked[4]?1:0);name+=d;}record(name.c_str());}
+    expandSystemRow(7);SendDlgItemMessageW(mainWindow,DockScale,TBM_SETPOS,TRUE,180);savePanel(true);
+    {int row=systemOpen,slider=(int)SendDlgItemMessageW(mainWindow,DockScale,TBM_GETPOS,0,0),scale=(int)GetPrivateProfileIntW(L"Glass.Dock",L"Scale",-1,iniPath.c_str());std::string name="Dock sliders save the dock";
+    passed=glassConfig.dockScale==180&&scale==180;
+    if(!passed){char d[96];snprintf(d,sizeof(d)," (row %d, slider %d, scale %lu, ini scale %d)",row,slider,(unsigned long)glassConfig.dockScale,scale);name+=d;}record(name.c_str());}
     expandSystemRow(2);SendMessageW(mainWindow,WM_COMMAND,RestoreOriginal,0);
     passed=passed&&glassConfig.opacity==35&&glassConfig.blur==12&&glassConfig.radius==12&&glassConfig.tint==2&&!batteryFriendly&&glassConfig.features==(glass::Keyboard|glass::Taskbar)&&GetPrivateProfileIntW(L"Glass",L"Opacity",999,iniPath.c_str())==35&&glassLookLinked[glass::TaskbarLook]&&glassConfig.dockScale==126&&SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETPOS,0,0)==35&&SendDlgItemMessageW(mainWindow,LookBlur,TBM_GETPOS,0,0)==12&&SendDlgItemMessageW(mainWindow,DockScale,TBM_GETPOS,0,0)==126;
     DeleteFileW(iniPath.c_str());iniPath=savedPath;glassConfig=savedConfig;batteryFriendly=savedBattery;std::copy(std::begin(savedLinked),std::end(savedLinked),glassLookLinked);expandSystemRow(-1);loadLookPanel();selectPage(0);}
