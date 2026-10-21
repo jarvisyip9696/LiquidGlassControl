@@ -65,12 +65,12 @@ void saveDock(DWORD scale,DWORD spread,DWORD speed,DWORD bounce){
 // Called once from the ini-load site after the shared [Glass] keys are read: per-family looks fall back to those shared keys, the dock to today's defaults, and the one-time Calendar migration runs.
 void loadGlassSettings(){
     for(int f=0;f<glass::FamilyCount;++f){auto section=glassLookSections[f];auto read=[&](const wchar_t*key,DWORD shared){return (DWORD)GetPrivateProfileIntW(section,key,(int)shared,iniPath.c_str());};
-        glassLookLinked[f]=true;for(auto key:{L"Opacity",L"Blur",L"Radius",L"Tint"})if(GetPrivateProfileIntW(section,key,-1,iniPath.c_str())>=0)glassLookLinked[f]=false;
+        glassLookLinked[f]=true;for(auto key:{L"Opacity",L"Blur",L"Radius",L"Tint"})if((int)GetPrivateProfileIntW(section,key,-1,iniPath.c_str())>=0)glassLookLinked[f]=false; // UINT: cast, or a missing key (-1) reads as huge
         glass::Look l;l.opacity=read(L"Opacity",glassConfig.opacity);l.blur=read(L"Blur",glassConfig.blur);l.radius=read(L"Radius",glassConfig.radius);l.tint=read(L"Tint",glassConfig.tint);glassConfig.looks[f]=glass::normalize(l);}
     glass::Config d;glassConfig.dockScale=GetPrivateProfileIntW(L"Glass.Dock",L"Scale",d.dockScale,iniPath.c_str());glassConfig.dockSpread=GetPrivateProfileIntW(L"Glass.Dock",L"Spread",d.dockSpread,iniPath.c_str());
     glassConfig.dockSpeed=GetPrivateProfileIntW(L"Glass.Dock",L"Speed",d.dockSpeed,iniPath.c_str());glassConfig.dockBounce=GetPrivateProfileIntW(L"Glass.Dock",L"Bounce",d.dockBounce,iniPath.c_str());
     // Migration, once: the Notification center used to include the calendar flyout, so an existing Notifications switch also turns Calendar on. Toasts are never migrated.
-    if(GetPrivateProfileIntW(L"Glass",L"Calendar",-1,iniPath.c_str())<0&&(glassConfig.features&glass::Notifications)){glassConfig.features|=glass::Calendar;WritePrivateProfileStringW(L"Glass",L"Calendar",L"1",iniPath.c_str());}
+    if((int)GetPrivateProfileIntW(L"Glass",L"Calendar",-1,iniPath.c_str())<0&&(glassConfig.features&glass::Notifications)){glassConfig.features|=glass::Calendar;WritePrivateProfileStringW(L"Glass",L"Calendar",L"1",iniPath.c_str());}
     glassConfig=glass::normalize(glassConfig);glassExtraFeatures=glassConfig.features&(glass::Calendar|glass::Toasts);
 }
 // Volume/Brightness switches now belong to the LGEngine indicator. One-time migration: the old XAML Volume/Brightness bits and IndicatorOn (default on) become VolumeOn/BrightnessOn.
