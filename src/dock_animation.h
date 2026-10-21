@@ -2,12 +2,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <vector>
 namespace liquid {
-inline float dockWeight(float x,float y,float width,float height){if(width<=0||height<=0||y<0||y>height)return 0;float d=std::abs(x-width/2)/std::max(36.f,width*1.35f);return d<1?(1-d*d)*(1-d*d):0;}
+inline float dockWeight(float x,float y,float width,float height,float spread=1.35f){if(width<=0||height<=0||y<0||y>height)return 0;float d=std::abs(x-width/2)/std::max(36.f,width*spread);return d<1?(1-d*d)*(1-d*d):0;}
 inline float dockScale(float requested,float iconWidth,float iconHeight,float buttonWidth,float buttonHeight){if(iconWidth<=0||iconHeight<=0)return 1;return std::min(requested,std::max(1.f,std::min((buttonWidth-4)/iconWidth,(buttonHeight-4)/iconHeight)));}
 // C++ mirror of the compositor expression (x pointer, c centre, r radius, on 0..1, m scale cap), without the base scale B.
-inline float dockExpr(float x,float c,float r,float on,float m){float d=std::min(std::abs(x-c)/r,1.f);float w=std::max(0.f,1-d*d);return std::min(m,1+.26f*on*w*w);}
+inline float dockExpr(float x,float c,float r,float on,float m,float amp=.26f){float d=std::min(std::abs(x-c)/r,1.f);float w=std::max(0.f,1-d*d);return std::min(m,1+amp*on*w*w);}
 inline bool testDockExpr(){const float bw[]={48,60,100};const float iw[]={32,40,48};for(float w:bw)for(float s:iw){float cap=dockScale(1e9f,s,s,w,48);for(float x=-20;x<=w+140;x+=1.5f){float a=dockExpr(x,w/2,std::max(36.f,w*1.35f),1,cap),b=dockScale(1+.26f*dockWeight(x,24,w,48),s,s,w,48);if(std::abs(a-b)>1e-5f)return false;}if(dockExpr(w/2,w/2,36,0,cap)!=1)return false;}return true;}
 inline bool testDockWeight(){return dockWeight(24,24,48,48)==1&&dockWeight(24,-1,48,48)==0&&dockWeight(24,49,48,48)==0&&dockWeight(120,24,48,48)==0&&dockWeight(72,24,48,48)>0&&dockWeight(72,24,48,48)<1&&dockWeight(0,0,0,0)==0&&dockScale(1.2f,32,32,48,48)==1.2f&&dockScale(1.2f,40,40,48,48)<=1.1f&&dockScale(1.2f,48,48,48,48)==1&&dockScale(1.2f,0,0,48,48)==1&&testDockExpr();}
 // Pointer moves write one scalar (X) into a shared composition property set. Each icon image runs one
@@ -23,6 +24,12 @@ class DockAnimation {
     struct Icon {winrt::weak_ref<Element> element,image;winrt::Windows::Foundation::Numerics::float3 scale,center;bool changed=false;float target=1;winrt::event_token entered{},moved{},exited{};Props props{nullptr};bool bound=false;};
     winrt::weak_ref<Element> root;std::vector<Icon> icons;winrt::event_token rootEntered{},moved{},exited{};bool attached=false;
     winrt::Windows::UI::Composition::Compositor comp{nullptr};Props p{nullptr};bool fallback=false,curOn=false;float bandTop=0,bandBottom=-1;std::chrono::steady_clock::time_point lastRefresh{};
+    // Look, from the shared config: amp is the peak magnification above 1, spread the hover radius in icon widths, easeMs the On ease, overshoot the extra On height of the bounce (0 = none).
+    float amp=.26f,spread=1.35f,overshoot=0;int easeMs=150;
+    // Diagnostics: counters for the status block and one log line per failure kind (bit per kind).
+    LONG pointerCount=0,lastX=0;unsigned loggedKinds=0;
+    void fail(unsigned kind,const char*what){HRESULT hr=winrt::to_hresult();if(!onError||(loggedKinds&(1u<<kind)))return;loggedKinds|=1u<<kind;onError(what,hr);}
+    void publish(){if(!onStats)return;LONG bound=0;for(auto&i:icons)if(i.bound)++bound;onStats((LONG)icons.size(),bound,pointerCount,lastX);}
     static Visual visual(Element const&e){return winrt::Windows::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(e);}
     static Element iconImage(Element const&button){using Tree=winrt::Windows::UI::Xaml::Media::VisualTreeHelper;Element best{nullptr};double area=0;std::vector<winrt::Windows::UI::Xaml::DependencyObject> pending{button};unsigned visited=0;
         while(!pending.empty()&&visited++<128){auto item=pending.back();pending.pop_back();auto e=item.try_as<Element>();if(e&&e.Visibility()!=winrt::Windows::UI::Xaml::Visibility::Visible)continue;
@@ -41,10 +48,10 @@ class DockAnimation {
         for(auto i=icons.begin();i!=icons.end();){auto e=i->element.get();if(!e){i=icons.erase(i);continue;}
             // Local pointer coordinates include the capsule's RenderTransform.
             // Do not compare an animated visual's bounds against the old root.
-            float f=0;if(horizontal)try{auto q=args.GetCurrentPoint(e).Position();f=dockWeight(q.X,q.Y,(float)e.ActualWidth(),(float)e.ActualHeight());}catch(...){}
-            try{animate(*i,e,1+.26f*f);}catch(...){}++i;}}catch(...){}}
+            float f=0;if(horizontal)try{auto q=args.GetCurrentPoint(e).Position();f=dockWeight(q.X,q.Y,(float)e.ActualWidth(),(float)e.ActualHeight(),spread);}catch(...){fail(0,"dock slow pointer point");}
+            try{animate(*i,e,1+amp*f);}catch(...){fail(1,"dock slow animate");}++i;}}catch(...){fail(2,"dock slow");}}
     // Stop the expression and put the image visual back exactly as found.
-    void unbind(Icon&i){try{if(i.changed)if(auto image=i.image.get()){auto v=visual(image);v.StopAnimation(L"Scale");v.Scale(i.scale);v.CenterPoint(i.center);}}catch(...){}i.changed=false;i.bound=false;i.props=nullptr;i.target=1;}
+    void unbind(Icon&i){try{if(i.changed)if(auto image=i.image.get()){auto v=visual(image);v.StopAnimation(L"Scale");v.Scale(i.scale);v.CenterPoint(i.center);}}catch(...){fail(3,"dock unbind");}i.changed=false;i.bound=false;i.props=nullptr;i.target=1;}
     // Find the image of an unbound icon (or one whose image died) and start its single Scale expression.
     void bind(Icon&i,Element const&e){
         if(i.bound&&i.image.get())return;
@@ -53,7 +60,7 @@ class DockAnimation {
         auto v=visual(image);auto props=comp.CreatePropertySet();props.InsertScalar(L"C",0);props.InsertScalar(L"R",36);props.InsertScalar(L"M",1);
         i.image=winrt::make_weak(image);i.scale=v.Scale();i.center=v.CenterPoint();i.changed=true;
         v.CenterPoint({(float)image.ActualWidth()/2,(float)image.ActualHeight(),0});
-        auto ex=comp.CreateExpressionAnimation(L"B * Min(i.M, 1 + 0.26 * p.On * Pow(Max(0, 1 - Pow(Min(Abs(p.X - i.C) / i.R, 1), 2)), 2))");
+        auto ex=comp.CreateExpressionAnimation(L"B * Min(i.M, 1 + p.A * p.On * Pow(Max(0, 1 - Pow(Min(Abs(p.X - i.C) / i.R, 1), 2)), 2))");
         ex.SetVector3Parameter(L"B",i.scale);ex.SetReferenceParameter(L"p",p);ex.SetReferenceParameter(L"i",props);
         v.StartAnimation(L"Scale",ex);i.props=props;i.bound=true;
     }
@@ -63,23 +70,33 @@ class DockAnimation {
             try{float bw=(float)e.ActualWidth(),bh=(float)e.ActualHeight();if(bw<=0||bh<=0)continue;
                 auto t=e.TransformToVisual(r);auto c=t.TransformPoint({bw/2,0.f});float y0=t.TransformPoint({0.f,0.f}).Y,y1=t.TransformPoint({0.f,bh}).Y;
                 bind(i,e);auto image=i.image.get();
-                if(i.bound&&image){i.props.InsertScalar(L"C",c.X);i.props.InsertScalar(L"R",std::max(36.f,bw*1.35f));i.props.InsertScalar(L"M",dockScale(1e9f,(float)image.ActualWidth(),(float)image.ActualHeight(),bw,bh));}
+                if(i.bound&&image){i.props.InsertScalar(L"C",c.X);i.props.InsertScalar(L"R",std::max(36.f,bw*spread));i.props.InsertScalar(L"M",dockScale(1e9f,(float)image.ActualWidth(),(float)image.ActualHeight(),bw,bh));}
                 top=std::min(top,std::min(y0,y1));bottom=std::max(bottom,std::max(y0,y1));
-            }catch(...){fallback=true;break;}}
-        if(fallback){for(auto&i:icons)unbind(i);p=nullptr;return;}
-        bandTop=top;bandBottom=bottom;}catch(...){}}
+            }catch(...){fail(4,"dock refresh icon (keyframe fallback)");fallback=true;break;}}
+        if(fallback){for(auto&i:icons)unbind(i);p=nullptr;publish();return;}
+        bandTop=top;bandBottom=bottom;publish();}catch(...){fail(5,"dock refresh");}}
     // (Re)build the compositor property set and leave the keyframe fallback; called on attach and on every root PointerEntered after a failure.
-    void retry(){if(!fallback&&p)return;try{auto r=root.get();if(!r)return;comp=visual(r).Compositor();p=comp.CreatePropertySet();p.InsertScalar(L"X",0);p.InsertScalar(L"On",0);fallback=false;curOn=false;}catch(...){fallback=true;p=nullptr;comp=nullptr;}}
-    void setOn(bool on){if(on==curOn)return;auto a=comp.CreateScalarKeyFrameAnimation();a.Duration(std::chrono::milliseconds(150));a.InsertKeyFrame(1,on?1.f:0.f);p.StartAnimation(L"On",a);curOn=on;}
+    void retry(){if(!fallback&&p)return;try{auto r=root.get();if(!r)return;comp=visual(r).Compositor();p=comp.CreatePropertySet();p.InsertScalar(L"X",0);p.InsertScalar(L"On",0);p.InsertScalar(L"A",amp);fallback=false;curOn=false;}catch(...){fail(6,"dock property set (keyframe fallback)");fallback=true;p=nullptr;comp=nullptr;}}
+    // The bounce overshoots On above 1 on the way in (the scale cap M still limits the result); without it the ease is a single keyframe.
+    void setOn(bool on){if(on==curOn)return;auto a=comp.CreateScalarKeyFrameAnimation();a.Duration(std::chrono::milliseconds(easeMs));if(on&&overshoot>0){a.InsertKeyFrame(.6f,1+overshoot);a.InsertKeyFrame(1,1.f);}else a.InsertKeyFrame(1,on?1.f:0.f);p.StartAnimation(L"On",a);curOn=on;}
     // leaving: PointerExited can report a point on the edge, so require a margin before keeping On.
-    void point(Args const&args,bool leaving=false){if(fallback){slow(args);return;}try{
+    void point(Args const&args,bool leaving=false){++pointerCount;if(fallback){slow(args);publish();return;}try{
         auto r=root.get();if(!r||!p)return;
         // Icons can shift, vanish or ride the capsule transform while the pointer is inside: re-measure at most every 100 ms; between refreshes a move is one InsertScalar.
         if(!leaving&&std::chrono::steady_clock::now()-lastRefresh>=std::chrono::milliseconds(100)){refresh();if(fallback){slow(args);return;}}
-        auto q=args.GetCurrentPoint(r).Position();p.InsertScalar(L"X",q.X);
+        auto q=args.GetCurrentPoint(r).Position();p.InsertScalar(L"X",q.X);lastX=(LONG)q.X;
         float w=(float)r.ActualWidth(),h=(float)r.ActualHeight(),m=leaving?2.f:0.f;
-        setOn(w>=h&&q.X>=m&&q.X<=w-m&&q.Y>=bandTop+m&&q.Y<=bandBottom-m);}catch(...){}}
+        setOn(w>=h&&q.X>=m&&q.X<=w-m&&q.Y>=bandTop+m&&q.Y<=bandBottom-m);publish();}catch(...){fail(7,"dock pointer");}}
 public:
+    // Set by the engine: onError logs the HRESULT of a swallowed failure (once per kind); onStats(icons,bound,pointerEvents,lastX) feeds the status block.
+    std::function<void(const char*,HRESULT)> onError;std::function<void(LONG,LONG,LONG,LONG)> onStats;
+    // Applies the dock look from the shared config (percent scale 100..200, spread 50..300 percent of icon width, speed and bounce 0..100); re-measures live icons when it changed, no re-attach needed.
+    void configure(DWORD scale,DWORD spreadPercent,DWORD speed,DWORD bounce){
+        int sc=std::clamp((int)scale,100,200),sp=std::clamp((int)spreadPercent,50,300),sd=std::clamp((int)speed,0,100),bn=std::clamp((int)bounce,0,100);
+        float a=(sc-100)/100.f,s=sp/100.f;int ms=std::max(30,300-3*sd);float o=bn>30?(bn-30)/70.f*.5f:0.f;
+        if(a==amp&&s==spread&&ms==easeMs&&o==overshoot)return;amp=a;spread=s;easeMs=ms;overshoot=o;
+        try{if(p)p.InsertScalar(L"A",amp);}catch(...){fail(8,"dock configure");}
+        if(attached&&!fallback&&p)refresh();}
     ~DockAnimation(){stop();}
     bool ready()const{return attached&&!icons.empty();}
     bool attach(IInspectable*p_){try{auto e=winrt::Windows::Foundation::IInspectable{nullptr};winrt::copy_from_abi(e,p_);auto r=e.try_as<Element>();if(!r)return false;if(attached&&root.get()==r)return true;
@@ -88,28 +105,28 @@ public:
         if(attached)stop();root=r;fallback=true;p=nullptr;curOn=false;bandTop=0;bandBottom=-1;retry();
         rootEntered=r.PointerEntered([this](auto const&,auto const&args){retry();refresh();point(args);});
         moved=r.PointerMoved([this](auto const&,auto const&args){point(args);});
-        exited=r.PointerExited([this](auto const&,auto const&args){point(args,true);});attached=true;return true;
-    }catch(...){return false;}}
+        exited=r.PointerExited([this](auto const&,auto const&args){point(args,true);});attached=true;publish();return true;
+    }catch(...){fail(9,"dock attach");return false;}}
     // Nothing calls remove() (the engine only adds): drop buttons that are gone first, or the 256 cap would stop magnifying new ones.
     void add(IInspectable*p_){try{winrt::Windows::Foundation::IInspectable obj{nullptr};winrt::copy_from_abi(obj,p_);auto e=obj.try_as<Element>();if(!e)return;for(auto it=icons.begin();it!=icons.end();)if(!it->element.get()){unbind(*it);it=icons.erase(it);}else ++it;for(auto&i:icons)if(i.element.get()==e)return;if(icons.size()>=256)return;
         icons.push_back({winrt::make_weak(e),{},{1,1,1},{0,0,0},false,1});auto&i=icons.back();
         // Buttons can handle pointer movement before it reaches the taskbar root.
         try{i.entered=e.PointerEntered([this](auto const&,auto const&args){point(args);});i.moved=e.PointerMoved([this](auto const&,auto const&args){point(args);});i.exited=e.PointerExited([this](auto const&,auto const&args){point(args,true);});}
-        catch(...){try{e.PointerEntered(i.entered);}catch(...){}try{e.PointerMoved(i.moved);}catch(...){}try{e.PointerExited(i.exited);}catch(...){}icons.pop_back();throw;}
+        catch(...){fail(10,"dock add handlers");try{e.PointerEntered(i.entered);}catch(...){}try{e.PointerMoved(i.moved);}catch(...){}try{e.PointerExited(i.exited);}catch(...){}icons.pop_back();throw;}
         refresh();
-    }catch(...){}}
+    }catch(...){fail(11,"dock add");}}
     // A button left the taskbar: unhook it, put its image back and re-measure the rest.
     void remove(IInspectable*p_){try{winrt::Windows::Foundation::IInspectable obj{nullptr};winrt::copy_from_abi(obj,p_);auto e=obj.try_as<Element>();if(!e)return;
         for(auto it=icons.begin();it!=icons.end();++it)if(it->element.get()==e){
             try{e.PointerEntered(it->entered);}catch(...){}try{e.PointerMoved(it->moved);}catch(...){}try{e.PointerExited(it->exited);}catch(...){}
             unbind(*it);icons.erase(it);break;}
         refresh();
-    }catch(...){}}
+    }catch(...){fail(12,"dock remove");}}
     void clear(){for(auto&i:icons){if(auto e=i.element.get()){try{e.PointerEntered(i.entered);}catch(...){}try{e.PointerMoved(i.moved);}catch(...){}try{e.PointerExited(i.exited);}catch(...){}}unbind(i);}icons.clear();bandTop=0;bandBottom=-1;}
     void stop(){try{if(auto r=root.get()){if(attached){r.PointerEntered(rootEntered);r.PointerMoved(moved);r.PointerExited(exited);}}}catch(...){}attached=false;for(auto&i:icons)if(auto e=i.element.get()){
         try{e.PointerEntered(i.entered);}catch(...){}try{e.PointerMoved(i.moved);}catch(...){}try{e.PointerExited(i.exited);}catch(...){}
         if(i.changed)try{if(auto image=i.image.get()){auto v=visual(image);v.StopAnimation(L"Scale");v.Scale(i.scale);v.CenterPoint(i.center);}}catch(...){}
     }
-        icons.clear();root=nullptr;p=nullptr;comp=nullptr;curOn=false;}
+        icons.clear();root=nullptr;p=nullptr;comp=nullptr;curOn=false;publish();}
 };
 }

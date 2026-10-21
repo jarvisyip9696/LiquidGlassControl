@@ -220,7 +220,7 @@ LRESULT CALLBACK themedControl(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
         if((m==WM_MOUSEMOVE||m==WM_LBUTTONDOWN||m==WM_LBUTTONUP)&&IsWindowEnabled(h)){trackHover(h);TCHITTESTINFO hit{};hit.pt={static_cast<short>(LOWORD(l)),static_cast<short>(HIWORD(l))};int index=TabCtrl_HitTest(h,&hit);auto mo=motionOf(h);if(mo->hotTab!=index){mo->hotTab=index;InvalidateRect(h,nullptr,FALSE);}for(int i=0;i<3;++i)setMotion(h,kTabHover0+i,index==i?1.f:0.f);}
         if(m==WM_MOUSELEAVE){RemovePropW(h,L"LG.Hover");motionOf(h)->hotTab=-1;for(int i=0;i<3;++i)setMotion(h,kTabHover0+i,0.f);InvalidateRect(h,nullptr,FALSE);}
     }
-    if(!comboControl&&m==WM_PAINT){ControlPaint paint(h);HDC dc=paint.dc;RECT r;GetClientRect(h,&r);FillRect(dc,&r,(h==settingsTabs||h==systemTabs||h==appTabs)?cardBrush:background);for(int i=0;i<TabCtrl_GetItemCount(h);++i){DRAWITEMSTRUCT item{};item.CtlType=ODT_TAB;item.CtlID=GetDlgCtrlID(h);item.itemID=i;item.hwndItem=h;item.hDC=dc;item.itemAction=ODA_DRAWENTIRE;if(showFocus(h)&&TabCtrl_GetCurFocus(h)==i)item.itemState=ODS_FOCUS;TabCtrl_GetItemRect(h,i,&item.rcItem);drawModernControl(&item);}return 0;}
+    if(!comboControl&&m==WM_PAINT){ControlPaint paint(h);HDC dc=paint.dc;RECT r;GetClientRect(h,&r);FillRect(dc,&r,background);for(int i=0;i<TabCtrl_GetItemCount(h);++i){DRAWITEMSTRUCT item{};item.CtlType=ODT_TAB;item.CtlID=GetDlgCtrlID(h);item.itemID=i;item.hwndItem=h;item.hDC=dc;item.itemAction=ODA_DRAWENTIRE;if(showFocus(h)&&TabCtrl_GetCurFocus(h)==i)item.itemState=ODS_FOCUS;TabCtrl_GetItemRect(h,i,&item.rcItem);drawModernControl(&item);}return 0;}
     if(m==WM_ERASEBKGND){RECT r;GetClientRect(h,&r);FillRect(reinterpret_cast<HDC>(w),&r,background);return 1;}
     if(m==WM_PAINT&&comboControl){
         ControlPaint paint(h);HDC dc=paint.dc;RECT r;GetClientRect(h,&r);
@@ -269,7 +269,7 @@ bool drawModernControl(DRAWITEMSTRUCT* item){
     if(item->CtlType==ODT_COMBOBOX){int saved=SaveDC(dc);bool selected=(item->itemState&ODS_SELECTED)!=0;HBRUSH brush=CreateSolidBrush(selected?palette().selection:cardColor());FillRect(dc,&r,brush);DeleteObject(brush);if(item->itemID!=static_cast<UINT>(-1)){wchar_t label[512]{};SendMessageW(item->hwndItem,CB_GETLBTEXT,item->itemID,reinterpret_cast<LPARAM>(label));r.left+=MulDiv(8,dpi,96);if(GetDlgCtrlID(item->hwndItem)==ColorTheme)drawThemeSwatch(dc,r,(int)item->itemID);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,textColor());SelectObject(dc,font);DrawTextW(dc,label,-1,&r,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS|DT_NOPREFIX);}RestoreDC(dc,saved);return true;}
     if(item->CtlType==ODT_LISTBOX){int saved=SaveDC(dc);bool selected=(item->itemState&ODS_SELECTED)!=0;auto mo=motionOf(item->hwndItem);mo->painted=true;bool hot=(INT_PTR)GetPropW(item->hwndItem,L"LG.HotRow")==INT_PTR(item->itemID)+1;HBRUSH b=CreateSolidBrush(selected?palette().selection:mix(cardColor(),palette().selection,hot?mo->v[kHover]:0));FillRect(dc,&r,b);DeleteObject(b);if(item->itemID<entries.size()){auto&e=entries[item->itemID];int iconSize=MulDiv(28,dpi,96),gap=MulDiv(10,dpi,96);if(e.icon)DrawIconEx(dc,r.left+gap,r.top+(r.bottom-r.top-iconSize)/2,e.icon,iconSize,iconSize,0,nullptr,DI_NORMAL);RECT text=r;text.left+=iconSize+2*gap;text.top+=MulDiv(3,dpi,96);text.bottom=text.top+MulDiv(23,dpi,96);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,textColor());SelectObject(dc,actionFont);DrawTextW(dc,e.exe.c_str(),-1,&text,DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);text.top+=MulDiv(21,dpi,96);text.bottom=r.bottom;SetTextColor(dc,palette().pressed);SelectObject(dc,font);DrawTextW(dc,e.title.c_str(),-1,&text,DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);}if((item->itemState&ODS_FOCUS)&&!(item->itemState&ODS_NOFOCUSRECT)){InflateRect(&r,-2,-2);drawFocusRing(dc,r);}RestoreDC(dc,saved);return true;}
     bool tab=item->CtlType==ODT_TAB;if(!tab&&item->CtlType!=ODT_BUTTON)return false;int saved=SaveDC(dc);
-    bool primary=tab?(int)item->itemID==(item->hwndItem==settingsTabs?settingsPage:currentPage):(item->CtlID==Apply||item->CtlID==RestoreOriginal);
+    bool primary=tab?(int)item->itemID==currentPage:(item->CtlID==Apply||item->CtlID==RestoreOriginal);bool expander=!tab&&GetPropW(item->hwndItem,L"LG.Expander")!=nullptr;
     if(!tab){if(item->CtlID==VolumeOn)primary=volumeOn;if(item->CtlID==BrightnessOn)primary=brightnessOn;}
     bool disabled=(item->itemState&ODS_DISABLED)!=0;
     Motion*mo=motionOf(item->hwndItem);mo->painted=true;float hoverAmount=disabled?0.f:mo->v[kHover],pressAmount=disabled?0.f:mo->v[kPress];
@@ -277,7 +277,7 @@ bool drawModernControl(DRAWITEMSTRUCT* item){
     // light up an unrelated middle tab when jumping across two positions.
     float tabCover=0.f;
     if(tab){
-        int selected=item->hwndItem==appTabs?appSection:item->hwndItem==systemTabs?systemSection:item->hwndItem==settingsTabs?(settingsPage==2?1:0):currentPage;
+        int selected=currentPage;
         int last=(int)(INT_PTR)GetPropW(item->hwndItem,L"LG.Sel")-1;
         if(last!=selected){
             if(last>=0){stepMotion(item->hwndItem);float progress=mo->v[kSelect];for(int i=0;i<3;++i)mo->tabWeights[i]=mo->tabFromWeights[i]+((i==last?1.f:0.f)-mo->tabFromWeights[i])*progress;}
@@ -290,7 +290,7 @@ bool drawModernControl(DRAWITEMSTRUCT* item){
         tabCover=mo->tabFromWeights[index]+((index==selected?1.f:0.f)-mo->tabFromWeights[index])*mo->v[kSelect];
         mo->tabWeights[index]=tabCover;
     }
-    HBRUSH base=CreateSolidBrush(tab?((item->hwndItem==settingsTabs||item->hwndItem==systemTabs||item->hwndItem==appTabs)?cardColor():highContrast()?GetSysColor(COLOR_WINDOW):tint(palette().accent,18)):cardColor());FillRect(dc,&r,base);DeleteObject(base);
+    HBRUSH base=CreateSolidBrush(tab?(highContrast()?GetSysColor(COLOR_WINDOW):tint(palette().accent,18)):cardColor());FillRect(dc,&r,base);DeleteObject(base);
     if(tab)hoverAmount=disabled?0.f:mo->v[kTabHover0+(int)item->itemID];
     // Stable geometry keeps text and edges crisp while colors ease.
     int inset=MulDiv(2,dpi,96);InflateRect(&r,-inset,-inset);
@@ -308,7 +308,8 @@ bool drawModernControl(DRAWITEMSTRUCT* item){
     if(disabled){fill=highContrast()?GetSysColor(COLOR_BTNFACE):RGB(239,241,245);edge=fill;}
     roundFill(dc,r,fill,edge,MulDiv(14,dpi,96),std::max(1,MulDiv(1,dpi,96)));SetBkMode(dc,TRANSPARENT);SetTextColor(dc,disabled?GetSysColor(COLOR_GRAYTEXT):tab?mix(textColor(),highContrast()?GetSysColor(COLOR_HIGHLIGHTTEXT):RGB(255,255,255),tabCover):primary?(highContrast()?GetSysColor(COLOR_HIGHLIGHTTEXT):RGB(255,255,255)):textColor());SelectObject(dc,actionFont?actionFont:font);
     wchar_t text[256]{};if(tab){TCITEMW entry{};entry.mask=TCIF_TEXT;entry.pszText=text;entry.cchTextMax=256;TabCtrl_GetItem(item->hwndItem,(int)item->itemID,&entry);}else GetWindowTextW(item->hwndItem,text,256);
-    DrawTextW(dc,text,-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);
+    // A row expander shows only its chevron; its window text is the accessible name ("Show Dock hover animation settings").
+    if(expander)drawChevron(dc,r,disabled?GetSysColor(COLOR_GRAYTEXT):textColor(),GetPropW(item->hwndItem,L"LG.Open")!=nullptr);else DrawTextW(dc,text,-1,&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);
     if((item->itemState&ODS_FOCUS)&&!(item->itemState&ODS_NOFOCUSRECT))drawFocusRing(dc,r);RestoreDC(dc,saved);return true;
 }
 void paintChrome(HWND h){

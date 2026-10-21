@@ -9,13 +9,21 @@ void fitTabItems(HWND tab){
     }
     InvalidateRect(tab,nullptr,TRUE);
 }
-void labelSectionTabs(){
-    const wchar_t*systemNames[5][2]={{L"Effects",L"Material"},{L"效果开关",L"材质调节"},{L"效果開關",L"材質調整"},{L"Efekty",L"Materiał"},{L"Hiệu ứng",L"Chất liệu"}};
-    const wchar_t*settingsNames[]={tr(L"常规",L"General"),tr(L"关于",L"About")};
-    for(int i=0;i<2;++i){TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=const_cast<wchar_t*>(systemNames[int(l10n::current)][i]);TabCtrl_SetItem(systemTabs,i,&item);item.pszText=const_cast<wchar_t*>(settingsNames[i]);TabCtrl_SetItem(settingsTabs,i,&item);}
-    {TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=const_cast<wchar_t*>(tr(L"应用与背景",L"Apps & backdrop"));TabCtrl_SetItem(appTabs,0,&item);item.pszText=const_cast<wchar_t*>(tr(L"标题栏玻璃",L"Title-bar glass"));TabCtrl_SetItem(appTabs,1,&item);}
+// Row expanders: the chevron button after a row's switch. Its window text is the accessible name and follows the open state; Space clicks it natively, Enter is taken from the dialog manager's default button.
+void labelExpanders(){
+    // plain row names (the heading text can carry a status suffix from updateNativeInfo)
+    const wchar_t*zh[]={L"音量提示",L"亮度提示",L"任务栏",L"开始菜单",L"通知中心",L"日历",L"资源管理器",L"Dock 悬停动画",L"标题栏玻璃"};const wchar_t*en[]={L"Volume indicator",L"Brightness indicator",L"Taskbar",L"Start menu",L"Notification center",L"Calendar",L"File Explorer",L"Dock hover animation",L"Title-bar glass"};
+    for(int i=0;i<9;++i){HWND e=GetDlgItem(mainWindow,ExpandVolume+i);if(!e)continue;bool open=i==8?titleOpen:systemOpen==i;if(open)SetPropW(e,L"LG.Open",(HANDLE)1);else RemovePropW(e,L"LG.Open");
+        const wchar_t*name=tr(zh[i],en[i]);std::wstring text=open?tr(L"隐藏“%s”设置",L"Hide %s settings"):tr(L"显示“%s”设置",L"Show %s settings");auto at=text.find(L"%s");if(at!=std::wstring::npos)text.replace(at,2,name);SetWindowTextW(e,text.c_str());InvalidateRect(e,nullptr,FALSE);}
 }
-void localizeOptical(){auto lang=int(l10n::current);auto ui=opticalui::kUi[lang];for(int i=0;i<4;++i)SetDlgItemTextW(mainWindow,OptLabel1+i,ui[i]);SetDlgItemTextW(mainWindow,OptReplay,ui[4]);SetDlgItemTextW(mainWindow,OptSample,ui[5]);SetDlgItemTextW(mainWindow,OptOn,tr(L"音量／亮度指示器（后台生效）",L"Volume / brightness OSD in background"));int ids[]={OptArrival,OptIndicator,OptSlosh,OptKnob};int counts[]={9,9,4,3};const wchar_t* const* lists[]={opticalui::kArrival[lang],opticalui::kArrival[lang],opticalui::kSlosh[lang],opticalui::kKnob[lang]};for(int i=0;i<4;++i){HWND c=GetDlgItem(mainWindow,ids[i]);int keep=selection(c);SendMessageW(c,CB_RESETCONTENT,0,0);if(i==1)SendMessageW(c,CB_ADDSTRING,0,(LPARAM)ui[7]);for(int j=0;j<counts[i];++j)SendMessageW(c,CB_ADDSTRING,0,(LPARAM)lists[i][j]);SendMessageW(c,CB_SETCURSEL,keep<0?(i==0||i==1?5:i==3?2:0):keep,0);}{HWND shape=GetDlgItem(mainWindow,OptShape);if(shape){int keep=selection(shape);SendMessageW(shape,CB_RESETCONTENT,0,0);for(int j=0;j<4;++j)SendMessageW(shape,CB_ADDSTRING,0,(LPARAM)opticalui::kShape[lang][j]);SendMessageW(shape,CB_SETCURSEL,keep<0?0:keep,0);}updateLookLabels();}SetDlgItemTextW(mainWindow,OptTitle,tr(L"LGEngine 动画与指示器",L"LGEngine motion and indicators"));SetDlgItemTextW(mainWindow,OptNote,tr(L"设置自动保存。开启指示器后，切换分页或隐藏至托盘仍会响应音量／亮度变化。",L"Settings save automatically. When enabled, the OSD also works on other pages and in the tray."));}
+LRESULT CALLBACK expanderKeys(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR id,DWORD_PTR){
+    if(m==WM_GETDLGCODE&&l&&(reinterpret_cast<MSG*>(l)->message==WM_KEYDOWN||reinterpret_cast<MSG*>(l)->message==WM_CHAR)&&reinterpret_cast<MSG*>(l)->wParam==VK_RETURN)return DefSubclassProc(h,m,w,l)|DLGC_WANTMESSAGE;
+    if(m==WM_KEYDOWN&&w==VK_RETURN){if(IsWindowEnabled(h))SendMessageW(GetParent(h),WM_COMMAND,MAKEWPARAM(GetDlgCtrlID(h),BN_CLICKED),reinterpret_cast<LPARAM>(h));return 0;}
+    if(m==WM_CHAR&&w==VK_RETURN)return 0;
+    if(m==WM_NCDESTROY){RemovePropW(h,L"LG.Expander");RemovePropW(h,L"LG.Open");RemoveWindowSubclass(h,expanderKeys,id);}
+    return DefSubclassProc(h,m,w,l);
+}
+void localizeOptical(){auto lang=int(l10n::current);auto ui=opticalui::kUi[lang];for(int i=0;i<4;++i)SetDlgItemTextW(mainWindow,OptLabel1+i,ui[i]);SetDlgItemTextW(mainWindow,OptReplay,ui[4]);SetDlgItemTextW(mainWindow,OptSample,ui[5]);int ids[]={OptArrival,OptIndicator,OptSlosh,OptKnob};int counts[]={9,9,4,3};const wchar_t* const* lists[]={opticalui::kArrival[lang],opticalui::kArrival[lang],opticalui::kSlosh[lang],opticalui::kKnob[lang]};for(int i=0;i<4;++i){HWND c=GetDlgItem(mainWindow,ids[i]);int keep=selection(c);SendMessageW(c,CB_RESETCONTENT,0,0);if(i==1)SendMessageW(c,CB_ADDSTRING,0,(LPARAM)ui[7]);for(int j=0;j<counts[i];++j)SendMessageW(c,CB_ADDSTRING,0,(LPARAM)lists[i][j]);SendMessageW(c,CB_SETCURSEL,keep<0?(i==0||i==1?5:i==3?2:0):keep,0);}{HWND shape=GetDlgItem(mainWindow,OptShape);if(shape){int keep=selection(shape);SendMessageW(shape,CB_RESETCONTENT,0,0);for(int j=0;j<4;++j)SendMessageW(shape,CB_ADDSTRING,0,(LPARAM)opticalui::kShape[lang][j]);SendMessageW(shape,CB_SETCURSEL,keep<0?0:keep,0);}updateLookLabels();}SetDlgItemTextW(mainWindow,OptNote,tr(L"设置自动保存。只要音量或亮度开关开启，就会应用于指示器。",L"Settings save automatically. They apply to the indicator whenever the Volume or Brightness switch is on."));}
 void localize(){
     SetWindowTextW(mainWindow,L"Liquid Glass · v" LG_VERSION_W);
     struct Text{int id;const wchar_t*zh;const wchar_t*en;};
@@ -25,20 +33,17 @@ void localize(){
       {VolumeHeading,L"音量提示",L"Volume indicator"},{BrightnessHeading,L"亮度提示",L"Brightness indicator"},
       {VolumeOn,L"音量玻璃",L"Volume glass"},{BrightnessOn,L"亮度玻璃",L"Brightness glass"},
       {TaskbarToggle,L"任务栏玻璃",L"Taskbar glass"},{StartToggle,L"开始菜单玻璃",L"Start menu glass"},{NotificationToggle,L"通知中心玻璃",L"Notification center glass"},
-      {TaskbarHeading,L"任务栏",L"Taskbar"},{StartHeading,L"开始菜单",L"Start menu"},{NotificationHeading,L"通知中心与日历",L"Notification center and calendar"},
+      {TaskbarHeading,L"任务栏",L"Taskbar"},{StartHeading,L"开始菜单",L"Start menu"},{NotificationHeading,L"通知中心",L"Notification center"},{CalendarHeading,L"日历",L"Calendar"},{CalendarToggle,L"日历玻璃",L"Calendar glass"},
       {ExplorerToggle,L"资源管理器玻璃",L"Explorer glass"},{ExplorerHeading,L"资源管理器",L"File Explorer"},
-      {OpacityLabel,L"着色强度（越低越透明）",L"Tint strength (lower is clearer)"},{RadiusLabel,L"面板圆角",L"Panel corner radius"},{TintLabel,L"玻璃色调",L"Glass tint"},
       {BatteryFriendly,L"使用电池或节电模式时降低材质开销",L"Reduce material cost on battery or in battery saver"},
-      {RestoreOriginal,L"恢复默认参数",L"Reset material sliders"},
+      {RestoreOriginal,L"重置所有外观",L"Reset all looks"},
       {KeyboardToggle,L"键盘布局切换",L"Keyboard layout switcher"},
       {OpticalPreview,L"LGEngine 光学预览",L"LGEngine optical preview"},
-      {EffectNote,L"更改后自动保存并应用；只调整材质，不改变任务栏尺寸。\r\n独立模糊与着色滑块；Dock 悬停动画单独开启。",L"Changes are saved and applied; taskbar geometry is preserved.\r\nIndependent blur and tint controls; Dock hover has a separate switch."},
       {LanguageLabel,L"界面语言",L"Interface language"},{ColorThemeLabel,L"界面配色",L"Interface color"},{StartupAnimation,L"程序启动时淡入并轻轻上移",L"Fade and gently slide the app in at startup"},
       {SettingsNote,L"语言、配色和启动动画偏好自动保存。\r\n关闭设置窗口会继续在托盘运行。",L"Language, color and startup animation preferences are saved automatically.\r\nClosing settings keeps the app running in the tray."},
       {AboutText,L"Liquid Glass " LG_VERSION_W L"\r\n独立 Windows 材质引擎，单 EXE 分发。\r\n\r\n事件触发，无后台定时扫描。闲置时不持续重绘。\r\n图标缓存随窗口列表清理；XAML 节点使用弱引用。\r\n电池模式可使用低成本回退材质。\r\n不包含完整光学折射。",L"Liquid Glass " LG_VERSION_W L"\r\nStandalone Windows materials, distributed as one EXE.\r\n\r\nEvent driven, with no periodic background scans or idle repaints.\r\nIcon cache is pruned; XAML nodes use weak references.\r\nOptional low-cost material fallback on battery.\r\nFull optical refraction is not implemented."},
       {DockHeading,L"Dock 悬停动画",L"Dock hover animation"},{DockToggle,L"Dock 悬停动画",L"Dock hover animation"},
-      {TitleHeading,L"活动应用窗口标题栏上的 LGEngine 玻璃",L"LGEngine glass over the title bar of the active app window"},{TitleOn,L"标题栏玻璃",L"Title-bar glass"},
-      {TitleNote,L"使用“应用与背景”页中选择的应用（点击「应用」）。仅显示在活动窗口上，窗口移动时隐藏。请保持较低的模糊，以便标题清晰可读。",L"Uses the apps chosen on the Apps & backdrop tab (Apply). Shows on the active window only and hides while it moves. Keep Blur low so the title stays readable."},
+      {TitleHeading,L"标题栏玻璃",L"Title-bar glass"},{TitleOn,L"标题栏玻璃",L"Title-bar glass"},
 
       {ExitApp,L"还原并退出",L"Restore and exit"}
     };
@@ -46,7 +51,7 @@ void localize(){
     {const wchar_t*fade[]={L"Smooth fade at startup",L"启动时平滑淡入",L"啟動時平順淡入",L"Płynne pojawianie przy starcie",L"Hiện dần mượt khi khởi động"};SetWindowTextW(GetDlgItem(mainWindow,StartupAnimation),fade[int(l10n::current)]);}
     const wchar_t*names[]={tr(L"应用玻璃",L"App glass"),tr(L"系统玻璃",L"System glass"),tr(L"设置",L"Settings")};
     for(int i=0;i<3;++i){TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=const_cast<wchar_t*>(names[i]);TabCtrl_SetItem(tabs,i,&item);}
-    labelSectionTabs();localizeOptical();{TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=const_cast<wchar_t*>(L"LGEngine");TabCtrl_SetItem(systemTabs,2,&item);}
+    localizeOptical();
     int s=selection(scope),m=selection(material),c=selection(corners);
     combo(scope,{tr(L"所选应用（按进程名）",L"Selected app (by executable name)"),tr(L"资源管理器窗口",L"File Explorer windows"),tr(L"全部应用（内容区不保证）",L"All apps (content not guaranteed)")},s);
     combo(material,{L"Acrylic",L"Mica",L"Mica Alt",tr(L"关闭背景材质",L"No backdrop")},m);combo(corners,{tr(L"圆角",L"Rounded"),tr(L"小圆角",L"Small rounded"),tr(L"直角",L"Square")},c);
@@ -54,11 +59,10 @@ void localize(){
     combo(borderBox,{tr(L"边框：默认",L"Border: default"),tr(L"边框：无",L"Border: none"),tr(L"边框：强调色",L"Border: accent"),tr(L"边框：浅色",L"Border: light"),tr(L"边框：深色",L"Border: dark")},b);
     combo(textBox,{tr(L"标题文字：默认",L"Title text: default"),tr(L"标题文字：浅色",L"Title text: light"),tr(L"标题文字：深色",L"Title text: dark")},t);updateTitleLabels();}
     combo(GetDlgItem(mainWindow,ColorTheme),{tr(L"经典蓝",L"Classic blue"),tr(L"流光紫",L"Violet"),tr(L"青绿",L"Jade"),tr(L"暖橙",L"Warm orange"),tr(L"玫瑰",L"Rose"),tr(L"湖蓝",L"Lake blue"),tr(L"石墨灰",L"Graphite")},colorTheme);
-    {const wchar_t*background[]={L"Adapt to background",L"根据背景自适应",L"依背景自動調整",L"Dopasuj do tła",L"Tự điều chỉnh theo nền"};combo(GetDlgItem(mainWindow,TintCombo),{tr(L"跟随系统",L"Follow system"),tr(L"浅色",L"Light"),tr(L"深色",L"Dark"),background[int(l10n::current)]},(int)glassConfig.tint);}updateEffectLabels();
-    {const wchar_t*note[]={L"Applies to enabled system glass surfaces. Background mode adjusts tint from the pixels behind the glass. Battery saving may use a solid fallback.",L"作用于已开启的系统玻璃。背景模式根据玻璃背后的画面调整色调；省电时可能使用纯色回退。",L"套用至已啟用的系統玻璃。背景模式依玻璃背後的畫面調整色調；省電時可能使用純色替代。",L"Dotyczy włączonego szkła systemowego. Tryb tła dopasowuje odcień do obrazu za szkłem. Oszczędzanie energii może użyć jednolitego koloru.",L"Áp dụng cho kính hệ thống đã bật. Chế độ nền điều chỉnh màu theo hình ảnh phía sau. Tiết kiệm pin có thể dùng màu đặc."};SetWindowTextW(GetDlgItem(mainWindow,EffectNote),note[int(l10n::current)]);}
+    {const wchar_t*background[]={L"Adapt to background",L"根据背景自适应",L"依背景自動調整",L"Dopasuj do tła",L"Tự điều chỉnh theo nền"};combo(GetDlgItem(mainWindow,LookTint),{tr(L"跟随系统",L"Follow system"),tr(L"浅色",L"Light"),tr(L"深色",L"Dark"),background[int(l10n::current)]},(int)glassConfig.tint);}loadLookPanel();labelExpanders();
     lstrcpynW(tray.szTip,tr(L"Liquid Glass · 原生提示条",L"Liquid Glass · Native indicators"),128);if(tray.hWnd)Shell_NotifyIconW(NIM_MODIFY,&tray);
-    combo(language,{l10n::names[0],l10n::names[1],l10n::names[2],l10n::names[3],l10n::names[4]},int(l10n::current));createFonts();fitTabItems(tabs);fitTabItems(settingsTabs);fitTabItems(systemTabs);fitTabItems(appTabs);refresh(entries.empty());updateNativeInfo();
-    message(migrationJob?tr(L"正在恢复旧主题……",L"Restoring the old theme..."):tr(L"选择应用或切换分页。语言在设置 → 常规；材质在系统玻璃 → 材质调节。",L"Choose an app or a page. Language: Settings > General. Materials: System glass > Material."));
+    combo(language,{l10n::names[0],l10n::names[1],l10n::names[2],l10n::names[3],l10n::names[4]},int(l10n::current));createFonts();fitTabItems(tabs);refresh(entries.empty());updateNativeInfo();updateTitleNote(true);
+    message(migrationJob?tr(L"正在恢复旧主题……",L"Restoring the old theme..."):tr(L"选择应用或切换分页。语言在“设置”中；点击系统玻璃各项的箭头可调整其参数。",L"Choose an app or a page. Language: Settings. Each System glass row opens its own settings."));
 }
 HWND control(const wchar_t*cls,const wchar_t*text,DWORD style,int id,int x,int y,int w,int h){
     bool isSwitch=_wcsicmp(cls,L"BUTTON")==0&&(style&BS_TYPEMASK)==BS_AUTOCHECKBOX;if(isSwitch)style=(style&~BS_TYPEMASK)|BS_OWNERDRAW;
@@ -66,54 +70,102 @@ HWND control(const wchar_t*cls,const wchar_t*text,DWORD style,int id,int x,int y
     if(_wcsicmp(cls,L"COMBOBOX")==0)style|=CBS_OWNERDRAWFIXED|CBS_HASSTRINGS;
     auto px=[](int a){return MulDiv(a,dpi,96);};HWND result=CreateWindowExW(0,cls,text,WS_CHILD|WS_VISIBLE|style,px(x),px(y),px(w),px(h),mainWindow,reinterpret_cast<HMENU>((INT_PTR)id),GetModuleHandleW(nullptr),nullptr);
     if(result)controlLayout[result]={x,y,x+w,y+h};if(_wcsicmp(cls,L"LISTBOX")==0)SetWindowSubclass(result,listHover,5,0);
-    SendMessageW(result,WM_SETFONT,reinterpret_cast<WPARAM>(id==Header?headingFont:font),TRUE);SetWindowTheme(result,L"Explorer",nullptr);if(isSwitch){SetPropW(result,L"LG.IsSwitch",(HANDLE)1);SetWindowSubclass(result,compactSwitch,3,0);}if(_wcsicmp(cls,TRACKBAR_CLASSW)==0)SetWindowSubclass(result,modernSlider,4,0);if(_wcsicmp(cls,L"COMBOBOX")==0){SetWindowSubclass(result,themedControl,2,1);SendMessageW(result,CB_SETITEMHEIGHT,static_cast<WPARAM>(-1),px(23));SendMessageW(result,CB_SETITEMHEIGHT,0,px(26));}if(_wcsicmp(cls,WC_TABCONTROLW)==0)SetWindowSubclass(result,themedControl,2,0);if(!isSwitch&&_wcsicmp(cls,L"BUTTON")==0&&(style&BS_TYPEMASK)==BS_OWNERDRAW)SetWindowSubclass(result,buttonHover,1,0);if(buildingPage>=0)pageControls[buildingPage].push_back(result);if(buildingSettings>=0)settingsControls[buildingSettings].push_back(result);if(buildingApp>=0)appControls[buildingApp].push_back(result);return result;
+    SendMessageW(result,WM_SETFONT,reinterpret_cast<WPARAM>(id==Header?headingFont:font),TRUE);SetWindowTheme(result,L"Explorer",nullptr);if(isSwitch){SetPropW(result,L"LG.IsSwitch",(HANDLE)1);SetWindowSubclass(result,compactSwitch,3,0);}if(_wcsicmp(cls,TRACKBAR_CLASSW)==0)SetWindowSubclass(result,modernSlider,4,0);if(_wcsicmp(cls,L"COMBOBOX")==0){SetWindowSubclass(result,themedControl,2,1);SendMessageW(result,CB_SETITEMHEIGHT,static_cast<WPARAM>(-1),px(23));SendMessageW(result,CB_SETITEMHEIGHT,0,px(26));}if(_wcsicmp(cls,WC_TABCONTROLW)==0)SetWindowSubclass(result,themedControl,2,0);if(!isSwitch&&_wcsicmp(cls,L"BUTTON")==0&&(style&BS_TYPEMASK)==BS_OWNERDRAW)SetWindowSubclass(result,buttonHover,1,0);if(buildingPage>=0)pageControls[buildingPage].push_back(result);if(buildingBlock&&result)buildingBlock->items.push_back({result,RECT{x,y,x+w,y+h}});return result;
+}
+HWND expander(int id,int x,int y){HWND e=control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,id,x,y,34,32);SetPropW(e,L"LG.Expander",(HANDLE)1);SetWindowSubclass(e,expanderKeys,6,0);return e;}
+// Page layout. A page is a sequence of blocks starting at ContentTop; a block's rects are relative to its top. Only controls wholly inside the card's view (ViewTop..ViewBottom,
+// above the status line) are shown; a taller page scrolls in DIP (wheel, scrollbar, Tab) and an expanded row is scrolled into view together with its panel.
+constexpr int ViewTop=100,ViewBottom=540,ContentTop=108;
+bool isPanel(const Block*b){return b==&titlePanel||b==&indicatorPanel||b==&lookPanel||b==&dockPanel;}
+std::vector<std::pair<const Block*,int>> pageSequence(int page){
+    std::vector<std::pair<const Block*,int>> s;int y=ContentTop;auto add=[&](const Block&b){s.push_back({&b,y});y+=b.height;};
+    if(page==0){add(appBlock);add(titleRow);if(titleOpen)add(titlePanel);}
+    else if(page==1){for(int i=0;i<9;++i){add(systemRows[i]);if(systemOpen==i)add(i<2?indicatorPanel:i==7?dockPanel:lookPanel);}add(systemFooter);}
+    else if(page==2)add(settingsBlock);
+    return s;
+}
+int visualHeight(HWND h,const RECT&r){wchar_t cls[16]{};GetClassNameW(h,cls,16);return _wcsicmp(cls,L"COMBOBOX")?int(r.bottom-r.top):30;} // a closed combo is 30 DIP; its rect height is the drop-down
+// Line span of a block item: the union of the vertical ranges of the items overlapping it, grown until stable, so a heading, its switch and chevron (or a label and its slider) show and hide together.
+std::pair<int,int> lineSpan(const Block&b,size_t index){
+    auto range=[&](size_t i){int top=b.items[i].second.top;return std::make_pair(top,top+visualHeight(b.items[i].first,b.items[i].second));};auto span=range(index);
+    for(bool grown=true;grown;){grown=false;for(size_t i=0;i<b.items.size();++i){auto r=range(i);if(r.first<span.second&&r.second>span.first&&(r.first<span.first||r.second>span.second)){span={std::min(span.first,r.first),std::max(span.second,r.second)};grown=true;}}}
+    return span;
+}
+void placePage(){
+    auto seq=pageSequence(currentPage);int end=seq.empty()?ContentTop:seq.back().second+seq.back().first->height;for(auto&entry:seq)for(size_t i=0;i<entry.first->items.size();++i)end=std::max(end,entry.second+lineSpan(*entry.first,i).second);
+    int&scroll=pageScroll[currentPage];int&maxScroll=pageMaxScroll[currentPage];maxScroll=std::max(0,end+4-ViewBottom);
+    for(size_t i=0;revealBlock&&i<seq.size();++i)if(seq[i].first==revealBlock){int bottom=seq[i].second+revealBlock->height;if(i+1<seq.size()&&isPanel(seq[i+1].first))bottom+=seq[i+1].first->height;scroll=std::min(std::max(scroll,bottom+4-ViewBottom),seq[i].second-ContentTop);}
+    revealBlock=nullptr;scroll=std::clamp(scroll,0,maxScroll);
+    auto px=[](int n){return MulDiv(n,dpi,96);};std::set<HWND> placed;HWND after=tabs;
+    for(auto&entry:seq)for(size_t i=0;i<entry.first->items.size();++i){auto&item=entry.first->items[i];HWND h=item.first;RECT r=item.second;OffsetRect(&r,0,entry.second-scroll);controlLayout[h]=r;auto span=lineSpan(*entry.first,i);bool show=entry.second-scroll+span.first>=ViewTop&&entry.second-scroll+span.second<=ViewBottom;
+        SetWindowPos(h,after,px(r.left),px(r.top),px(r.right-r.left),px(r.bottom-r.top),SWP_NOACTIVATE|(show?SWP_SHOWWINDOW:SWP_HIDEWINDOW));after=h;placed.insert(h);}
+    for(int p=0;p<3;++p)for(HWND h:pageControls[p])if(!placed.count(h)&&(GetWindowLongPtrW(h,GWL_STYLE)&WS_VISIBLE))ShowWindow(h,SW_HIDE);
+    if(pageScrollBar){SCROLLINFO si{};si.cbSize=sizeof(si);si.fMask=SIF_ALL;si.nMin=0;si.nMax=maxScroll+(ViewBottom-ViewTop)-1;si.nPage=ViewBottom-ViewTop;si.nPos=scroll;SetScrollInfo(pageScrollBar,SB_CTL,&si,TRUE);SetWindowPos(pageScrollBar,after,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|(maxScroll>0?SWP_SHOWWINDOW:SWP_HIDEWINDOW));}
+}
+// Redraw is switched off only while the window is shown: WM_SETREDRAW FALSE clears WS_VISIBLE, so focus is checked by style after redraw is back on.
+void placeAndRedraw(){
+    bool redraw=IsWindowVisible(mainWindow)!=FALSE;if(redraw)SendMessageW(mainWindow,WM_SETREDRAW,FALSE,0);placePage();
+    if(redraw){SendMessageW(mainWindow,WM_SETREDRAW,TRUE,0);RedrawWindow(mainWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);}
+    if(HWND focused=GetFocus();focused&&IsChild(mainWindow,focused)&&!(GetWindowLongPtrW(focused,GWL_STYLE)&WS_VISIBLE))SetFocus(tabs);
+}
+void relayout(){labelExpanders();placeAndRedraw();if(currentPage==1)updateNativeInfo();syncIndicatorPanel();}
+void scrollPage(int offset){offset=std::clamp(offset,0,pageMaxScroll[currentPage]);if(offset==pageScroll[currentPage])return;pageScroll[currentPage]=offset;placeAndRedraw();}
+// Opens one System glass row (-1 closes all); a row's own sliders load first. Callers that used to jump to a sub-tab call this instead.
+void expandSystemRow(int row){if(row<-1||row>7)return;systemOpen=row;if(row>=2)loadLookPanel();if(row>=0)revealBlock=&systemRows[row];if(row>=0&&currentPage!=1)selectPage(1);else relayout();}
+void expandTitleRow(bool open){titleOpen=open;if(open)revealBlock=&titleRow;if(open&&currentPage!=0)selectPage(0);else relayout();}
+// Called from the message loop before the dialog manager handles Tab: the next tab stop of a scrolled page is scrolled into view first, because hidden controls are skipped.
+void revealTabTarget(bool back){
+    if(pageMaxScroll[currentPage]<=0)return;HWND focus=GetFocus();std::vector<std::pair<HWND,std::pair<int,int>>> stops;
+    for(auto&entry:pageSequence(currentPage))for(size_t i=0;i<entry.first->items.size();++i){HWND c=entry.first->items[i].first;if((GetWindowLongPtrW(c,GWL_STYLE)&WS_TABSTOP)&&IsWindowEnabled(c)){auto span=lineSpan(*entry.first,i);stops.push_back({c,{entry.second+span.first,span.second-span.first}});}}
+    if(stops.empty())return;int next=-1;for(int i=0;i<(int)stops.size();++i)if(stops[i].first==focus)next=back?i-1:i+1;
+    if(next<0&&!back&&focus==tabs)next=0;if(next<0&&back&&focus==GetDlgItem(mainWindow,Pause))next=(int)stops.size()-1;if(next<0||next>=(int)stops.size())return;
+    int top=stops[next].second.first,bottom=top+stops[next].second.second,scroll=pageScroll[currentPage];if(top-scroll<ViewTop)scroll=top-ContentTop;if(bottom-scroll>ViewBottom)scroll=bottom+4-ViewBottom;scrollPage(scroll);
 }
 void tabItem(HWND tab,int count,int){for(int i=0;i<count;++i){TCITEMW item{};item.mask=TCIF_TEXT;item.pszText=const_cast<wchar_t*>(L" ");TabCtrl_InsertItem(tab,i,&item);}fitTabItems(tab);}
-void resizeControls(){auto px=[](int n){return MulDiv(n,dpi,96);};for(auto&entry:controlLayout){auto h=entry.first;auto&r=entry.second;SetWindowPos(h,nullptr,px(r.left),px(r.top),px(r.right-r.left),px(r.bottom-r.top),SWP_NOZORDER|SWP_NOACTIVATE);wchar_t cls[64]{};GetClassNameW(h,cls,64);if(!_wcsicmp(cls,L"COMBOBOX")){SendMessageW(h,CB_SETITEMHEIGHT,static_cast<WPARAM>(-1),px(23));SendMessageW(h,CB_SETITEMHEIGHT,0,px(26));}if(h==list)SendMessageW(h,LB_SETITEMHEIGHT,0,px(48));}fontLanguage=-1;createFonts();RemovePropW(tabs,L"LG.Sel");RemovePropW(settingsTabs,L"LG.Sel");fitTabItems(tabs);fitTabItems(settingsTabs);fitTabItems(systemTabs);fitTabItems(appTabs);RedrawWindow(mainWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);}
+void resizeControls(){auto px=[](int n){return MulDiv(n,dpi,96);};for(auto&entry:controlLayout){auto h=entry.first;auto&r=entry.second;SetWindowPos(h,nullptr,px(r.left),px(r.top),px(r.right-r.left),px(r.bottom-r.top),SWP_NOZORDER|SWP_NOACTIVATE);wchar_t cls[64]{};GetClassNameW(h,cls,64);if(!_wcsicmp(cls,L"COMBOBOX")){SendMessageW(h,CB_SETITEMHEIGHT,static_cast<WPARAM>(-1),px(23));SendMessageW(h,CB_SETITEMHEIGHT,0,px(26));}if(h==list)SendMessageW(h,LB_SETITEMHEIGHT,0,px(48));}fontLanguage=-1;createFonts();RemovePropW(tabs,L"LG.Sel");fitTabItems(tabs);RedrawWindow(mainWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);}
 void buildUI(){
     createFonts();control(L"STATIC",L"",0,Header,68,14,450,38);
     DWORD tabStyle=WS_TABSTOP|TCS_OWNERDRAWFIXED|TCS_FIXEDWIDTH|TCS_BUTTONS|TCS_FLATBUTTONS;
     tabs=control(WC_TABCONTROLW,L"",tabStyle,Pages,24,54,742,38);tabItem(tabs,3,240);
-    buildingPage=0;
-    appTabs=control(WC_TABCONTROLW,L"",tabStyle,AppPages,32,112,720,38);tabItem(appTabs,2,340);
-    buildingApp=0; // section 0: apps and backdrop
-    scope=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP|WS_VSCROLL,Scope,40,162,320,180);material=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,Material,372,162,170,180);corners=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,Corners,554,162,182,150);
-    control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,AppBorder,40,202,340,150);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,AppText,392,202,344,150);
-    list=control(L"LISTBOX",L"",LBS_NOTIFY|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS|WS_BORDER|WS_VSCROLL|WS_TABSTOP,List,40,242,696,148);SendMessageW(list,LB_SETITEMHEIGHT,0,MulDiv(48,dpi,96));
-    compatibility=control(L"STATIC",L"",0,Compatibility,40,396,696,36);
-    control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Refresh,40,438,200,34);control(L"BUTTON",L"",BS_DEFPUSHBUTTON|WS_TABSTOP,Apply,252,438,240,34);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Restore,504,438,232,34);note=control(L"STATIC",L"",0,Note,40,480,696,58);
-    buildingApp=1; // section 1: title-bar glass
-    control(L"STATIC",L"",0,TitleHeading,40,162,696,30);control(L"BUTTON",L"",BS_AUTOCHECKBOX|WS_TABSTOP,TitleOn,40,198,696,34);CheckDlgButton(mainWindow,TitleOn,persistent()&&GetPrivateProfileIntW(L"AppGlass",L"TitleOn",0,iniPath.c_str())?BST_CHECKED:BST_UNCHECKED);
-    control(L"STATIC",L"",0,TitleInsetLabel,40,244,132,28);{HWND inset=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,TitleInset,174,240,186,30);SendMessageW(inset,TBM_SETRANGE,TRUE,MAKELPARAM(0,16));SendMessageW(inset,TBM_SETPOS,TRUE,std::clamp((int)GetPrivateProfileIntW(L"AppGlass",L"TitleInset",0,iniPath.c_str()),0,16));}
-    for(int i=0;i<8;++i){int x=i%2?392:40,y=284+(i/2)*36;control(L"STATIC",L"",0,TitleLabel1+i,x,y+2,132,28);HWND titleSlider=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,TitleLook1+i,x+134,y,186,30);SendMessageW(titleSlider,TBM_SETRANGE,TRUE,MAKELPARAM(0,lookMax[i]));SendMessageW(titleSlider,TBM_SETPOS,TRUE,std::clamp((int)GetPrivateProfileIntW(L"AppGlass",titleKey(i).c_str(),titleDefault[i],iniPath.c_str()),0,lookMax[i]));}
-    control(L"STATIC",L"",SS_NOPREFIX,TitleNote,40,434,696,96);
-    buildingApp=-1;
+    // App glass: apps and backdrop, then the Title-bar glass row; its panel holds the inset, the eight title sliders and the note. Rects are DIP, relative to the block top.
+    buildingPage=0;buildingBlock=&appBlock;appBlock.height=382;
+    scope=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP|WS_VSCROLL,Scope,40,0,320,180);material=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,Material,372,0,170,180);corners=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,Corners,554,0,182,150);
+    control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,AppBorder,40,40,340,150);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,AppText,392,40,344,150);
+    list=control(L"LISTBOX",L"",LBS_NOTIFY|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS|WS_BORDER|WS_VSCROLL|WS_TABSTOP,List,40,80,696,148);SendMessageW(list,LB_SETITEMHEIGHT,0,MulDiv(48,dpi,96));
+    compatibility=control(L"STATIC",L"",0,Compatibility,40,234,696,36);
+    control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Refresh,40,276,200,34);control(L"BUTTON",L"",BS_DEFPUSHBUTTON|WS_TABSTOP,Apply,252,276,240,34);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Restore,504,276,232,34);note=control(L"STATIC",L"",0,Note,40,318,696,58);
+    buildingBlock=&titleRow;titleRow.height=36;
+    control(L"STATIC",L"",0,TitleHeading,40,4,556,28);control(L"BUTTON",L"",BS_AUTOCHECKBOX|WS_TABSTOP,TitleOn,604,0,100,32);expander(ExpandTitle,710,0);CheckDlgButton(mainWindow,TitleOn,persistent()&&GetPrivateProfileIntW(L"AppGlass",L"TitleOn",0,iniPath.c_str())?BST_CHECKED:BST_UNCHECKED);
+    buildingBlock=&titlePanel;titlePanel.height=282;
+    control(L"STATIC",L"",0,TitleInsetLabel,40,4,132,28);{HWND inset=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,TitleInset,174,0,186,30);SendMessageW(inset,TBM_SETRANGE,TRUE,MAKELPARAM(0,16));SendMessageW(inset,TBM_SETPOS,TRUE,std::clamp((int)GetPrivateProfileIntW(L"AppGlass",L"TitleInset",0,iniPath.c_str()),0,16));}
+    for(int i=0;i<8;++i){int x=i%2?392:40,y=36+(i/2)*36;control(L"STATIC",L"",0,TitleLabel1+i,x,y+2,132,28);HWND titleSlider=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,TitleLook1+i,x+134,y,186,30);SendMessageW(titleSlider,TBM_SETRANGE,TRUE,MAKELPARAM(0,lookMax[i]));SendMessageW(titleSlider,TBM_SETPOS,TRUE,std::clamp((int)GetPrivateProfileIntW(L"AppGlass",titleKey(i).c_str(),titleDefault[i],iniPath.c_str()),0,lookMax[i]));}
+    control(L"STATIC",L"",SS_NOPREFIX,TitleNote,40,180,696,96);
+    // System glass: nine rows (switch + expander; Keyboard has no panel). Volume and Brightness share the LGEngine indicator panel, Taskbar..Explorer share one look panel
+    // (loaded for the open row's family), Dock has its own; the footer holds the status text and Reset all looks.
     buildingPage=1;
-    systemTabs=control(WC_TABCONTROLW,L"",tabStyle,SettingsPages+1000,32,112,720,38);tabItem(systemTabs,3,224);
-    int headings[]={VolumeHeading,BrightnessHeading,TaskbarHeading,StartHeading,NotificationHeading,ExplorerHeading,DockHeading,KeyboardHeading};int switches[]={VolumeOn,BrightnessOn,TaskbarToggle,StartToggle,NotificationToggle,ExplorerToggle,DockToggle,KeyboardToggle};
-    // Seven system-effect rows; taskbar includes the capsule appearance.
-    for(int i=0;i<8;++i){int y=164+i*36;control(L"STATIC",L"",0,headings[i],40,y,590,28);HWND toggle=control(L"BUTTON",L"",BS_OWNERDRAW|WS_TABSTOP,switches[i],650,y,100,32);RemoveWindowSubclass(toggle,buttonHover,1);SetPropW(toggle,L"LG.IsSwitch",(HANDLE)1);SetWindowSubclass(toggle,compactSwitch,3,0);}
-    nativeInfo=control(L"STATIC",L"",0,NativeInfo,40,458,710,72);
-    buildingPage=2;
-    settingsTabs=control(WC_TABCONTROLW,L"",tabStyle,SettingsPages,32,112,720,38);tabItem(settingsTabs,2,340);
-    buildingSettings=0;control(L"STATIC",L"",0,LanguageLabel,40,184,210,28);language=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,Language,272,178,440,220);combo(language,{l10n::names[0],l10n::names[1],l10n::names[2],l10n::names[3],l10n::names[4]},int(l10n::current));
-    control(L"STATIC",L"",0,ColorThemeLabel,40,244,210,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP|WS_VSCROLL,ColorTheme,272,238,440,260);
-    control(L"BUTTON",L"",BS_AUTOCHECKBOX|WS_TABSTOP,StartupAnimation,40,304,690,34);SendMessageW(GetDlgItem(mainWindow,StartupAnimation),BM_SETCHECK,startupAnimation?BST_CHECKED:BST_UNCHECKED,0);control(L"STATIC",L"",0,SettingsNote,40,368,680,110);
-    buildingPage=1;buildingSettings=1;control(L"STATIC",L"",0,OpacityLabel,40,166,620,28);HWND opacity=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,OpacitySlider,40,196,680,32);SendMessageW(opacity,TBM_SETRANGE,TRUE,MAKELPARAM(5,90));SendMessageW(opacity,TBM_SETPOS,TRUE,glassConfig.opacity);
-    control(L"STATIC",L"",0,BlurLabel,40,226,620,28);HWND blur=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,BlurSlider,40,256,680,32);SendMessageW(blur,TBM_SETRANGE,TRUE,MAKELPARAM(0,40));SendMessageW(blur,TBM_SETPOS,TRUE,glassConfig.blur);
-    control(L"STATIC",L"",0,RadiusLabel,40,286,430,28);HWND radius=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,RadiusSlider,40,316,680,32);SendMessageW(radius,TBM_SETRANGE,TRUE,MAKELPARAM(0,28));SendMessageW(radius,TBM_SETPOS,TRUE,glassConfig.radius);control(L"STATIC",L"",0,EffectValue,480,286,240,28);
-    control(L"STATIC",L"",0,TintLabel,40,362,220,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,TintCombo,272,356,440,150);
-    control(L"BUTTON",L"",BS_AUTOCHECKBOX|WS_TABSTOP,BatteryFriendly,40,404,680,34);SendMessageW(GetDlgItem(mainWindow,BatteryFriendly),BM_SETCHECK,batteryFriendly?BST_CHECKED:BST_UNCHECKED,0);control(L"STATIC",L"",0,EffectNote,40,444,680,54);
-    control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,RestoreOriginal,40,504,320,30);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,OpticalPreview,376,504,344,30);
-    buildingPage=1;buildingSettings=3;
-    control(L"STATIC",L"",0,OptTitle,40,164,680,30);
+    int headings[]={VolumeHeading,BrightnessHeading,TaskbarHeading,StartHeading,NotificationHeading,CalendarHeading,ExplorerHeading,DockHeading,KeyboardHeading};int switches[]={VolumeOn,BrightnessOn,TaskbarToggle,StartToggle,NotificationToggle,CalendarToggle,ExplorerToggle,DockToggle,KeyboardToggle};
+    for(int i=0;i<9;++i){buildingBlock=&systemRows[i];systemRows[i].height=36;control(L"STATIC",L"",0,headings[i],40,4,556,28);HWND toggle=control(L"BUTTON",L"",BS_OWNERDRAW|WS_TABSTOP,switches[i],604,0,100,32);RemoveWindowSubclass(toggle,buttonHover,1);SetPropW(toggle,L"LG.IsSwitch",(HANDLE)1);SetWindowSubclass(toggle,compactSwitch,3,0);if(i<8)expander(ExpandVolume+i,710,0);}
+    buildingBlock=&lookPanel;lookPanel.height=74;
+    {int ids[]={LookOpacity,LookBlur,LookRadius},low[]={5,0,0},high[]={90,40,28};for(int i=0;i<4;++i){int x=i%2?392:40,y=2+(i/2)*36;if(i<3){control(L"STATIC",L"",0,ids[i]-1,x,y+2,140,28);HWND s=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,ids[i],x+142,y,178,30);SendMessageW(s,TBM_SETRANGE,TRUE,MAKELPARAM(low[i],high[i]));}else{control(L"STATIC",L"",0,LookTintLabel,x,y+2,140,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,LookTint,x+142,y,178,150);}}}
+    buildingBlock=&dockPanel;dockPanel.height=74;
+    {int ids[]={DockScale,DockSpread,DockSpeed,DockBounce},low[]={100,50,0,0},high[]={200,300,100,100};for(int i=0;i<4;++i){int x=i%2?392:40,y=2+(i/2)*36;control(L"STATIC",L"",0,ids[i]-1,x,y+2,140,28);HWND s=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,ids[i],x+142,y,178,30);SendMessageW(s,TBM_SETRANGE,TRUE,MAKELPARAM(low[i],high[i]));}}
+    buildingBlock=&systemFooter;systemFooter.height=86;
+    nativeInfo=control(L"STATIC",L"",0,NativeInfo,40,6,696,44);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,RestoreOriginal,40,52,220,30);
+    buildingBlock=&indicatorPanel;indicatorPanel.height=334;
     int opticalLabels[]={OptLabel1,OptLabel2,OptLabel3,OptLabel4};int opticalCombos[]={OptArrival,OptIndicator,OptSlosh,OptKnob};
-    for(int i=0;i<4;++i){int x=i%2?392:40,y=200+(i/2)*42;control(L"STATIC",L"",0,opticalLabels[i],x,y+4,130,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,opticalCombos[i],x+132,y,188,280);}
-    control(L"STATIC",L"",0,OptShapeLabel,40,288,130,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,OptShape,172,284,188,150);
-    control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,OptReplay,40,320,150,34);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,OptSample,202,320,176,34);control(L"BUTTON",L"",BS_AUTOCHECKBOX|WS_TABSTOP,OptOn,390,320,340,34);CheckDlgButton(mainWindow,OptOn,GetPrivateProfileIntW(L"LGEngine",L"IndicatorOn",1,iniPath.c_str())?BST_CHECKED:BST_UNCHECKED);
-    for(int i=0;i<8;++i){int x=i%2?392:40,y=362+(i/2)*34;control(L"STATIC",L"",0,OptLookLabel1+i,x,y+2,132,28);HWND lookSlider=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,OptLook1+i,x+134,y,186,30);SendMessageW(lookSlider,TBM_SETRANGE,TRUE,MAKELPARAM(0,lookMax[i]));SendMessageW(lookSlider,TBM_SETPOS,TRUE,std::clamp((int)GetPrivateProfileIntW(L"LGEngine",lookKey[i],lookDefault[i],iniPath.c_str()),0,lookMax[i]));}
-    control(L"STATIC",L"",0,OptNote,40,500,680,42);
-    buildingPage=2;buildingSettings=2;control(L"STATIC",L"",0,AboutText,40,182,680,230);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,ExitApp,40,446,460,42);
-    buildingSettings=-1;buildingPage=-1;
+    for(int i=0;i<4;++i){int x=i%2?392:40,y=2+(i/2)*36;control(L"STATIC",L"",0,opticalLabels[i],x,y+4,130,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,opticalCombos[i],x+132,y,188,280);}
+    control(L"STATIC",L"",0,OptShapeLabel,40,78,130,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,OptShape,172,74,188,150);
+    control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,OptReplay,392,74,156,32);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,OptSample,556,74,156,32);
+    for(int i=0;i<8;++i){int x=i%2?392:40,y=112+(i/2)*34;control(L"STATIC",L"",0,OptLookLabel1+i,x,y+2,132,28);HWND lookSlider=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,OptLook1+i,x+134,y,186,30);SendMessageW(lookSlider,TBM_SETRANGE,TRUE,MAKELPARAM(0,lookMax[i]));SendMessageW(lookSlider,TBM_SETPOS,TRUE,std::clamp((int)GetPrivateProfileIntW(L"LGEngine",lookKey[i],lookDefault[i],iniPath.c_str()),0,lookMax[i]));}
+    control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,OpticalPreview,40,250,320,30);control(L"STATIC",L"",0,OptNote,40,286,696,44);
+    // Settings: language, color, startup animation, battery saving, About.
+    buildingPage=2;buildingBlock=&settingsBlock;settingsBlock.height=424;
+    control(L"STATIC",L"",0,LanguageLabel,40,6,210,28);language=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,Language,272,0,440,220);combo(language,{l10n::names[0],l10n::names[1],l10n::names[2],l10n::names[3],l10n::names[4]},int(l10n::current));
+    control(L"STATIC",L"",0,ColorThemeLabel,40,46,210,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP|WS_VSCROLL,ColorTheme,272,40,440,260);
+    control(L"BUTTON",L"",BS_AUTOCHECKBOX|WS_TABSTOP,StartupAnimation,40,80,690,34);SendMessageW(GetDlgItem(mainWindow,StartupAnimation),BM_SETCHECK,startupAnimation?BST_CHECKED:BST_UNCHECKED,0);
+    control(L"BUTTON",L"",BS_AUTOCHECKBOX|WS_TABSTOP,BatteryFriendly,40,118,690,34);SendMessageW(GetDlgItem(mainWindow,BatteryFriendly),BM_SETCHECK,batteryFriendly?BST_CHECKED:BST_UNCHECKED,0);
+    control(L"STATIC",L"",0,SettingsNote,40,160,696,44);control(L"STATIC",L"",0,AboutText,40,210,696,170);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,ExitApp,40,388,300,36);
+    buildingBlock=nullptr;buildingPage=-1;
+    pageScrollBar=control(L"SCROLLBAR",L"",SBS_VERT,PageScroll,752,104,14,432);ShowWindow(pageScrollBar,SW_HIDE);
     status=control(L"STATIC",L"",0,Status,24,552,570,64);control(L"BUTTON",L"",BS_PUSHBUTTON|WS_TABSTOP,Pause,614,570,152,36);localize();{int ids[]={OptArrival,OptIndicator,OptSlosh,OptKnob};const wchar_t* keys[]={L"Arrival",L"Indicator",L"Slosh",L"Knob"};int defaults[]={5,5,0,2},maximum[]={8,9,3,2};for(int i=0;i<4;++i){int v=GetPrivateProfileIntW(L"LGEngine",keys[i],defaults[i],iniPath.c_str());SendDlgItemMessageW(mainWindow,ids[i],CB_SETCURSEL,std::clamp(v,0,maximum[i]),0);}SendDlgItemMessageW(mainWindow,OptShape,CB_SETCURSEL,std::clamp((int)GetPrivateProfileIntW(L"LGEngine",L"Shape",0,iniPath.c_str()),0,3),0);updateLookLabels();}opticalUiReady=true;selectPage(0);syncOpticalPreview();
 }

@@ -9,6 +9,9 @@
 #include <memory>
 #include <limits>
 #include <cstdio>
+#include <vector>
+#include <string>
+#include <functional>
 #include <dwmapi.h>
 #pragma comment(lib,"dwmapi.lib")
 #include "../client/lg_client.h"
@@ -19,7 +22,7 @@
 namespace {
 constexpr UINT HostEvent=WM_APP+60,OsdEvent=WM_APP+61,MsgVolume=WM_APP+62,MsgDevice=WM_APP+63,MsgOwner=WM_APP+64,MsgForeground=WM_APP+65,MsgFlyout=WM_APP+66,TitleEvent=WM_APP+67;
 enum : int {IdArrival=101,IdIndicator,IdSlosh,IdKnob,IdReplay,IdSample,IdOn,IdLabel1=111,IdLabel2,IdLabel3,IdLabel4};
-enum : UINT_PTR {TimerAnim=2,TimerHide=3,TimerReplay=4,TimerRecheck=5,TimerTitle=6};
+enum : UINT_PTR {TimerAnim=2,TimerHide=3,TimerReplay=4,TimerRecheck=5,TimerTitle=6,TimerFlyout=7};
 // Language order everywhere: English, Simplified Chinese, Traditional Chinese, Polish, Vietnamese.
 using namespace opticalui;
 HWND gWindow{},gOwner{};
@@ -34,7 +37,90 @@ RECT titleBar(RECT frame,RECT window,RECT buttons,bool haveButtons,UINT dpi,int 
     int lo=MulDiv(16,int(dpi),96),hi=MulDiv(64,int(dpi),96),h=std::max<int>(lo,std::min<int>(hi,int(bottom-frame.top)));RECT r{frame.left,frame.top,frame.right,frame.top+h};
     int i=MulDiv(inset,int(dpi),96),minH=MulDiv(12,int(dpi),96),vi=h>=minH?std::min<int>(i,(h-minH)/2):0,hi2=std::min<int>(i,std::max<int>(0,int(r.right-r.left-1)/2));
     r.left+=hi2;r.right-=hi2;r.top+=vi;r.bottom-=vi;return r;}
-void CALLBACK titleEvent(HWINEVENTHOOK,DWORD,HWND,LONG,LONG,DWORD,DWORD);
+// The empty drag areas of a title bar, as up to 3 rects. bar = the whole bar, buttons = the caption buttons (screen coords, may be empty). System bars (custom=false) give titleEnd,
+// the x where the icon and title text stop; custom bars give hit-test samples (x, WM_NCHITTEST result), a run of HTCAPTION is free. Pure, so selfTest can call it.
+// Spans under 48 DIP drop, each is inset 8 DIP at the sides and by `inset` (DIP) above and below, the 3 widest stay, left to right.
+struct HitSample {int x;LRESULT hit;};
+std::vector<RECT> freeSpans(RECT bar,RECT buttons,bool custom,int titleEnd,const std::vector<HitSample>& samples,float scale,int inset){
+    auto dip=[scale](float v){return int(std::lround(v*scale));};
+    int limit=buttons.right>buttons.left?std::min<int>(int(bar.right),int(buttons.left)):int(bar.right);std::vector<RECT> raw,spans;
+    if(!custom){if(titleEnd<limit)raw.push_back(RECT{std::max<int>(int(bar.left),titleEnd),bar.top,limit,bar.bottom});}
+    else for(size_t i=0;i<samples.size();){
+        if(samples[i].hit!=HTCAPTION){++i;continue;}
+        size_t j=i;while(j+1<samples.size()&&samples[j+1].hit==HTCAPTION)++j;
+        int l=i?(samples[i-1].x+samples[i].x)/2:int(bar.left),r=j+1<samples.size()?(samples[j].x+samples[j+1].x)/2:limit; // the edge of a run lies between its last caption sample and the next one
+        raw.push_back(RECT{l,bar.top,std::min<int>(r,limit),bar.bottom});i=j+1;}
+    int minW=dip(48),side=dip(8),i0=dip(float(inset)),minH=dip(12),h=int(bar.bottom-bar.top),vi=h>=minH?std::min<int>(i0,(h-minH)/2):0;
+    for(RECT r:raw){if(r.right-r.left<minW)continue;r.left+=side;r.right-=side;r.top+=vi;r.bottom-=vi;spans.push_back(r);}
+    std::stable_sort(spans.begin(),spans.end(),[](const RECT& a,const RECT& b){return a.right-a.left>b.right-b.left;});
+    if(spans.size()>3)spans.resize(3);
+    std::sort(spans.begin(),spans.end(),[](const RECT& a,const RECT& b){return a.left<b.left;});return spans;}
+// The DPI a target's window coordinates are in: its own for a per-monitor-aware window, else its monitor's (a DPI-unaware or system-aware window reports the virtual or system DPI).
+UINT targetDpi(HWND t){
+    UINT d=GetDpiForWindow(t);
+    if(GetAwarenessFromDpiAwarenessContext(GetWindowDpiAwarenessContext(t))!=DPI_AWARENESS_PER_MONITOR_AWARE){
+        typedef HRESULT (WINAPI* MonitorDpiFn)(HMONITOR,int,UINT*,UINT*);
+        static MonitorDpiFn fn=[]{HMODULE m=LoadLibraryW(L"shcore.dll");return m?reinterpret_cast<MonitorDpiFn>(GetProcAddress(m,"GetDpiForMonitor")):nullptr;}();
+        UINT x=0,y=0;if(fn&&SUCCEEDED(fn(MonitorFromWindow(t,MONITOR_DEFAULTTONEAREST),0,&x,&y))&&x)d=x;} // 0 = MDT_EFFECTIVE_DPI
+    return d?d:96;}
+// What classifyBar last worked out for a target. It samples again when the window, its frame or its text changes, when `expiry` passes (a custom bar's tabs change without any of those: 1 s; a failed sampling: 2 s), or when invalidated.
+// seen/retry: the frame of the last call (a custom bar is only sampled once the frame has stayed put for one call, i.e. one TimerTitle period) and whether the caller should come back soon.
+struct BarCache {HWND hwnd{};RECT frame{};size_t text=0;UINT dpi=0;int inset=-1;std::vector<RECT> spans;ULONGLONG expiry=0,lastSample=0,ttl=1000;RECT seen{};bool retry=false,stale=false,custom=false;UINT retryMs=30;int waits=0;};
+// stale: the title changed (or the foreground did), so a custom bar is sampled again, but at most once per 500 ms and the old spans stay up meanwhile. ttl: doubles (to 8 s) each time a sample matches the last; waits: overruns in a row.
+// Pure: has a cache entry that expires at `expiry` (0 = never) run out, and has a sampling run over its time budget.
+inline bool barExpired(ULONGLONG now,ULONGLONG expiry){return expiry&&now>=expiry;}
+inline bool barOverBudget(ULONGLONG start,ULONGLONG now,ULONGLONG budget){return now-start>budget;}
+enum class BarStatus {Ok,Failed,Wait}; // Failed: a window did not answer, cached 2 s without spans. Wait: not stable yet or over budget, no cache change.
+std::vector<RECT> barSpans(HWND t,const RECT& win,const RECT& frame,const wchar_t* text,int len,UINT dpi,int inset,bool probe,BarStatus& status,bool& custom){
+    std::vector<RECT> none;RECT rel{},buttons{};int D=int(dpi);status=BarStatus::Ok;custom=false;
+    bool haveButtons=SUCCEEDED(DwmGetWindowAttribute(t,DWMWA_CAPTION_BUTTON_BOUNDS,&rel,sizeof(rel)))&&rel.right>rel.left&&rel.bottom>rel.top;
+    if(haveButtons)buttons=RECT{win.left+rel.left,win.top+rel.top,win.left+rel.right,win.top+rel.bottom}; // window-relative
+    LONG_PTR style=GetWindowLongPtrW(t,GWL_STYLE);if((style&WS_CAPTION)!=WS_CAPTION&&!haveButtons)return none;
+    MONITORINFO mi{};mi.cbSize=sizeof(mi);if(GetMonitorInfoW(MonitorFromWindow(t,MONITOR_DEFAULTTONEAREST),&mi)&&(EqualRect(&win,&mi.rcMonitor)||EqualRect(&frame,&mi.rcMonitor))&&!(IsZoomed(t)&&(style&WS_CAPTION)==WS_CAPTION))return none; // full-screen (a maximized window over an auto-hide taskbar is the monitor's size too)
+    POINT client{0,0};if(!ClientToScreen(t,&client))return none;
+    float scale=float(dpi)/96.f;
+    if(double(client.y-frame.top)>=0.75*GetSystemMetricsForDpi(SM_CYCAPTION,dpi)){ // a system bar: the client area starts below it
+        if(!haveButtons&&(style&WS_SYSMENU))return none; // the caption buttons are somewhere unknown: the span could cover them
+        int bottom=client.y;if(GetMenu(t))bottom-=GetSystemMetricsForDpi(SM_CYMENU,dpi);if(bottom<=frame.top)return none;
+        int width=0;HDC dc=CreateCompatibleDC(nullptr);
+        if(dc){NONCLIENTMETRICSW m{};m.cbSize=sizeof(m);
+            if(SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS,sizeof(m),&m,0,dpi)){HFONT f=CreateFontIndirectW(&m.lfCaptionFont);
+                if(f){HGDIOBJ old=SelectObject(dc,f);SIZE sz{};if(len>0&&GetTextExtentPoint32W(dc,text,len,&sz))width=sz.cx;SelectObject(dc,old);DeleteObject(f);}}
+            DeleteDC(dc);}
+        int lead=(style&WS_SYSMENU)?GetSystemMetricsForDpi(SM_CXSMICON,dpi)+MulDiv(16,D,96):MulDiv(8,D,96);
+        return freeSpans(RECT{frame.left,frame.top,frame.right,bottom},buttons,false,int(frame.left)+lead+width+MulDiv(12,D,96),std::vector<HitSample>(),scale,inset);}
+    // A custom bar (Chrome, VS Code, Terminal, Explorer): ask the window which parts of the bar are its caption.
+    if(!haveButtons)return none;
+    int h=int(buttons.bottom-frame.top);if(h<=0)return none;
+    custom=true;if(!probe){status=BarStatus::Wait;return none;}
+    bool permonitor=GetAwarenessFromDpiAwarenessContext(GetWindowDpiAwarenessContext(t))==DPI_AWARENESS_PER_MONITOR_AWARE;
+    int step=std::max<int>(MulDiv(12,D,96),int(buttons.left-frame.left)/64),y=int(frame.top)+h/2;std::vector<HitSample> hits;ULONGLONG start=GetTickCount64();
+    for(int x=int(frame.left);x<int(buttons.left);x+=step){DWORD_PTR r=0;
+        if(barOverBudget(start,GetTickCount64(),40)){status=BarStatus::Wait;return none;} // 40 ms in total: keep what we had, try again next tick
+        POINT pt{x,y};if(!permonitor)PhysicalToLogicalPointForPerMonitorDPI(t,&pt); // a DPI-unaware or system-aware window hit-tests in its own coordinates
+        if(!SendMessageTimeoutW(t,WM_NCHITTEST,0,MAKELPARAM(pt.x,pt.y),SMTO_ABORTIFHUNG|SMTO_BLOCK,10,&r)){status=BarStatus::Failed;return none;} // hung or slow
+        hits.push_back(HitSample{x,LRESULT(r)});}
+    return freeSpans(RECT{frame.left,frame.top,frame.right,frame.top+h},buttons,true,0,hits,scale,inset);}
+// The free spans of the target's title bar (screen coords), cached. False (and no spans) when the window has nothing to cover: no caption, full-screen, minimized, or a bar that is all UI. c.retry says to call again soon.
+bool classifyBar(HWND t,UINT dpi,int inset,BarCache& c,std::vector<RECT>& out){
+    out.clear();c.retry=false;c.retryMs=30;RECT win{},frame{};if(IsIconic(t)||!GetWindowRect(t,&win))return false;
+    if(FAILED(DwmGetWindowAttribute(t,DWMWA_EXTENDED_FRAME_BOUNDS,&frame,sizeof(frame))))frame=win;
+    bool moved=!EqualRect(&c.seen,&frame);c.seen=frame;ULONGLONG now=GetTickCount64();
+    wchar_t text[512]{};int len=GetWindowTextW(t,text,512);if(len<0)len=0;size_t hash=std::hash<std::wstring>()(std::wstring(text,size_t(len)));
+    bool hard=c.hwnd!=t||!EqualRect(&c.frame,&frame)||c.dpi!=dpi||c.inset!=inset,soft=c.text!=hash||c.stale||barExpired(now,c.expiry);
+    if(hard){c.ttl=1000;c.waits=0;}
+    if(hard||soft){
+        if(!hard&&c.custom&&now-c.lastSample<500){out=c.spans;c.retry=true;c.retryMs=UINT(500-(now-c.lastSample))+5;return !out.empty();} // a busy title: one sampling per 500 ms, the old spans stay
+        BarStatus status=BarStatus::Ok;bool custom=false;
+        auto spans=barSpans(t,win,frame,text,len,dpi,inset,!moved,status,custom);
+        if(status==BarStatus::Wait){
+            if(moved||++c.waits<2){c.retry=true;if(!hard)out=c.spans;return !out.empty();} // not stable yet, or over the budget once: the previous spans (only for the frame they were made for), look again next tick
+            status=BarStatus::Failed;if(hard)c.spans.clear();spans=c.spans;} // over the budget twice in a row: a slow window; keep the last good spans of this frame, else none, and look again in 2 s
+        bool same=!hard&&spans.size()==c.spans.size();for(size_t i=0;same&&i<spans.size();++i)same=EqualRect(&spans[i],&c.spans[i])!=0;
+        c.hwnd=t;c.frame=frame;c.text=hash;c.dpi=dpi;c.inset=inset;c.spans=spans;c.custom=custom;c.stale=false;c.waits=0;c.lastSample=now;
+        if(status!=BarStatus::Failed)c.ttl=same?std::min<ULONGLONG>(c.ttl*2,8000):1000;
+        c.expiry=status==BarStatus::Failed?now+2000:(custom?now+c.ttl:0);}
+    out=c.spans;return !out.empty();}void CALLBACK titleEvent(HWINEVENTHOOK,DWORD,HWND,LONG,LONG,DWORD,DWORD);
 struct App {
     HWND window{},owner{};lghost::Handle parent;lgpreview::Settings settings;
     std::unique_ptr<lghost::Client> client,osdClient;lghost::Spec spec,lens;bool visible=true,failed=false,pageEnabled=true,hostSeen=false,cardPlaced=false,lensPlaced=false;UINT specDpi=0;
@@ -61,7 +147,13 @@ struct App {
     }
     int sel(int id)const{LRESULT n=SendDlgItemMessageW(window,id,CB_GETCURSEL,0,0);return n<0?0:int(n);}
     bool reduced()const{return settings.reducedMotion!=0;}
-    bool indicatorOn()const{return IsDlgButtonChecked(window,IdOn)==BST_CHECKED;}
+    // osdMask (Controls.osd & 3): bit 1 = the lens shows volume changes, bit 2 = brightness changes. A kind that is off leaves Windows' own pop-up alone.
+    // lastMask: the last non-zero mask the owner sent (the standalone checkbox restores it). flyoutOnUntil: with a mask other than 3, Windows' pop-up is only hidden for ~2.5 s after a change of an on kind
+    // (a key at its limit fires no change, and nothing else would show then).
+    int osdMask=3,lastMask=3;ULONGLONG flyoutKeepUntil=0,flyoutOnUntil=0;
+    void holdFlyout(){flyoutKeepUntil=GetTickCount64()+2500;SetTimer(window,TimerFlyout,2550,nullptr);lgpreview::restoreFlyouts();}
+    bool indicatorOn()const{return osdMask!=0;}
+    bool kindOn(int source)const{return (osdMask&(source==0?1:2))!=0;}
     void place(){RECT r{};GetWindowRect(window,&r);spec.x=r.left;spec.y=r.bottom+8;if(owner){POINT p{MulDiv(40,int(dpi()),96),MulDiv(365,int(dpi()),96)};ClientToScreen(owner,&p);spec.x=p.x;spec.y=p.y;
             // Keep the card off the owner's sliders: outside its window, in its monitor's work area, with room for card+gap+lens.
             RECT R{};MONITORINFO mi{};mi.cbSize=sizeof(mi);if(GetWindowRect(owner,&R)&&GetMonitorInfoW(MonitorFromWindow(owner,MONITOR_DEFAULTTONEAREST),&mi)){
@@ -82,7 +174,7 @@ struct App {
     // Glass runs (it hides the pop-up for its own glass indicator, and gives up for good on one it finds already hidden by
     // someone else), the lens stands down and leaves the pop-up alone instead of showing a second indicator.
     void syncFlyout(){if(lensRejected&&osdClient&&osdClient->surfaceId())lensRejected=false; // a later Create was accepted
-        bool was=deferring;deferring=lgpreview::flyoutOwner()==1||lgpreview::ownerRunning();bool want=osdOk()&&osdClient->connected()&&!deferring;
+        bool was=deferring;deferring=lgpreview::flyoutOwner()==1||lgpreview::ownerRunning();bool want=osdOk()&&osdClient->connected()&&!deferring&&GetTickCount64()>=flyoutKeepUntil&&(osdMask==3||GetTickCount64()<flyoutOnUntil); // flyoutKeepUntil: a change of a kind that is off, Windows shows its pop-up for it
         if(want){lgpreview::eachFlyout([](HWND h){lgpreview::hideFlyout(h);});lgpreview::restoreStrays();}else lgpreview::restoreFlyouts();
         if(was!=deferring&&owner&&hostSeen)PostMessageW(owner,lgpreview::HostState,1,reinterpret_cast<LPARAM>(window));} // the owner reads the status again (bit 64) and says why the lens stays off
     void hookShell(){if(hooks[4]){UnhookWinEvent(hooks[4]);hooks[4]=nullptr;}DWORD shell=0;HWND desktop=GetShellWindow();
@@ -194,6 +286,8 @@ struct App {
         if(!state.knob.active()&&!state.sampling&&GetTickCount64()>=kickUntil){KillTimer(window,TimerAnim);osdAnimating=false;osdClient->setBusy(false);}
     }
     void osdShowChange(int way){
+        if(!kindOn(state.source)){holdFlyout();if(osdLive())osdStop();else state.knob.jump(state.current());return;} // this kind is off: no lens, and Windows' own pop-up stays (a lens of the other kind would now read the wrong level, so it stops)
+        flyoutKeepUntil=0;if(osdMask!=3){flyoutOnUntil=GetTickCount64()+2500;SetTimer(window,TimerFlyout,2550,nullptr);} // an on-kind change was seen for this show: the pop-up may be hidden now, and comes back when this runs out
         if(!osdShown)syncFlyout(); // already showing: coalesce, the MsgFlyout hook covers a re-shown pop-up
         if(!osdOk()||deferring){state.knob.jump(state.current());return;} // not shown: snap, so the next show does not glide from an old level
         if(osdShown&&!lensAtCard){osdDirty=true;osdKick(way);osdWake();SetTimer(window,TimerHide,1800,nullptr);return;} // no place/render here: the tick redraws once
@@ -203,37 +297,50 @@ struct App {
         if(!osdOk())return;lensAtCard=visible;place();KillTimer(window,TimerHide);state.startSample();osdRender(true);osdClient->show(true);osdShown=true;osdWake();
     }
     void replay(){if(!client||!visible)return;client->hide(true);SetTimer(window,TimerReplay,UINT(spec.outMs+150),nullptr);}
-    // Title-bar glass: a third client puts a glass strip over the title bar of the target window (the host surface is click-through, so the window stays usable). No contents are published: the host zero-fills a size that has none, which is plain glass with no ink.
-    std::unique_ptr<lghost::Client> titleClient;lghost::Spec titleSpec;lgpreview::AppGlass glass{};HWND titleTarget{};HWINEVENTHOOK titleHooks[4]{};bool titleMoving=false,titleFailed=false,titleShown=false;
+    // Title-bar glass: up to 3 more clients put a glass strip over each empty drag area of the title bar of the target window (the host surface is click-through, so the window stays usable). No contents are published: the host zero-fills a size that has none, which is plain glass with no ink.
+    // titleWasFg: the target was the foreground window last time (the LG Control app in front keeps the spans only after that).
+    static constexpr size_t TitleSlots=3;
+    std::unique_ptr<lghost::Client> titleClients[TitleSlots];lghost::Spec titleSpecs[TitleSlots];lgpreview::AppGlass glass{};HWND titleTarget{};HWINEVENTHOOK titleHooks[5]{};bool titleMoving=false,titleFailed=false,titleShown[TitleSlots]{},titleWasFg=false;BarCache titleCache;std::vector<RECT> titleSpans;
     void titleUnhook(){for(auto&hook:titleHooks)if(hook){UnhookWinEvent(hook);hook=nullptr;}}
-    void titleHide(){if(titleClient&&titleShown){titleShown=false;titleClient->show(false);}}
+    void titleHideSlot(size_t i){if(titleClients[i]&&titleShown[i]){titleShown[i]=false;titleClients[i]->show(false);}}
+    void titleHide(){for(size_t i=0;i<TitleSlots;++i)titleHideSlot(i);}
+    void titleReset(){for(size_t i=0;i<TitleSlots;++i){titleClients[i].reset();titleShown[i]=false;}}
     void setTitle(const lgpreview::AppGlass& v){
         glass=v;HWND t=v.on?reinterpret_cast<HWND>(static_cast<ULONG_PTR>(v.target)):nullptr;DWORD pid=0;
         if(t&&(!IsWindow(t)||!GetWindowThreadProcessId(t,&pid)||pid==GetCurrentProcessId()))t=nullptr;
-        if(t!=titleTarget){titleUnhook();titleTarget=t;titleMoving=false;titleFailed=false;
+        if(t!=titleTarget){titleUnhook();titleTarget=t;titleMoving=false;titleFailed=false;titleWasFg=false;titleCache=BarCache{};
             if(t){titleHooks[0]=SetWinEventHook(EVENT_OBJECT_DESTROY,EVENT_OBJECT_HIDE,nullptr,titleEvent,pid,0,WINEVENT_OUTOFCONTEXT);titleHooks[1]=SetWinEventHook(EVENT_SYSTEM_MOVESIZESTART,EVENT_SYSTEM_MINIMIZEEND,nullptr,titleEvent,pid,0,WINEVENT_OUTOFCONTEXT);
-                titleHooks[2]=SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE,EVENT_OBJECT_LOCATIONCHANGE,nullptr,titleEvent,pid,0,WINEVENT_OUTOFCONTEXT);titleHooks[3]=SetWinEventHook(EVENT_OBJECT_CLOAKED,EVENT_OBJECT_UNCLOAKED,nullptr,titleEvent,pid,0,WINEVENT_OUTOFCONTEXT);}}
+                titleHooks[2]=SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE,EVENT_OBJECT_LOCATIONCHANGE,nullptr,titleEvent,pid,0,WINEVENT_OUTOFCONTEXT);titleHooks[3]=SetWinEventHook(EVENT_OBJECT_CLOAKED,EVENT_OBJECT_UNCLOAKED,nullptr,titleEvent,pid,0,WINEVENT_OUTOFCONTEXT);
+                titleHooks[4]=SetWinEventHook(EVENT_OBJECT_NAMECHANGE,EVENT_OBJECT_NAMECHANGE,nullptr,titleEvent,pid,0,WINEVENT_OUTOFCONTEXT);}}
         titlePlace();}
     void titlePlace(){
-        HWND t=titleTarget;if(!glass.on||!t||titleMoving||titleFailed||!hostSeen||!IsWindow(t)||!IsWindowVisible(t)||IsIconic(t)||GetForegroundWindow()!=t||displayState!=1){titleHide();return;}
+        HWND t=titleTarget;if(!glass.on||!t||titleMoving||titleFailed||!hostSeen||!IsWindow(t)||!IsWindowVisible(t)||IsIconic(t)||displayState!=1){titleHide();return;}
+        // In front: the target, or the LG Control app right after the target (its sliders stay visible live; spans that touch its window hide below). Anything else in front hides.
+        HWND fg=GetForegroundWindow();RECT lg{};bool aside=false;
+        if(fg==t)titleWasFg=true;
+        else{DWORD fp=0;if(fg)GetWindowThreadProcessId(fg,&fp);aside=titleWasFg&&fg&&(fg==window||(ownerPid&&fp==ownerPid))&&GetWindowRect(fg,&lg);if(!aside){titleWasFg=false;titleHide();return;}}
         DWORD cloaked=0;if(SUCCEEDED(DwmGetWindowAttribute(t,DWMWA_CLOAKED,&cloaked,sizeof(cloaked)))&&cloaked){titleHide();return;}
         ULONGLONG tick=GetTickCount64();if(tick<quietUntil){titleHide();SetTimer(window,TimerTitle,UINT(quietUntil-tick+50),nullptr);return;} // re-arm: nothing else triggers the place after sleep or display-on
-        RECT win{},frame{},buttons{};if(!GetWindowRect(t,&win)){titleHide();return;}
-        MONITORINFO mi{};mi.cbSize=sizeof(mi);if(GetMonitorInfoW(MonitorFromWindow(t,MONITOR_DEFAULTTONEAREST),&mi)&&win.left<=mi.rcMonitor.left&&win.top<=mi.rcMonitor.top&&win.right>=mi.rcMonitor.right&&win.bottom>=mi.rcMonitor.bottom&&((GetWindowLongPtrW(t,GWL_STYLE)&WS_CAPTION)!=WS_CAPTION||!IsZoomed(t)||!EqualRect(&mi.rcWork,&mi.rcMonitor))){titleHide();return;} // full-screen: no caption, not maximized (a full-screen UWP app keeps its caption style), or over a visible taskbar (a maximized window stops at it)
-        if(FAILED(DwmGetWindowAttribute(t,DWMWA_EXTENDED_FRAME_BOUNDS,&frame,sizeof(frame))))frame=win;
-        bool haveButtons=SUCCEEDED(DwmGetWindowAttribute(t,DWMWA_CAPTION_BUTTON_BOUNDS,&buttons,sizeof(buttons)));
-        UINT d=GetDpiForWindow(t);if(!d)d=96; // the target's own DPI (place() uses the adapter's window, which is the wrong monitor here)
-        RECT bar=titleBar(frame,win,buttons,haveButtons,d,glass.inset);if(bar.right<=bar.left||bar.bottom<=bar.top){titleHide();return;}
-        lghost::Spec s;s.kind=0;s.scale=d/96.f;s.x=bar.left;s.y=bar.top;s.width=bar.right-bar.left;s.height=bar.bottom-bar.top;
-        if(s.width>4096||s.height>4096){titleHide();return;} // past the host's surface limit (ultrawide or two monitors): skip without latching, so a smaller size shows again
-        s.look=lghost::Look{glass.dark,glass.blur,glass.refraction,glass.rim,glass.shadow,glass.round,glass.intensity,glass.elevation};
-        s.hover=false;s.inShots=false;s.adapt=true;s.savePower=true;s.label="LiquidGlassControl.TitleBar";s.motion=0;s.inMs=160;s.outMs=120; // motion 0: the plainest fade
+        UINT d=targetDpi(t); // the target's own DPI (place() uses the adapter's window, which is the wrong monitor here)
+        bool found=classifyBar(t,d,glass.inset,titleCache,titleSpans);
+        if(titleCache.retry)SetTimer(window,TimerTitle,titleCache.retryMs,nullptr); // not stable yet, or over the sampling budget: look again next tick
+        else if(titleCache.expiry)SetTimer(window,TimerTitle,UINT(titleCache.expiry>tick?titleCache.expiry-tick+10:10),nullptr); // new tabs change no frame or title: sample again when the cache runs out
+        if(!found){titleHide();return;}
+        if(aside)for(const RECT& r:titleSpans){RECT x{};if(IntersectRect(&x,&r,&lg)){titleHide();return;}}
+        lghost::Spec base;base.kind=0;base.scale=d/96.f;
+        base.look=lghost::Look{glass.dark,glass.blur,glass.refraction,glass.rim,glass.shadow,glass.round,glass.intensity,glass.elevation};
+        base.hover=false;base.inShots=false;base.adapt=true;base.savePower=true;base.label="LiquidGlassControl.TitleBar";base.motion=0;base.inMs=160;base.outMs=120; // motion 0: the plainest fade
         try{
-            if(!titleClient||lghost::wire::needsCreate(titleSpec,s,titleClient->hostMinor())){titleClient.reset();titleShown=false;lghost::Options o=lensOptions;o.message=TitleEvent;titleClient=std::make_unique<lghost::Client>(o,s);}
-            else if(s.x!=titleSpec.x||s.y!=titleSpec.y||s.width!=titleSpec.width||s.height!=titleSpec.height||!(s.look==titleSpec.look)){
-                if(s.width==titleSpec.width&&s.height==titleSpec.height&&s.look==titleSpec.look)titleClient->setPlace(s.x,s.y);else titleClient->setSpec(s);}
-            titleSpec=s;if(!titleShown){titleShown=true;titleClient->show(true);}
-        }catch(...){titleFailed=true;titleClient.reset();titleShown=false;}}
+            for(size_t i=0;i<TitleSlots;++i){
+                if(i>=titleSpans.size()){titleHideSlot(i);continue;}
+                const RECT& r=titleSpans[i];lghost::Spec s=base;s.x=r.left;s.y=r.top;s.width=r.right-r.left;s.height=r.bottom-r.top;
+                if(s.width<=0||s.height<=0||s.width>4096||s.height>4096){titleHideSlot(i);continue;} // past the host's surface limit (ultrawide or two monitors): skip without latching, so a smaller size shows again
+                auto& cl=titleClients[i];lghost::Spec& was=titleSpecs[i];
+                if(!cl||lghost::wire::needsCreate(was,s,cl->hostMinor())){cl.reset();titleShown[i]=false;lghost::Options o=lensOptions;o.message=TitleEvent;cl=std::make_unique<lghost::Client>(o,s);}
+                else if(s.x!=was.x||s.y!=was.y||s.width!=was.width||s.height!=was.height||!(s.look==was.look)){
+                    if(s.width==was.width&&s.height==was.height&&s.look==was.look)cl->setPlace(s.x,s.y);else cl->setSpec(s);}
+                was=s;if(!titleShown[i]){titleShown[i]=true;cl->show(true);}}
+        }catch(...){titleFailed=true;titleReset();}}
     bool valid(lgpreview::Settings s){return s.version==2&&s.opacity>=5&&s.opacity<=90&&s.blur<=40&&s.radius<=28&&s.tint<=2&&s.savePower<=1&&s.reducedMotion<=1&&s.language<=4;}
 };
 void CALLBACK titleEvent(HWINEVENTHOOK,DWORD event,HWND hwnd,LONG object,LONG child,DWORD,DWORD){
@@ -244,6 +351,7 @@ void CALLBACK titleEvent(HWINEVENTHOOK,DWORD event,HWND hwnd,LONG object,LONG ch
     case EVENT_SYSTEM_MINIMIZESTART:case EVENT_OBJECT_HIDE:case EVENT_OBJECT_CLOAKED:app->titleHide();break;
     case EVENT_SYSTEM_MINIMIZEEND:case EVENT_OBJECT_SHOW:case EVENT_OBJECT_UNCLOAKED:app->titlePlace();break; // uncloaked: a desktop switch or app launch can bring the foreground first
     case EVENT_OBJECT_DESTROY:app->titleHide();app->titleUnhook();app->titleTarget=nullptr;break;
+    case EVENT_OBJECT_NAMECHANGE:app->titleCache.stale=true;app->titleCache.ttl=1000;SetTimer(app->window,TimerTitle,30,nullptr);break; // a new title: the system bar's text end and a custom bar's tabs may differ
     case EVENT_OBJECT_LOCATIONCHANGE:if(!app->titleMoving)SetTimer(app->window,TimerTitle,30,nullptr);break; // coalesces
     }}
 LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
@@ -274,15 +382,15 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
     case MsgVolume:{int way=app->state.onVolume(float(w)/1000.f,l!=0);if(way)app->osdShowChange(way);return 0;}
     case MsgDevice:{float level=0;bool mute=false;if(app->audio.attach()&&app->audio.read(level,mute))app->state.resetVolume(level,mute);return 0;}
     case MsgOwner:app->refresh();SetTimer(hwnd,TimerRecheck,400,nullptr);return 0; // the event can come before the minimize/restore finishes: look again once
-    case TitleEvent:if(w==lghost::Connected||w==lghost::Restarted)app->titlePlace();else if(w==lghost::Failed){app->titleFailed=true;app->titleShown=false;app->titleClient.reset();}return 0; // no retry loop: a new target clears titleFailed
-    case MsgForeground:app->refresh();if(app->titleTarget)app->titlePlace();return 0;
+    case TitleEvent:if(w==lghost::Connected||w==lghost::Restarted)app->titlePlace();else if(w==lghost::Failed){app->titleFailed=true;app->titleReset();}return 0; // no retry loop: a new target clears titleFailed
+    case MsgForeground:app->refresh();if(app->titleTarget){app->titleCache.stale=true;app->titleCache.ttl=1000;app->titlePlace();}return 0;
     case MsgFlyout:app->syncFlyout();return 0;
     case WM_DISPLAYCHANGE:if(app->osdLive())app->osdStop();app->place();app->titlePlace();return 0;
     case WM_POWERBROADCAST:
         if(w==PBT_APMSUSPEND||w==PBT_APMRESUMEAUTOMATIC||w==PBT_APMRESUMESUSPEND){if(app->osdLive())app->osdStop();app->titleHide();app->quietUntil=GetTickCount64()+3000;if(app->titleTarget)SetTimer(hwnd,TimerTitle,3050,nullptr);} // a stuck card after sleep; the resume brightness restore stays silent
         if(w==PBT_POWERSETTINGCHANGE&&l){auto s=reinterpret_cast<POWERBROADCAST_SETTING*>(l);
             if(s->PowerSetting==osd::BrightnessGuid&&s->DataLength==sizeof(DWORD)){DWORD percent=0;memcpy(&percent,s->Data,sizeof(percent));int level=int(std::min<DWORD>(percent,100));bool quiet=app->displayState!=1||GetTickCount64()<app->quietUntil; // idle dimming and display changes move the brightness too: re-baseline silently
-                if(quiet)app->state.resetBrightness(level);else{int way=app->state.onBrightness(level);if(way)app->osdShowChange(way);}}
+                if(quiet){app->state.resetBrightness(level);if(!app->kindOn(1))app->holdFlyout();}else{int way=app->state.onBrightness(level);if(way)app->osdShowChange(way);}}
             else if(s->PowerSetting==osd::ConsoleDisplayGuid&&s->DataLength==sizeof(DWORD)){memcpy(&app->displayState,s->Data,sizeof(DWORD));app->quietUntil=GetTickCount64()+3000;if(app->displayState==0&&app->osdLive())app->osdStop();if(app->displayState!=1)app->titleHide();else if(app->titleTarget)SetTimer(hwnd,TimerTitle,3050,nullptr);}} // display off (Modern Standby sends no suspend)
         return TRUE;
     case WM_COPYDATA:{auto p=reinterpret_cast<COPYDATASTRUCT*>(l);
@@ -291,16 +399,17 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
         if(reinterpret_cast<HWND>(w)==app->owner&&p&&p->dwData==lgpreview::StatusTag&&p->cbData==0){return (app->client&&app->client->hostMinor()>=1?1:0)|(app->visible?2:0)|(app->osdShown?4:0)|(IsWindowVisible(hwnd)?8:0)|(app->osdOk()?16:0)|(app->client&&app->client->connected()?32:0)|(app->deferring?64:0);}if(reinterpret_cast<HWND>(w)==app->owner&&p&&p->dwData==lgpreview::ControlsTag&&p->cbData==sizeof(lgpreview::Controls)&&p->lpData){lgpreview::Controls c;memcpy(&c,p->lpData,sizeof(c));if(c.arrival<0||c.arrival>8||c.indicator<0||c.indicator>9||c.slosh<0||c.slosh>3||c.knob<0||c.knob>2||c.action<0||c.action>2)return 0;
             for(int v:{c.dark,c.blur,c.refraction,c.rim,c.shadow,c.elevation})if(v<0||v>100)return 0;if(c.round<0||c.round>28||c.intensity<0||c.intensity>150||c.shape<0||c.shape>3)return 0;
             app->lensLook=lghost::Look{c.dark,c.blur,c.refraction,c.rim,c.shadow,c.round,c.intensity,c.elevation};app->lensShape=c.shape; // the lens's own look and profile: apply() sends them in place
-            int ids[]={IdArrival,IdIndicator,IdSlosh,IdKnob};int values[]={c.arrival,c.indicator,c.slosh,c.knob};for(int i=0;i<4;++i)SendDlgItemMessageW(hwnd,ids[i],CB_SETCURSEL,values[i],0);CheckDlgButton(hwnd,IdOn,c.osd?BST_CHECKED:BST_UNCHECKED);app->pageEnabled=c.enabled!=0;app->refresh();app->apply();if(!c.osd&&app->osdLive())app->osdStop();if(c.action==1)app->replay();if(c.action==2)app->sample();return 1;}if(reinterpret_cast<HWND>(w)!=app->owner||!p||p->dwData!=lgpreview::WireTag||p->cbData!=sizeof(lgpreview::Settings)||!p->lpData)return 0;
+            int ids[]={IdArrival,IdIndicator,IdSlosh,IdKnob};int values[]={c.arrival,c.indicator,c.slosh,c.knob};for(int i=0;i<4;++i)SendDlgItemMessageW(hwnd,ids[i],CB_SETCURSEL,values[i],0);app->osdMask=c.osd&3;if(app->osdMask)app->lastMask=app->osdMask;CheckDlgButton(hwnd,IdOn,app->osdMask?BST_CHECKED:BST_UNCHECKED);app->pageEnabled=c.enabled!=0;app->refresh();app->apply();if(app->osdLive()&&(!app->osdMask||(!app->state.sampling&&!app->kindOn(app->state.source))))app->osdStop();app->syncFlyout();if(c.action==1)app->replay();if(c.action==2)app->sample();return 1;}if(reinterpret_cast<HWND>(w)!=app->owner||!p||p->dwData!=lgpreview::WireTag||p->cbData!=sizeof(lgpreview::Settings)||!p->lpData)return 0;
         lgpreview::Settings next;memcpy(&next,p->lpData,sizeof(next));if(!app->valid(next))return 0;app->settings=next;app->apply();return lgpreview::digest(next);}
     case WM_COMMAND:{int id=LOWORD(w),code=HIWORD(w);
         if(code==CBN_SELCHANGE&&id>=IdArrival&&id<=IdKnob){app->apply();return 0;}
-        if(code==BN_CLICKED){if(id==IdReplay)app->replay();else if(id==IdSample)app->sample();else if(id==IdOn){EnableWindow(GetDlgItem(hwnd,IdSample),app->indicatorOn());if(!app->indicatorOn()&&app->osdLive())app->osdStop();app->syncFlyout();}}
+        if(code==BN_CLICKED){if(id==IdReplay)app->replay();else if(id==IdSample)app->sample();else if(id==IdOn){app->osdMask=IsDlgButtonChecked(hwnd,IdOn)==BST_CHECKED?(app->lastMask?app->lastMask:3):0;EnableWindow(GetDlgItem(hwnd,IdSample),app->indicatorOn());if(!app->indicatorOn()&&app->osdLive())app->osdStop();app->syncFlyout();}}
         return 0;}
     case WM_TIMER:
         if(w==TimerRecheck){KillTimer(hwnd,TimerRecheck);app->refresh();}else if(w==TimerAnim)app->osdTick();
         else if(w==TimerTitle){KillTimer(hwnd,TimerTitle);app->titlePlace();}
-        else if(w==TimerHide){KillTimer(hwnd,TimerHide);if(app->osdClient){app->osdClient->hide(true);app->osdShown=false;}}
+        else if(w==TimerFlyout){KillTimer(hwnd,TimerFlyout);app->syncFlyout();}
+        else if(w==TimerHide){KillTimer(hwnd,TimerHide);if(app->osdClient){app->osdClient->hide(true);app->osdShown=false;}app->flyoutOnUntil=0;app->syncFlyout();} // the lens is gone: with a mask other than 3 Windows' pop-up may show again for a key at its limit
         else if(w==TimerReplay){KillTimer(hwnd,TimerReplay);if(app->visible&&app->client){app->client->show(true);app->client->kick(1);}}
         return 0;
     case WM_SETTINGCHANGE:case WM_SIZE:app->refresh();break;
@@ -310,7 +419,7 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
     case WM_APP+17:if(!app->owner){ShowWindow(hwnd,SW_RESTORE);SetForegroundWindow(hwnd);}return 0;
     case WM_CLOSE:DestroyWindow(hwnd);return 0;
     case WM_DESTROY:
-        for(UINT_PTR timer:{TimerAnim,TimerHide,TimerReplay,TimerRecheck,TimerTitle})KillTimer(hwnd,timer);app->titleUnhook();app->titleTarget=nullptr;app->titleClient.reset();
+        for(UINT_PTR timer:{TimerAnim,TimerHide,TimerReplay,TimerRecheck,TimerTitle,TimerFlyout})KillTimer(hwnd,timer);app->titleUnhook();app->titleTarget=nullptr;app->titleReset();
         if(app->wait){UnregisterWaitEx(app->wait,INVALID_HANDLE_VALUE);app->wait=nullptr;}
         for(auto&hook:app->hooks)if(hook){UnhookWinEvent(hook);hook=nullptr;}
         lgpreview::restoreFlyouts(); // Windows' own pop-up comes back with the lens gone
@@ -361,6 +470,19 @@ int selfTest(){lghost::Spec spec;auto frame=lghost::wire::frame(3,42,lghost::wir
         check(a.left==100&&a.right==500&&a.top==100&&a.bottom==123,"title bar: caption button bounds give the height");
         check(b.bottom-b.top==std::max<int>(16,std::min<int>(64,int(sys)))&&b.left==100&&b.right==500,"title bar: metric fallback, clamped");
         check(c.right-c.left==392&&c.left==104&&c.top==104&&c.bottom-c.top>=12,"title bar: inset 4 shrinks the width by 8 at 96 dpi");}
+    {RECT bar{100,100,600,131},btn{500,100,600,131};std::vector<HitSample> none;
+        auto a=freeSpans(bar,btn,false,200,none,1.f,0),b=freeSpans(bar,btn,false,495,none,1.f,0),e=freeSpans(bar,RECT{},false,200,none,1.f,0);
+        check(a.size()==1&&a[0].left==208&&a[0].right==492&&a[0].top==100&&a[0].bottom==131,"free spans: system bar, title end to the buttons, inset 8 at the sides");
+        check(b.empty(),"free spans: a title that reaches the buttons leaves no span");
+        check(e.size()==1&&e[0].left==208&&e[0].right==592,"free spans: empty buttons rect, the span runs to the bar's end");
+        std::vector<HitSample> hits;for(int i=0;i<17;++i)hits.push_back(HitSample{100+12*i,(i<3||(i>=4&&i<14)||i>=15)?HTCAPTION:HTCLIENT});
+        auto c=freeSpans(RECT{100,100,400,131},RECT{304,100,400,131},true,0,hits,1.f,0);
+        check(c.size()==1&&c[0].left==150&&c[0].right==254,"free spans: custom bar keeps the long caption run, drops the short ones");
+        auto g=freeSpans(RECT{0,0,900,48},RECT{800,0,900,48},false,300,none,1.5f,4);
+        check(g.size()==1&&g[0].left==312&&g[0].right==788&&g[0].top==6&&g[0].bottom==42,"free spans: scale 1.5 scales the 8 DIP side and the inset");
+        std::vector<HitSample> many;for(int i=0;i<40;++i)many.push_back(HitSample{i*12,(i%5)==4?HTCLIENT:HTCAPTION});
+        check(!barExpired(1000,0)&&!barExpired(1999,2000)&&barExpired(2000,2000)&&!barOverBudget(100,140,40)&&barOverBudget(100,141,40),"bar cache: expiry 0 never runs out, the 40 ms budget");
+        check(freeSpans(RECT{0,0,480,31},RECT{},true,0,many,1.f,0).size()==3,"free spans: no more than 3");}
     return bad?1:0;}
 }
 int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){

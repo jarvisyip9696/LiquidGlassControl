@@ -1,6 +1,6 @@
-param([string]$SourceDirectory = (Join-Path $PSScriptRoot '../../build/LGEngine-2.7.14'))
+param([string]$SourceDirectory = (Join-Path $PSScriptRoot '../../build/LGEngine-2.7.15'))
 $ErrorActionPreference = 'Stop'
-$revision = '2b07c0d9298d3e7637a44efe670eb20d46b30124'
+$revision = '4e24ca4e55e6b8c6b119a1b2325002a139deff63'
 if (-not (Test-Path -LiteralPath $SourceDirectory)) {
     & git clone https://github.com/domk6966/LGEngine.git $SourceDirectory
     if ($LASTEXITCODE -ne 0) { throw 'LGEngine download failed.' }

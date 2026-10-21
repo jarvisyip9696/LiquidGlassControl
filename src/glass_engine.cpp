@@ -47,7 +47,7 @@ constexpr GUID ReaderIds[]={{0x9891c6bd,0x534f,0x4955,{0xb8,0x5a,0x8a,0x8d,0xc0,
 constexpr GUID ReleaseId={0x735941a2,0x3ee3,0x495a,{0x8d,0xa9,0x97,0x26,0x27,0x00,0x30,0x75}};
 struct CacheRelease:IUnknown{virtual HRESULT STDMETHODCALLTYPE Unregister(InstanceHandle)=0;};
 HMODULE selfModule{};HANDLE mapping{};glass::Config*shared{};HANDLE ownerHandle{},ownerWait{};DWORD ownerPid{};SRWLOCK configLock=SRWLOCK_INIT;
-HANDLE statusMapping{};glass::Status*sharedStatus{};
+HANDLE statusMapping{};glass::Status*sharedStatus{};bool handlesBorrowed=false,statusBorrowed=false;
 // Budget per stage (32 lines) and overall (1024), so one noisy stage cannot hide every later failure.
 void trace(const char*stage,HRESULT hr){if(SUCCEEDED(hr))return;static std::map<std::string,unsigned> counts;static unsigned total=0;static SRWLOCK traceLock=SRWLOCK_INIT;AcquireSRWLockExclusive(&traceLock);bool fresh=total<1024&&++counts[stage]<=32;if(fresh)++total;ReleaseSRWLockExclusive(&traceLock);if(!fresh)return;wchar_t path[32768]{};GetModuleFileNameW(selfModule,path,32768);std::wstring file=path;file.resize(file.find_last_of(L"\\")+1);file+=L"glass-engine-"+std::to_wstring(GetCurrentProcessId())+L".log";HANDLE h=CreateFileW(file.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);if(h!=INVALID_HANDLE_VALUE){char text[256]{};int n=snprintf(text,sizeof(text),"%s: 0x%08lx\r\n",stage,(unsigned long)hr);DWORD written=0;WriteFile(h,text,n,&written,nullptr);CloseHandle(h);}}
 std::atomic<bool> nativeInspectionOnly{false};
@@ -71,40 +71,83 @@ Read snapshot(glass::Config&c){
 void refreshWindows(){HWND h=nullptr;while((h=FindWindowExW(HWND_MESSAGE,h,threadClass().c_str(),nullptr))){DWORD pid=0;GetWindowThreadProcessId(h,&pid);if(pid==GetCurrentProcessId())PostMessageW(h,refreshMsg,0,0);}}
 void CALLBACK ownerEnded(void*,BOOLEAN){refreshWindows();}
 HWND ownerWindow(){auto h=FindWindowW(nativeInspectionOnly?L"LiquidGlass.Control.NativeProbe":L"LiquidGlass.Control",nullptr);DWORD pid=0;if(h)GetWindowThreadProcessId(h,&pid);return pid==ownerPid?h:nullptr;}
-void report(HRESULT hr,DWORD feature=0){note(L"report feature="+std::to_wstring(feature)+L" hr="+std::to_wstring((long)hr)+L" exe="+hostExe());AcquireSRWLockShared(&configLock);if(sharedStatus&&feature){if(FAILED(hr)){InterlockedOr(&sharedStatus->failed,feature);InterlockedExchange(&sharedStatus->error,hr);InterlockedAnd(&sharedStatus->success,~feature);}else{InterlockedAnd(&sharedStatus->failed,~feature);InterlockedOr(&sharedStatus->success,feature);if(hr==S_FALSE)InterlockedOr(&sharedStatus->fallback,feature);else InterlockedAnd(&sharedStatus->fallback,~feature);}}ReleaseSRWLockShared(&configLock);auto h=ownerWindow();if(h)PostMessageW(h,RegisterWindowMessageW(glass::StatusMessage),feature,(LPARAM)hr);}
+void report(HRESULT hr,DWORD feature=0){std::wstring dockText;if(feature&glass::Dock){AcquireSRWLockShared(&configLock);if(sharedStatus)dockText=L" dockIcons="+std::to_wstring((long)sharedStatus->dockIcons)+L" dockBound="+std::to_wstring((long)sharedStatus->dockBound);ReleaseSRWLockShared(&configLock);}
+    note(L"report feature="+std::to_wstring(feature)+L" hr="+std::to_wstring((long)hr)+L" exe="+hostExe()+dockText);AcquireSRWLockShared(&configLock);if(sharedStatus&&feature){if(FAILED(hr)){InterlockedOr(&sharedStatus->failed,feature);InterlockedExchange(&sharedStatus->error,hr);InterlockedAnd(&sharedStatus->success,~feature);}else{InterlockedAnd(&sharedStatus->failed,~feature);InterlockedOr(&sharedStatus->success,feature);if(hr==S_FALSE)InterlockedOr(&sharedStatus->fallback,feature);else InterlockedAnd(&sharedStatus->fallback,~feature);}}ReleaseSRWLockShared(&configLock);auto h=ownerWindow();if(h)PostMessageW(h,RegisterWindowMessageW(glass::StatusMessage),feature,(LPARAM)hr);}
 // Features a host kind serves: 0 classic explorer, 1 Start, 2 ShellExperienceHost/ShellHost, 3 modern explorer.
-DWORD hostMask(int host){return host==0?(glass::Taskbar|glass::Volume|glass::Brightness|glass::Dock|glass::Explorer|glass::Capsule|glass::Keyboard):host==1?glass::Start:host==2?(glass::Notifications|glass::Keyboard):(glass::Explorer|glass::Keyboard);}
+DWORD hostMask(int host){return host==0?(glass::Taskbar|glass::Volume|glass::Brightness|glass::Dock|glass::Explorer|glass::Capsule|glass::Keyboard):host==1?glass::Start:host==2?(glass::Notifications|glass::Calendar|glass::Toasts|glass::Keyboard):(glass::Explorer|glass::Keyboard);}
 int hostKind(bool modern){wchar_t exe[MAX_PATH]{};GetModuleFileNameW(nullptr,exe,MAX_PATH);std::wstring path=exe;if(glass::startHost(glass::runtimeName(path)))return 1;if(path.find(L"ShellExperienceHost.exe")!=std::wstring::npos||path.find(L"ShellHost.exe")!=std::wstring::npos)return 2;return modern?3:0;}
 // Reports a failure against the features this host serves, so the controller can show it on those items.
 // A host's failure marks only the features no other host serves: Keyboard (hosts 0, 2, 3) and host 0's share of Explorer can still work elsewhere.
 DWORD ownedMask(int host){return hostMask(host)&~(glass::Keyboard|(host==0?glass::Explorer:0));}
 void reportHost(HRESULT hr,int host){glass::Config c;DWORD features=0;if(snapshot(c)==Read::Ok)features=c.features&ownedMask(host);report(hr,features);}
+// Dock diagnostics: counters go to the shared status block; a swallowed failure is logged once per kind with its HRESULT.
+void dockStats(LONG icons,LONG bound,LONG pointer,LONG lastX){AcquireSRWLockShared(&configLock);if(sharedStatus){InterlockedExchange(&sharedStatus->dockIcons,icons);InterlockedExchange(&sharedStatus->dockBound,bound);InterlockedExchange(&sharedStatus->dockPointer,pointer);InterlockedExchange(&sharedStatus->dockLastX,lastX);}ReleaseSRWLockShared(&configLock);}
+void dockError(const char*what,HRESULT hr){note(L"dock error "+std::wstring(what,what+strlen(what))+L" hr="+std::to_wstring((long)hr));}
+// Per-host progress for the controller (1 SetSite, 2 connected, 3 surface matched, 4 brush applied; only ever raised) and the last failing code. direct: a status view mapped before connect() succeeded.
+void hostStageSet(int host,LONG stage,HRESULT err=S_OK,glass::Status*direct=nullptr){if(host<0||host>=glass::SlotCount)return;
+    // host is the attach-target slot (glass::HostSlot). Reaching stage 2 clears an older error, so a connected host never shows a stale one.
+    auto write=[&](glass::Status*s){if(!s)return;if(stage>s->hostStage[host]){InterlockedExchange(&s->hostStage[host],stage);if(stage>=2)InterlockedExchange(&s->hostError[host],0);}if(err!=S_OK)InterlockedExchange(&s->hostError[host],(LONG)err);};
+    if(direct){write(direct);return;}AcquireSRWLockShared(&configLock);write(sharedStatus);ReleaseSRWLockShared(&configLock);}
+// File Explorer glass: DWM acrylic backdrop (attribute 38 = system backdrop type, 3 = acrylic) behind each top-level CabinetWClass window of this process. The original type is saved once per window and restored when the feature turns off.
+struct Backdrop {int original=0;};
+SRWLOCK backdropLock=SRWLOCK_INIT;std::map<HWND,Backdrop> backdrops;
+void explorerBackdrop(bool on){
+    AcquireSRWLockExclusive(&backdropLock);
+    // Margins are deliberately not reset on restore: the original frame extension (and Explorer's Mica) is unknown, and writing zeros would undo it. To be verified live.
+    // An entry whose handle is gone, or was reused by another window, is dropped without touching that window. Restore writes only the saved attribute: Explorer's own frame margins (and Mica) are never reset.
+    for(auto i=backdrops.begin();i!=backdrops.end();){DWORD pid=0;wchar_t cls[64]{};bool ours=IsWindow(i->first)&&GetWindowThreadProcessId(i->first,&pid)&&pid==GetCurrentProcessId()&&GetClassNameW(i->first,cls,64)&&!wcscmp(cls,L"CabinetWClass");
+        if(on&&ours){++i;continue;}
+        if(ours){int original=i->second.original;DwmSetWindowAttribute(i->first,38,&original,sizeof(original));}
+        i=backdrops.erase(i);}
+    if(on){std::vector<HWND> found;EnumWindows([](HWND h,LPARAM l)->BOOL{DWORD pid=0;wchar_t cls[64]{};GetWindowThreadProcessId(h,&pid);if(pid==GetCurrentProcessId()&&IsWindowVisible(h)&&GetClassNameW(h,cls,64)&&!wcscmp(cls,L"CabinetWClass"))((std::vector<HWND>*)l)->push_back(h);return TRUE;},(LPARAM)&found);
+        size_t before=backdrops.size();
+        for(auto h:found){auto known=backdrops.find(h);int current=0;if(FAILED(DwmGetWindowAttribute(h,38,&current,sizeof(current))))current=0;
+            // A re-seen handle whose attribute is no longer ours was reset by Explorer: save the new original and apply again.
+            if(known!=backdrops.end()){if(current==3)continue;known->second.original=current;}
+            int acrylic=3;HRESULT hr=DwmSetWindowAttribute(h,38,&acrylic,sizeof(acrylic));
+            // Recorded as soon as attribute 38 is set, so it is restored even if extending the frame fails below.
+            if(SUCCEEDED(hr)&&known==backdrops.end()){Backdrop b;b.original=current;backdrops[h]=b;}
+            MARGINS all{-1,-1,-1,-1};if(SUCCEEDED(hr))hr=DwmExtendFrameIntoClientArea(h,&all);trace("explorer backdrop",hr);}
+        if(backdrops.size()!=before||!before)note(L"explorer backdrop windows="+std::to_wstring(backdrops.size()));}
+    ReleaseSRWLockExclusive(&backdropLock);
+}
+bool explorerBackdropActive(){AcquireSRWLockShared(&backdropLock);bool any=!backdrops.empty();ReleaseSRWLockShared(&backdropLock);return any;}
 // Caller holds configLock exclusively. Releases every owner-scoped resource; safe on a partially connected state.
 void releaseOwnerLocked(){
     if(ownerWait){UnregisterWaitEx(ownerWait,INVALID_HANDLE_VALUE);ownerWait=nullptr;}
-    if(ownerHandle){CloseHandle(ownerHandle);ownerHandle=nullptr;}
+    // Handles the controller duplicated into this process are never closed here (they live as long as the process).
+    if(ownerHandle){if(!handlesBorrowed)CloseHandle(ownerHandle);ownerHandle=nullptr;}
     if(shared){UnmapViewOfFile(shared);shared=nullptr;}
-    if(mapping){CloseHandle(mapping);mapping=nullptr;}
+    if(mapping){if(!handlesBorrowed)CloseHandle(mapping);mapping=nullptr;}
     if(sharedStatus){UnmapViewOfFile(sharedStatus);sharedStatus=nullptr;}
-    if(statusMapping){CloseHandle(statusMapping);statusMapping=nullptr;}
-    ownerPid=0;nativeInspectionOnly=false;
+    if(statusMapping){if(!statusBorrowed)CloseHandle(statusMapping);statusMapping=nullptr;}
+    ownerPid=0;nativeInspectionOnly=false;handlesBorrowed=statusBorrowed=false;
 }
-bool connect(DWORD pid){
-    AcquireSRWLockExclusive(&configLock);
-    // A live owner keeps its configuration; an ended owner must be replaced.
+// Last connect() failure on this thread (Win32 code), for the host diagnostics.
+thread_local DWORD connectErr=0;
+// cfgH/stH/procH: handles the controller duplicated into an AppContainer host, whose "Local\" names resolve in its own namespace. They are borrowed: validated here, never closed, and any mismatch falls back to the named objects.
+bool connect(DWORD pid,HANDLE cfgH=nullptr,HANDLE stH=nullptr,HANDLE procH=nullptr){
+    AcquireSRWLockExclusive(&configLock);connectErr=0;
+    // A live owner keeps its configuration (also when the same handles are passed again); an ended owner must be replaced.
     if(shared&&((ownerHandle&&WaitForSingleObject(ownerHandle,0)==WAIT_TIMEOUT)||(!ownerHandle&&glass::alive(shared)))){bool same=ownerPid==pid;ReleaseSRWLockExclusive(&configLock);return same;}
     releaseOwnerLocked();
     // Acquire every resource first; publish the connection only after all succeed, so a failure leaves no half-connected state and a later attempt can retry.
-    auto name=glass::mappingName(pid);HANDLE m=OpenFileMappingW(FILE_MAP_READ,FALSE,(name+L".Probe").c_str());bool inspection=m!=nullptr;if(!m)m=OpenFileMappingW(FILE_MAP_READ,FALSE,name.c_str());
-    if(!m){ReleaseSRWLockExclusive(&configLock);return false;}
-    auto view=(glass::Config*)MapViewOfFile(m,FILE_MAP_READ,0,0,sizeof(glass::Config));
-    if(!view||view->magic!=glass::Magic||view->version!=glass::Version||view->owner!=pid){if(view)UnmapViewOfFile(view);CloseHandle(m);ReleaseSRWLockExclusive(&configLock);return false;}
-    HANDLE owner=OpenProcess(SYNCHRONIZE,FALSE,pid);HANDLE wait=nullptr;
+    HANDLE m=nullptr,owner=nullptr;glass::Config*view=nullptr;bool inspection=false,borrowed=false;
+    auto validConfig=[&](glass::Config*v){return v&&v->magic==glass::Magic&&v->version==glass::Version&&v->owner==pid;};
+    if(cfgH&&procH&&GetProcessId(procH)==pid){view=(glass::Config*)MapViewOfFile(cfgH,FILE_MAP_READ,0,0,sizeof(glass::Config));if(validConfig(view)){m=cfgH;owner=procH;borrowed=true;}else{connectErr=view?ERROR_INVALID_DATA:GetLastError();if(view)UnmapViewOfFile(view);view=nullptr;}}
+    if(!m){auto name=glass::mappingName(pid);m=OpenFileMappingW(FILE_MAP_READ,FALSE,(name+L".Probe").c_str());inspection=m!=nullptr;if(!m)m=OpenFileMappingW(FILE_MAP_READ,FALSE,name.c_str());
+        if(!m){if(!connectErr)connectErr=GetLastError();ReleaseSRWLockExclusive(&configLock);return false;}
+        view=(glass::Config*)MapViewOfFile(m,FILE_MAP_READ,0,0,sizeof(glass::Config));
+        if(!validConfig(view)){connectErr=view?ERROR_INVALID_DATA:GetLastError();if(view)UnmapViewOfFile(view);CloseHandle(m);ReleaseSRWLockExclusive(&configLock);return false;}
+        owner=OpenProcess(SYNCHRONIZE,FALSE,pid);}
+    HANDLE wait=nullptr;
     bool watched=owner&&RegisterWaitForSingleObject(&wait,owner,ownerEnded,nullptr,INFINITE,WT_EXECUTEONLYONCE);
     // Restricted hosts use the read-only heartbeat; no process ACL is changed.
-    if(!watched){if(owner)CloseHandle(owner);owner=nullptr;DWORD app=0,bytes=0;HANDLE token{};if(OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token)){GetTokenInformation(token,TokenIsAppContainer,&app,sizeof(app),&bytes);CloseHandle(token);}if(!app||!glass::alive(view)){UnmapViewOfFile(view);CloseHandle(m);ReleaseSRWLockExclusive(&configLock);return false;}}
-    mapping=m;shared=view;ownerHandle=owner;ownerWait=wait;ownerPid=pid;nativeInspectionOnly=inspection;
-    statusMapping=OpenFileMappingW(FILE_MAP_READ|FILE_MAP_WRITE,FALSE,glass::statusName(pid).c_str());if(statusMapping){sharedStatus=(glass::Status*)MapViewOfFile(statusMapping,FILE_MAP_READ|FILE_MAP_WRITE,0,0,sizeof(glass::Status));if(sharedStatus&&(sharedStatus->magic!=glass::Magic||sharedStatus->version!=glass::Version||sharedStatus->owner!=pid)){UnmapViewOfFile(sharedStatus);sharedStatus=nullptr;}}
+    if(!watched){if(owner&&!borrowed)CloseHandle(owner);owner=nullptr;DWORD app=0,bytes=0;HANDLE token{};if(OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token)){GetTokenInformation(token,TokenIsAppContainer,&app,sizeof(app),&bytes);CloseHandle(token);}if(!app||!glass::alive(view)){connectErr=ERROR_INVALID_STATE;UnmapViewOfFile(view);if(!borrowed)CloseHandle(m);ReleaseSRWLockExclusive(&configLock);return false;}}
+    mapping=m;shared=view;ownerHandle=owner;ownerWait=wait;ownerPid=pid;nativeInspectionOnly=inspection;handlesBorrowed=borrowed;
+    auto validStatus=[&](glass::Status*v){return v&&v->magic==glass::Magic&&v->version==glass::Version&&v->owner==pid;};
+    if(stH){auto sv=(glass::Status*)MapViewOfFile(stH,FILE_MAP_READ|FILE_MAP_WRITE,0,0,sizeof(glass::Status));if(validStatus(sv)){statusMapping=stH;sharedStatus=sv;statusBorrowed=true;}else if(sv)UnmapViewOfFile(sv);}
+    if(!statusMapping){statusMapping=OpenFileMappingW(FILE_MAP_READ|FILE_MAP_WRITE,FALSE,glass::statusName(pid).c_str());if(statusMapping){sharedStatus=(glass::Status*)MapViewOfFile(statusMapping,FILE_MAP_READ|FILE_MAP_WRITE,0,0,sizeof(glass::Status));if(sharedStatus&&!validStatus(sharedStatus)){UnmapViewOfFile(sharedStatus);sharedStatus=nullptr;}}}
     refreshMsg=RegisterWindowMessageW(glass::RefreshMessage);
     // Diagnostics owns COM objects whose callbacks can outlive the hook.
     // Pin this small DLL until the shell process exits; all element references
@@ -117,7 +160,7 @@ struct Node {InstanceHandle key{};bool nativeProbed=false;int notificationRoot=-
 class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
     std::atomic<ULONG> refs{1};Ptr<IUnknown> site;Ptr<IXamlDiagnostics> diag;Ptr<IVisualTreeService2> service;Ptr<CacheRelease> cache;
     struct Thread {Session*session{};HWND window{};std::map<InstanceHandle,Node> nodes;std::set<InstanceHandle> release;ULONGLONG lastMutation=0,releaseStarted=0;std::deque<std::pair<winrt::weak_ref<winrt::Windows::UI::Xaml::FrameworkElement>,int>> nativeProbes;lghost::NativeCaptureLane nativeLane;std::shared_ptr<lghost::NativeInspectionControl> nativeControl;uint64_t nativeToken=0;bool updating=false,updateQueued=false;bool taskbarPanel=false,unifiedCapsule=false;InstanceHandle notificationRoots[2]{};unsigned retries{};LONG observedSequence=-1;DWORD observedFeatures=0;bool heartbeatTimer=false;liquid::DockAnimation dock;~Thread(){if(nativeControl)nativeControl->cancel();for(auto&n:nodes)for(auto&w:n.second.watchers)w.second();}};
-    std::map<DWORD,Thread*> threads;SRWLOCK lock=SRWLOCK_INIT;bool modern=false;int host=0;std::atomic<HRESULT> lastError{S_OK};std::atomic<unsigned> writes{0};
+    std::map<DWORD,Thread*> threads;SRWLOCK lock=SRWLOCK_INIT;bool modern=false;int host=0,slot=-1;std::atomic<bool> everMatched{false},everApplied{false};std::atomic<HRESULT> lastError{S_OK};std::atomic<unsigned> writes{0};
     std::atomic<bool> subscribed{false},subscriptionWorker{false};
     std::atomic<unsigned> compatibilityReports{0};
     // Advise failures back off (1, 2, 4, 8, 16 s) on a pool timer and stop after 6; a new desired state or a new attach starts a fresh budget.
@@ -175,6 +218,12 @@ class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
         if(transparent)xml=L"<SolidColorBrush xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Color=\"Transparent\"/>";
         else xml=L"<AcrylicBrush xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" "+std::wstring(modern?L"":L"BackgroundSource=\"HostBackdrop\" ")+L"TintColor=\""+std::wstring(color)+L"\" TintOpacity=\""+std::to_wstring(c.opacity/100.0)+L"\" FallbackColor=\""+color+L"\" AlwaysUseFallback=\""+(c.economy?L"True":L"False")+L"\"/>";
         HSTRING source{};WindowsCreateString(xml.c_str(),(UINT32)xml.size(),&source);Ptr<IInspectable> result;hr=reader->Load(source,result.put());WindowsDeleteString(source);if(FAILED(hr)){lastError=hr;notify(hr,feature);}return result;
+    }
+    // Explorer plates sit over the window's DWM acrylic backdrop, so they are only the look's tint at its opacity (translucent), not an opaque fill or a second blur.
+    Ptr<IInspectable> explorerTint(const glass::Config&c,bool&custom,bool&fallback){custom=false;fallback=false;
+        bool dark=c.tint==2;if(c.tint==0){DWORD light=1,size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"AppsUseLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);dark=!light;}
+        wchar_t color[16]{};swprintf_s(color,L"#%02X%s",(unsigned)(c.opacity*255/100),dark?L"18202C":L"F4F7FC");
+        auto result=markup(L"<SolidColorBrush xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Color=\""+std::wstring(color)+L"\"/>");custom=result.p!=nullptr;return result;
     }
     // prop's effective entry in this handle's value chain; found=false when the chain does not list it.
     HRESULT chain(InstanceHandle h,const std::wstring&prop,unsigned&index,bool&local,bool&binding,bool&found){
@@ -355,7 +404,9 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         }catch(...){trace("keyboard backing",winrt::to_hresult());}
     }
     bool nativeProbeEnabled(){return nativeInspectionOnly.load();}
-    void apply(Node&n,InstanceHandle h,const glass::Config&c){
+    void apply(Node&n,InstanceHandle h,const glass::Config&published){
+        // Each surface uses its own family's look; the shared opacity/radius/tint/blur are only the legacy defaults the controller copies into it.
+        glass::Config c=published;{const auto&look=published.looks[glass::family(n.surface)];c.opacity=look.opacity;c.radius=look.radius;c.tint=look.tint;c.blur=look.blur;}
         if(nativeProbeEnabled()){
             if(n.nativeProbed||!(n.surface==glass::TaskbarRoot||n.surface==glass::VolumePlate||n.surface==glass::BrightnessPlate||n.surface==glass::StartPlate||n.surface==glass::NotificationPlate||n.surface==glass::KeyboardPlate))return;
             note(L"native-probe observed surface="+std::to_wstring(int(n.surface))+L" modern="+std::to_wstring(modern));
@@ -363,8 +414,9 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
             try{auto p=from(h);if(!p)return;winrt::Windows::Foundation::IInspectable object{nullptr};winrt::copy_from_abi(object,p.p);auto e=object.try_as<winrt::Windows::UI::Xaml::FrameworkElement>();if(!e||!e.IsLoaded()||!e.XamlRoot()||!e.XamlRoot().IsHostVisible()||e.ActualWidth()<1||e.ActualHeight()<1)return;auto parent=e.as<winrt::Windows::UI::Xaml::DependencyObject>();for(unsigned i=0;parent&&i<128;++i){if(auto ui=parent.try_as<winrt::Windows::UI::Xaml::UIElement>();ui&&ui.Visibility()!=winrt::Windows::UI::Xaml::Visibility::Visible)return;parent=winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetParent(parent);}n.nativeProbed=true;auto&t=thread();t.nativeProbes.push_back({winrt::make_weak(e),int(n.surface)});note(L"native-probe queued surface="+std::to_wstring(int(n.surface)));PostMessageW(t.window,WM_APP+6,0,0);}catch(...){trace("native-probe",winrt::to_hresult());}return;
         }
 
-        if(n.surface==glass::DockRoot||n.surface==glass::DockIcon){auto&t=thread();if(!(c.features&glass::Dock)||c.economy){t.dock.stop();return;}auto p=from(h);if(p){if(n.surface==glass::DockRoot){if(!t.dock.attach(p.p))report(E_NOINTERFACE,glass::Dock);}else t.dock.add(p.p);if(t.dock.ready())report(S_OK,glass::Dock);}return;}
+        if(n.surface==glass::DockRoot||n.surface==glass::DockIcon){auto&t=thread();if(!(c.features&glass::Dock)){t.dock.stop();return;}if(!t.dock.onError){t.dock.onError=dockError;t.dock.onStats=dockStats;}t.dock.configure(c.dockScale,c.dockSpread,c.dockSpeed,c.dockBounce);auto p=from(h);if(p){if(n.surface==glass::DockRoot){if(!t.dock.attach(p.p))report(E_NOINTERFACE,glass::Dock);}else t.dock.add(p.p);if(t.dock.ready())report(S_OK,glass::Dock);}return;}
         if(!glass::active(n.surface,c.features)){restore(n,h);return;}
+        if(n.surface==glass::ExplorerPlate||n.surface==glass::ExplorerClear)explorerBackdrop(true);
         if(n.surface==glass::KeyboardPlate&&!keyboardPanel(h))return;
         DWORD signature=1|(c.opacity<<1)|(c.radius<<8)|(c.tint<<13)|(c.economy?1u<<15:0)|(c.blur<<16)|((c.features&glass::Capsule)?1u<<24:0)|((c.features&glass::Taskbar)?1u<<25:0)|((n.surface==glass::TaskbarRoot&&thread().unifiedCapsule)?1u<<26:0);
         // Unchanged parameters are not written again, but the controller may have cleared its status after a rediscovery; repeat the last result so status matches the live surface.
@@ -378,9 +430,10 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         if((iconPanel||joinedTray)&&(c.features&glass::Capsule))restoreNamed(n,h,{L"BorderBrush",L"BorderThickness"});
         if(n.surface==glass::KeyboardPlate)clearKeyboardBacking(n,h);
         bool applied=false;if((iconPanel||joinedTray)&&(c.features&glass::Capsule)){auto b=brush(c,true,h,0,n.composition,n.fallback);if(b)applied=set(n,h,L"Background",b.p,false);}
-        else if(!n.imported.empty())applied=applyImported(n,h,c);else{auto b=brush(c,(n.surface==glass::TaskbarFill&&thread().taskbarPanel&&!(c.features&glass::Capsule))||n.surface==glass::OsdPlate||n.surface==glass::StartOverlay||n.surface==glass::TaskbarOverlay||n.surface==glass::StartClear||n.surface==glass::NotificationClear||n.surface==glass::ExplorerClear,h,glass::feature(n.surface),n.composition,n.fallback);if(!b)return;
+        else if(!n.imported.empty())applied=applyImported(n,h,c);else{auto b=n.surface==glass::ExplorerPlate?explorerTint(c,n.composition,n.fallback):brush(c,(n.surface==glass::TaskbarFill&&thread().taskbarPanel&&!(c.features&glass::Capsule))||n.surface==glass::OsdPlate||n.surface==glass::StartOverlay||n.surface==glass::TaskbarOverlay||n.surface==glass::StartClear||n.surface==glass::NotificationClear||n.surface==glass::ExplorerClear,h,glass::feature(n.surface),n.composition,n.fallback);if(!b)return;
         applied=set(n,h,(n.surface==glass::TaskbarFill||n.surface==glass::TaskbarOverlay)?L"Fill":L"Background",b.p);
         if(applied&&!(iconPanel&&(c.features&glass::Capsule))&&(n.surface==glass::TaskbarRoot||n.surface==glass::TaskbarFill||n.surface==glass::StartPlate||n.surface==glass::NotificationPlate||n.surface==glass::ExplorerPlate||n.surface==glass::KeyboardPlate))edge(n,h,c);
+        if(applied){hostStageSet(slot,4);everApplied=true;}
         if(applied&&n.surface==glass::TaskbarFill)applyCapsule(n,h,c);
         // Round only native material plates; never change layout constraints.
         if(n.surface==glass::StartPlate||n.surface==glass::NotificationPlate||n.surface==glass::TaskbarRoot||n.surface==glass::VolumePlate||n.surface==glass::BrightnessPlate||n.surface==glass::KeyboardPlate){
@@ -415,7 +468,7 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         if(state==Read::Transient){if(t.retries<4){++t.retries;SetTimer(t.window,11,25,nullptr);return;}state=Read::Invalid;}
         t.retries=0;if(state!=Read::Ok)c.features=0;
         if(!c.features){t.nativeProbes.clear();KillTimer(t.window,21);t.nativeLane.cancel();if(t.nativeControl)t.nativeControl->cancel();}
-        t.updating=true;if(!(c.features&glass::Capsule))t.unifiedCapsule=false;if(!(c.features&glass::Dock)||c.economy)t.dock.stop();
+        t.updating=true;if(!(c.features&glass::Capsule))t.unifiedCapsule=false;if(!(c.features&glass::Dock))t.dock.stop();if(!(c.features&glass::Explorer)&&explorerBackdropActive())explorerBackdrop(false);
         for(auto i=t.nodes.begin();i!=t.nodes.end();){Ptr<IInspectable> p;if(i->second.weak) i->second.weak->Resolve(__uuidof(IInspectable),p.put());if(!p){for(auto&w:i->second.watchers)w.second();i=t.nodes.erase(i);continue;}
             InstanceHandle h=0;if(SUCCEEDED(diag->RegisterInstance(p.p,&h))){apply(i->second,h,c);releaseLater(t,h);}
             // Keep only weak descriptors for inactive surfaces. Another switch
@@ -443,13 +496,29 @@ public:
     HRESULT STDMETHODCALLTYPE SetSite(IUnknown*p)override{
         if(!p)return S_OK;site=Ptr<IUnknown>(p);p->AddRef();HRESULT hr=p->QueryInterface(__uuidof(IXamlDiagnostics),reinterpret_cast<void**>(diag.put()));if(FAILED(hr)){trace("IXamlDiagnostics",hr);return hr;}
         // Read the framework first: a failed attach must free its injection slot, or the next attach request never retries it.
-        BSTR init=nullptr;DWORD owner=0;bool named=SUCCEEDED(diag->GetInitializationData(&init))&&init;if(named){std::wstring v=init;modern=v.find(L"modern")!=std::wstring::npos;owner=wcstoul(v.c_str(),nullptr,10);SysFreeString(init);}
-        auto fail=[&](const char*stage,HRESULT e){trace(stage,e);if(named){injecting[modern]=false;reportHost(e,hostKind(modern));}return e;};
+        // Init string: "<pid> classic|modern [<config> <status> <process>]" (hex handles the controller duplicated into an AppContainer host; absent for the name path).
+        BSTR init=nullptr;DWORD owner=0;HANDLE cfgH=nullptr,stH=nullptr,procH=nullptr;bool named=SUCCEEDED(diag->GetInitializationData(&init))&&init;if(named){std::wstring v=init;modern=v.find(L"modern")!=std::wstring::npos;owner=wcstoul(v.c_str(),nullptr,10);SysFreeString(init);
+            std::vector<std::wstring> tok;for(size_t a=0;a<v.size();){auto b=v.find(L' ',a);if(b==std::wstring::npos)b=v.size();if(b>a)tok.push_back(v.substr(a,b-a));a=b+1;}
+            // Controller init string: "<pid> classic|modern <slot> <config> <status> <process>" (hex handles); "<pid> classic|modern" from the hook path (slot then derived from the exe name).
+            if(tok.size()>=3)slot=(int)wcstoul(tok[2].c_str(),nullptr,10);
+            if(tok.size()>=6){cfgH=(HANDLE)(ULONG_PTR)wcstoull(tok[3].c_str(),nullptr,16);stH=(HANDLE)(ULONG_PTR)wcstoull(tok[4].c_str(),nullptr,16);procH=(HANDLE)(ULONG_PTR)wcstoull(tok[5].c_str(),nullptr,16);}}
+        if(slot<0||slot>=glass::SlotCount)slot=glass::hostSlot(hostExe(),modern);
+        host=hostKind(modern);
+        // The status page is mapped from the passed handle first (header and owner checked, like the main path), and stage 1 is written before anything else is validated, so even a failed connect leaves its stage and code for the controller.
+        glass::Status*early=nullptr;if(stH){early=(glass::Status*)MapViewOfFile(stH,FILE_MAP_READ|FILE_MAP_WRITE,0,0,sizeof(glass::Status));if(early&&(early->magic!=glass::Magic||early->version!=glass::Version||early->owner!=owner)){UnmapViewOfFile(early);early=nullptr;}}
+        std::unique_ptr<glass::Status,void(*)(glass::Status*)> earlyGuard(early,[](glass::Status*view){if(view)UnmapViewOfFile(view);});
+        if(named)hostStageSet(slot,1,S_OK,early);
+        auto fail=[&](const char*stage,HRESULT e){trace(stage,e);if(named){hostStageSet(slot,0,e,early);injecting[modern]=false;reportHost(e,hostKind(modern));}return e;};
         hr=diag->QueryInterface(__uuidof(IVisualTreeService3),reinterpret_cast<void**>(service.put()));if(FAILED(hr))return fail("visual tree service 3",hr);
         hr=diag->QueryInterface(ReleaseId,reinterpret_cast<void**>(cache.put()));trace("cache release (optional)",hr);
-        if(named&&!connect(owner))return fail("connect owner",E_FAIL);
-        if(!shared)return fail("no shared config",E_FAIL);host=hostKind(modern);
+        if(named&&!connect(owner,cfgH,stH,procH)){HRESULT ce=connectErr?HRESULT_FROM_WIN32(connectErr):E_FAIL;trace("connect owner",ce);hostStageSet(slot,0,ce,early);injecting[modern]=false;reportHost(E_FAIL,host);return E_FAIL;}
+        if(!shared)return fail("no shared config",E_FAIL);
+        hostStageSet(slot,1);hostStageSet(slot,2);
         AcquireSRWLockShared(&configLock);if(sharedStatus)InterlockedOr(&sharedStatus->connected,1<<host);ReleaseSRWLockShared(&configLock);
+        // A controller restart inside a long-lived host attaches again: the connection above is rebound to the new owner, and the session of this framework that already exists is reused.
+        {Session*existing=nullptr;AcquireSRWLockShared(&sessionsLock);for(auto s:sessions)if(s!=this&&s->modern==modern){existing=s;s->AddRef();break;}ReleaseSRWLockShared(&sessionsLock);
+            // The slot was cleared by the new controller: publish what the reused session already reached.
+            if(existing){if(existing->everMatched)hostStageSet(slot,3);if(existing->everApplied)hostStageSet(slot,4);existing->ensureSubscription(true);existing->Release();return S_OK;}}
         // Keep one reusable session per framework, rather than creating a new
         // diagnostics tree on every On/Off cycle. Off unsubscribes callbacks.
         AddRef();AcquireSRWLockExclusive(&sessionsLock);sessions.push_back(this);ReleaseSRWLockExclusive(&sessionsLock);ensureSubscription();return S_OK;
@@ -463,7 +532,7 @@ public:
                 glass::Config diagnosticConfig;bool keyboardDiagnostics=(host==0||host==3)&&snapshot(diagnosticConfig)==Read::Ok&&(diagnosticConfig.features&glass::Keyboard);if(surface!=glass::NoSurface||((host==2||keyboardDiagnostics)&&element.Name&&*element.Name))note(L"match surface="+std::to_wstring((int)surface)+L" host="+std::to_wstring(host)+L" exe="+hostExe()+L" type="+(element.Type?element.Type:L"")+L" name="+(element.Name?element.Name:L""));
                 auto target=from(element.Handle);auto imported=target&&imported_glass::candidate(imported_glass::theme(host),{element.Type?element.Type:L"",element.Name?element.Name:L""})?importedStyles(target.p):std::vector<const wchar_t*>{};
                 if(!imported.empty()&&surface==glass::NoSurface)surface=host==1?glass::StartPlate:host==2?glass::NotificationAuxiliary:host==3?glass::ExplorerPlate:glass::TaskbarAuxiliary;
-                if(surface!=glass::NoSurface){auto p=std::move(target);Ptr<IWeakReferenceSource> source;if(p&&SUCCEEDED(p->QueryInterface(__uuidof(IWeakReferenceSource),reinterpret_cast<void**>(source.put())))){
+                if(surface!=glass::NoSurface){hostStageSet(slot,3);everMatched=true;auto p=std::move(target);Ptr<IWeakReferenceSource> source;if(p&&SUCCEEDED(p->QueryInterface(__uuidof(IWeakReferenceSource),reinterpret_cast<void**>(source.put())))){
                     Node n;if(host==2&&element.Name){if(wcscmp(element.Name,L"NotificationCenterGrid")==0)n.notificationRoot=0;else if(wcscmp(element.Name,L"CalendarCenterGrid")==0)n.notificationRoot=1;if(n.notificationRoot>=0)t.notificationRoots[n.notificationRoot]=element.Handle;}n.key=element.Handle;n.imported=std::move(imported);n.surface=surface;source->GetWeakReference(n.weak.put());auto old=t.nodes.find(element.Handle);if(old!=t.nodes.end()){t.updating=true;restore(old->second,element.Handle);t.updating=false;if(!old->second.saved.empty()){releaseLater(t,element.Handle);return S_OK;}}t.nodes[element.Handle]=std::move(n);
                     glass::Config c;if(snapshot(c)==Read::Ok){t.updating=true;apply(t.nodes[element.Handle],element.Handle,c);t.updating=false;}
                 }}glass::Config keyboardConfig;if(snapshot(keyboardConfig)==Read::Ok&&(keyboardConfig.features&glass::Keyboard))for(auto const&entry:t.nodes)if(entry.second.surface==glass::KeyboardPlate&&!entry.second.appliedSignature){scheduleUpdate(t);break;}releaseLater(t,element.Handle);releaseLater(t,relation.Parent);

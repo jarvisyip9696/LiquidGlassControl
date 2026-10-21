@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $source = (Resolve-Path -LiteralPath $SourceDirectory).Path
 $out = [IO.Path]::GetFullPath($OutputDirectory)
-$expected = '2b07c0d9298d3e7637a44efe670eb20d46b30124'
+$expected = '4e24ca4e55e6b8c6b119a1b2325002a139deff63'
 $revision = & git -C $source rev-parse HEAD
 if ($LASTEXITCODE -ne 0 -or $revision -ne $expected) { throw "Expected LGEngine commit $expected. Refusing to patch another revision." }
 $patch = Join-Path $PSScriptRoot 'fixes.patch'
