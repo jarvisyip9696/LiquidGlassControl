@@ -24,7 +24,11 @@ void pollMigration(){
     DWORD code=1;GetExitCodeProcess(migrationJob,&code);CloseHandle(migrationJob);migrationJob=nullptr;KillTimer(mainWindow,2);updateNativeInfo();
     if(code||migrationNeeded()){message(std::wstring(tr(L"旧主题恢复未完成，错误码：",L"Previous theme restore incomplete, code: "))+std::to_wstring(code));exitAfterRestore=false;return;}
     message(tr(L"旧版主题已还原，任务栏使用系统原有布局。",L"Previous theme restored. Taskbar uses the original system layout."));
-    if(exitAfterRestore)DestroyWindow(mainWindow);
+    if(exitAfterRestore){DestroyWindow(mainWindow);return;}
+    // Startup cleared the switches while the old theme was present: the saved ones come back now, and their glass starts without a restart.
+    DWORD saved=glass::unifiedTaskbar((DWORD)GetPrivateProfileIntW(L"Glass",L"Features",0,iniPath.c_str()));
+    keyboardOn=(saved&glass::Keyboard)!=0;dockOn=(saved&glass::Dock)!=0;explorerOn=(saved&glass::Explorer)!=0;for(int i=0;i<3;++i)shellOn[i]=(saved&(glass::Taskbar<<i))!=0;
+    updateNativeInfo();if(glassExtraFeatures||keyboardOn||dockOn||explorerOn||shellOn[0]||shellOn[1]||shellOn[2])applyGlass(true);
 }
 // Calendar has its own switch; Toasts has none yet. Both bits are carried from the ini so saving the other switches keeps them.
 // A family stays linked to the shared opacity/blur/radius/tint until its own look is saved (or its [Glass.<Family>] section exists), so the existing sliders keep driving every surface.
@@ -41,7 +45,8 @@ void queueGlass(bool discover){
     if(!glassConfig.features||!SetTimer(mainWindow,14,180,nullptr)){bool pending=glassPendingDiscover;applyGlass(pending);}
 }
 void saveGlassSettings(){
-    WritePrivateProfileStringW(L"Glass",L"Features",std::to_wstring(desiredGlassFeatures()).c_str(),iniPath.c_str());
+    // While an old theme is being restored the switches are cleared in memory only: pollMigration reads the saved ones back.
+    if(!migrationJob&&!migrationNeeded())WritePrivateProfileStringW(L"Glass",L"Features",std::to_wstring(desiredGlassFeatures()).c_str(),iniPath.c_str());
     WritePrivateProfileStringW(L"Glass",L"Opacity",std::to_wstring(glassConfig.opacity).c_str(),iniPath.c_str());
     WritePrivateProfileStringW(L"Glass",L"Blur",std::to_wstring(glassConfig.blur).c_str(),iniPath.c_str());
     WritePrivateProfileStringW(L"Glass",L"Radius",std::to_wstring(glassConfig.radius).c_str(),iniPath.c_str());
@@ -100,7 +105,7 @@ void applyGlass(bool discover){
     fallbackMaterials&=glassConfig.features;confirmedMaterials&=glassConfig.features;failedMaterials=0;KillTimer(mainWindow,6);
     // A rediscovery re-enumerates shell windows, so earlier success reports may describe surfaces that no longer exist (restarted Explorer, closed flyouts). Clear them until the engine reports again.
     if(discover)confirmedMaterials=fallbackMaterials=0;
-    SYSTEM_POWER_STATUS power{};GetSystemPowerStatus(&power);glassConfig.economy=batteryFriendly&&(power.ACLineStatus==0||power.SystemStatusFlag==1);
+    SYSTEM_POWER_STATUS power{};GetSystemPowerStatus(&power);glassConfig.economy=batteryFriendly&&power.SystemStatusFlag==1; // battery saver only: on plain battery the flat fallback looked exactly like stock Windows
     auto effective=glassConfig;HIGHCONTRASTW high{};high.cbSize=sizeof(high);if(SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(high),&high,0)&&(high.dwFlags&HCF_HIGHCONTRASTON))effective.features=0;
     {DWORD light=1,size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"SystemUsesLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);DWORD autoTint=light?1:2;if(!effective.tint)effective.tint=autoTint;for(auto&look:effective.looks)if(!look.tint)look.tint=autoTint;}
     // The dock keeps running on battery; only the system's "animation effects off" holds it back, and that is counted so it is visible rather than silent.

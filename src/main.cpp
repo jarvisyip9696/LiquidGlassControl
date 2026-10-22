@@ -779,7 +779,7 @@ LRESULT CALLBACK proc(HWND h,UINT msg,WPARAM w,LPARAM l){
         }return 0;
     case WM_HSCROLL:{int titleId=l?GetDlgCtrlID((HWND)l):0;if(titleId==TitleInset||(titleId>=TitleLook1&&titleId<=TitleLook8)){updateTitleLabels();syncTitleGlass();if(LOWORD(w)!=TB_THUMBTRACK)saveTitleSlider(titleId);return 0;}}
     {int look=l?GetDlgCtrlID((HWND)l)-OptLook1:-1;if(look>=0&&look<8){updateLookLabels();syncOpticalControls();if(LOWORD(w)!=TB_THUMBTRACK)saveLookSlider(OptLook1+look);return 0;}}
-    {int id=l?GetDlgCtrlID((HWND)l):0;bool dock=id==DockScale||id==DockSpread||id==DockSpeed||id==DockBounce;if(dock||id==LookOpacity||id==LookBlur||id==LookRadius){updatePanelLabels();if(LOWORD(w)!=TB_THUMBTRACK)savePanel(dock);else previewPanel(dock);}}return 0;
+    {int id=l?GetDlgCtrlID((HWND)l):0;bool dock=id==DockScale||id==DockSpread||id==DockSpeed||id==DockBounce;if(dock||id==LookOpacity||id==LookBlur||id==LookRadius){updatePanelLabels();if(LOWORD(w)==TB_THUMBTRACK)previewPanel(dock);else if(LOWORD(w)!=TB_THUMBPOSITION)savePanel(dock);}}return 0; // a release sends THUMBPOSITION then ENDTRACK: save once
     case WM_POWERBROADCAST:if(w==PBT_POWERSETTINGCHANGE||w==PBT_APMPOWERSTATUSCHANGE){refreshUiPreferences();applyGlass(false);}return TRUE;
     case WM_SETTINGCHANGE:case WM_THEMECHANGED:case WM_SYSCOLORCHANGE:syncOpticalPreview();refreshUiPreferences();applyColorTheme(colorTheme,false);if(engineReady)applyGlass(false);break;
     case glass::HostExitedMessage:if(engine.hostExited((DWORD)w)){confirmedMaterials&=~(glass::Start|glass::Notifications);fallbackMaterials&=~(glass::Start|glass::Notifications);updateNativeInfo();SetTimer(h,18,250,nullptr);SetTimer(h,6,3500,nullptr);}return 0;

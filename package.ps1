@@ -62,13 +62,13 @@ if ($IncludeLGEngine) {
     if ((Get-FileHash -LiteralPath (Join-Path $runtimeStage $hostName)).Hash.ToLowerInvariant() -ne $hostName.Substring(13,64)) { throw 'Packaged LGEngine host hash mismatch.' }
     $files += $runtimeStage
     $files += Join-Path $PSScriptRoot 'release/LGEngine Distribution.txt'
-    $upstream = Join-Path $PSScriptRoot 'build/LGEngine-2.7.15'
+    $upstream = Join-Path $PSScriptRoot 'build/LGEngine-2.7.16'
     & (Join-Path $PSScriptRoot 'integrations/LGEngine/prepare-upstream.ps1') -SourceDirectory $upstream
     # LGEngine is MIT. The pinned revision has its own LICENSE file; release\ carries the same text as a fallback.
     $pinnedLicense = [bool](& git -C $upstream ls-tree --name-only HEAD LICENSE)
     $engineLicense = if ($pinnedLicense) { Join-Path $upstream 'LICENSE' } else { Join-Path $PSScriptRoot 'release/LGEngine LICENSE.txt' }
     Copy-Item -LiteralPath $engineLicense -Destination (Join-Path $runtimeStage 'LICENSE-LGEngine.txt')
-    $engineSourceZip = Join-Path $dist 'LGEngine-2.7.15.0-source.zip'
+    $engineSourceZip = Join-Path $dist 'LGEngine-2.7.16.0-source.zip'
     & git -C $upstream archive --format=zip --output=$engineSourceZip HEAD
     if ($LASTEXITCODE -ne 0) { throw 'LGEngine source archive failed.' }
     if (-not $pinnedLicense) {

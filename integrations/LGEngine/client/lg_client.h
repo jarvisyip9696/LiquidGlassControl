@@ -40,12 +40,45 @@ struct Spec {
 struct Button {RECT hit{};float cx=0,cy=0,hx=0,hy=0,rad=0;int style=0,mark=0;RECT maskBox{};std::vector<uint8_t> mask;};
 enum Event : unsigned {Connected=1,Lost=2,Restarted=3,Shown=4,Hidden=5,Appearance=6,Failed=7,LightMoved=8};
 struct Options {std::wstring hostPath,suffix;HWND notify{};UINT message=WM_APP+60;};
+// LGEngineHost-<sha256 of the file>.exe, as stage-host.ps1 names it.
+inline bool stagedHostName(const std::wstring&file){
+    bool safe=file.size()==81&&file.substr(0,13)==L"LGEngineHost-"&&file.substr(77)==L".exe";
+    for(size_t i=13;safe&&i<77;++i)if(!((file[i]>=L'0'&&file[i]<=L'9')||(file[i]>=L'a'&&file[i]<=L'f')))safe=false;
+    return safe;
+}
 inline std::wstring bundledHostPath(const std::wstring&directory){
     wchar_t name[128]{};GetPrivateProfileStringW(L"Host",L"Executable",L"",name,128,(directory+L"host-current.ini").c_str());
     std::wstring file=name;
-    bool safe=file.size()==81&&file.substr(0,13)==L"LGEngineHost-"&&file.substr(77)==L".exe";
-    for(size_t i=13;safe&&i<77;++i)if(!((file[i]>=L'0'&&file[i]<=L'9')||(file[i]>=L'a'&&file[i]<=L'f')))safe=false;
-    return directory+(safe?file:L"LGEngineHost.exe");
+    return directory+(stagedHostName(file)?file:L"LGEngineHost.exe");
+}
+// %LOCALAPPDATA%\LGEngine\host\, or empty when it cannot be made.
+inline std::wstring hostHome(){
+    wchar_t base[MAX_PATH]{};DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",base,MAX_PATH);if(!n||n>=MAX_PATH)return {};
+    std::wstring dir=std::wstring(base)+L"\\LGEngine\\";CreateDirectoryW(dir.c_str(),nullptr);dir+=L"host\\";
+    if(!CreateDirectoryW(dir.c_str(),nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS)return {};return dir;
+}
+// The file at path hashes to the SHA-256 its staged name carries.
+inline bool hostFileMatches(const std::wstring&path,const std::wstring&file){
+    Handle f(CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr));LARGE_INTEGER size{};
+    if(!f.value||!GetFileSizeEx(f.value,&size)||size.QuadPart<=0||size.QuadPart>(64<<20))return false;
+    std::vector<unsigned char> bytes(size_t(size.QuadPart));DWORD got=0;if(!ReadFile(f.value,bytes.data(),DWORD(bytes.size()),&got,nullptr)||got!=bytes.size())return false;
+    unsigned char digest[32]{};if(BCryptHash(BCRYPT_SHA256_ALG_HANDLE,nullptr,0,bytes.data(),ULONG(bytes.size()),digest,32)<0)return false;
+    wchar_t hex[65]{};for(int i=0;i<32;++i)swprintf(hex+i*2,3,L"%02x",digest[i]);return file.compare(13,64,hex)==0;
+}
+// The shared host outlives the app that started it and serves every later version, so run from an app folder it kept that folder
+// locked while any version ran. It runs from one verified copy per build in hostHome() instead (CopyFileW keeps the download's
+// Mark of the Web, so Smart App Control judges the copy exactly as the original). Any failure runs the bundled file as before.
+inline std::wstring hostCopy(const std::wstring&hostPath,const std::wstring&home){
+    auto slash=hostPath.find_last_of(L"\\");if(home.empty()||slash==std::wstring::npos)return hostPath;
+    auto file=hostPath.substr(slash+1);if(!stagedHostName(file))return hostPath;
+    auto target=home+file;if(hostFileMatches(target,file))return target;
+    auto temp=target+L"."+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetCurrentThreadId())+L".tmp";
+    bool ok=CopyFileW(hostPath.c_str(),temp.c_str(),FALSE)&&hostFileMatches(temp,file)&&MoveFileExW(temp.c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING);
+    if(!ok)DeleteFileW(temp.c_str());
+    // Other builds' copies go once their hosts have exited (a running one refuses the delete and is tried again next time).
+    WIN32_FIND_DATAW found{};HANDLE find=FindFirstFileW((home+L"LGEngineHost-*").c_str(),&found);
+    if(find!=INVALID_HANDLE_VALUE){do{if(_wcsnicmp(found.cFileName,file.c_str(),file.size())!=0)DeleteFileW((home+found.cFileName).c_str());}while(FindNextFileW(find,&found));FindClose(find);}
+    return ok||hostFileMatches(target,file)?target:hostPath;
 }
 namespace wire {
 const unsigned kMinor=1; // the highest protocol minor this client speaks
@@ -192,12 +225,28 @@ class Client {
         if(!EqualSid(reinterpret_cast<TOKEN_USER*>(a.data())->User.Sid,reinterpret_cast<TOKEN_USER*>(b.data())->User.Sid))return false;
         hostPid=pid;return true;
     }
+    // A host that an older client started from its app folder serves every later version too, so that folder stays locked for as long
+    // as any version runs. Retire it once (its clients reconnect by themselves); the retry starts this build's copy (hostCopy).
+    // Only when that copy is in place (so the retry never runs from a folder again), and folders are compared as final paths
+    // (a junction or short name in LOCALAPPDATA must not make the host in hostHome() look stray).
+    bool retired=false,retiredNow=false;
+    static std::wstring finalFolder(const std::wstring&path){Handle f(CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,nullptr));
+        wchar_t out[32768]{};DWORD n=f.value?GetFinalPathNameByHandleW(f.value,out,32768,FILE_NAME_NORMALIZED|VOLUME_NAME_DOS):0;return n&&n<32768?std::wstring(out,n):std::wstring();}
+    bool retireStrayHost(){if(retired)return false;retired=true;auto home=hostHome();auto mine=options.hostPath.find_last_of(L"\\");if(home.empty()||mine==std::wstring::npos)return false;
+        auto file=options.hostPath.substr(mine+1);if(!stagedHostName(file)||_wcsicmp(hostCopy(options.hostPath,home).c_str(),(home+file).c_str())!=0)return false;
+        Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|PROCESS_TERMINATE|SYNCHRONIZE,FALSE,hostPid));wchar_t image[32768]{};DWORD n=32768;
+        if(!process.value||!QueryFullProcessImageNameW(process.value,0,image,&n))return false;std::wstring path(image,n);auto slash=path.find_last_of(L"\\");
+        if(slash==std::wstring::npos||!stagedHostName(path.substr(slash+1)))return false;
+        auto theirs=finalFolder(path.substr(0,slash)),ours=finalFolder(home.substr(0,home.size()-1));if(theirs.empty()||ours.empty()||_wcsicmp(theirs.c_str(),ours.c_str())==0)return false;
+        pipe.reset();hostPid=0;if(!TerminateProcess(process.value,1))return false;WaitForSingleObject(process.value,2000);retiredNow=true;return true;}
     bool startHost(Handle&process){
         // The shared host must survive this app's job. Never fall back to an inherited job.
         if(options.hostPath.size()<4||!((options.hostPath[1]==L':'&&options.hostPath[2]==L'\\')||options.hostPath.substr(0,2)==L"\\\\"))return false;
-        std::wstring cmd=L"\""+options.hostPath+L"\"";if(!options.suffix.empty())cmd+=L" --suffix "+options.suffix;
+        // Started from its own copy, with that folder (not this app's) as its working folder: neither locks an app folder.
+        auto home=hostHome();auto path=hostCopy(options.hostPath,home);
+        std::wstring cmd=L"\""+path+L"\"";if(!options.suffix.empty())cmd+=L" --suffix "+options.suffix;
         STARTUPINFOW startup{};startup.cb=sizeof(startup);startup.dwFlags=STARTF_USESHOWWINDOW;startup.wShowWindow=SW_HIDE;PROCESS_INFORMATION child{};
-        if(!CreateProcessW(options.hostPath.c_str(),cmd.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW|CREATE_BREAKAWAY_FROM_JOB,nullptr,nullptr,&startup,&child)){error=GetLastError();return false;}
+        if(!CreateProcessW(path.c_str(),cmd.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW|CREATE_BREAKAWAY_FROM_JOB,nullptr,home.empty()?nullptr:home.c_str(),&startup,&child)){error=GetLastError();return false;}
         CloseHandle(child.hThread);process.reset(child.hProcess);return true;
     }
     // Overlapped write with the reusable event.
@@ -225,7 +274,7 @@ class Client {
                     pipe.reset(CreateFileW(pipeName.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_FLAG_OVERLAPPED,nullptr));
                     if(pipe.value)break;return false;}}
         }
-        if(!pipe.value||!peer())return false;DWORD mode=PIPE_READMODE_MESSAGE;if(!SetNamedPipeHandleState(pipe.value,&mode,nullptr,nullptr))return false;
+        if(!pipe.value||!peer()||(!started&&retireStrayHost()))return false;DWORD mode=PIPE_READMODE_MESSAGE;if(!SetNamedPipeHandleState(pipe.value,&mode,nullptr,nullptr))return false;
         if(!send(wire::Hello,wire::hello(wire::kMinor)))return false;
         std::vector<unsigned char>b(65552);ResetEvent(rdEv.value);OVERLAPPED op{};op.hEvent=rdEv.value;DWORD count{};
         BOOL ok=ReadFile(pipe.value,b.data(),DWORD(b.size()),&count,&op);
@@ -344,6 +393,7 @@ class Client {
             catch(const std::exception&e){error=ERROR_INVALID_DATA;note(e.what());}
             catch(...){error=ERROR_INVALID_DATA;note("unexpected client exception");}
             bool was=online.exchange(false);clearSection();wake.reset();pipe.reset();hostPid=0;minorHost=0;if(was)post(Lost);
+            if(retiredNow){retiredNow=false;continue;} // retiring a stray host is not a failed attempt: start this build's copy at once
             // A host may close its pipe while exiting after idle. Retry that initial handoff before declaring the service
             // unavailable. Deliberately NOT retried forever: if Smart App Control blocks the host exe, every new attempt would
             // pop a Smart App Control toast, so after 3 attempts that never connected we post Failed and stop. A launch the

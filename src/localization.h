@@ -72,7 +72,7 @@ inline const Text catalog[]={
 {L"Selected app (by executable name)",L"Wybrana aplikacja (nazwa procesu)",L"Ứng dụng đã chọn (theo tên tiến trình)"},
 {L"File Explorer windows",L"Okna Eksploratora plików",L"Cửa sổ Trình khám phá tệp"},{L"All apps (content not guaranteed)",L"Wszystkie aplikacje (wg zgodności)",L"Tất cả ứng dụng (tùy mức tương thích)"},
 {L" [whole-window backend]  —  ",L" [materiał okna]  —  ",L" [chất liệu cửa sổ]  —  "},{L" [frame only/unverified]  —  ",L" [tylko ramka/niezweryfikowane]  —  ",L" [chỉ khung/chưa xác minh]  —  "},
-{L"Reduce material cost on battery or in battery saver",L"Ogranicz efekty na baterii lub w trybie oszczędzania",L"Giảm hiệu ứng khi dùng pin hoặc tiết kiệm pin"},
+{L"Reduce material cost in battery saver",L"Ogranicz efekty w trybie oszczędzania baterii",L"Giảm hiệu ứng khi tiết kiệm pin"},
 {L"Fade and gently slide the app in at startup",L"Łagodne pojawianie się aplikacji przy uruchamianiu",L"Hiện dần và trượt nhẹ khi khởi động"},
 {L"Restore and exit",L"Przywróć i zamknij",L"Khôi phục và thoát"},{L"Open settings",L"Otwórz ustawienia",L"Mở cài đặt"},
 {L"Liquid Glass · Native indicators",L"Liquid Glass · Wskaźniki systemowe",L"Liquid Glass · Chỉ báo hệ thống"},

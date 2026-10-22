@@ -63,3 +63,13 @@ each System glass effect is one row with a switch and its own settings behind
 an arrow. The volume and brightness glass moves into the Volume and Brightness
 switches, the notification center and calendar glass work on their own, and
 Title-bar glass and App glass hold up better.
+
+0.13.1 fixes 0.13.0. Background blur now shows what is behind the surface
+instead of a flat tint, the taskbar no longer rebuilds itself over and over,
+File Explorer glass lasts twice as long and the log says when it stops, and
+glass resumes as soon as an old theme has been restored. Old app folders can be
+deleted again: the engine host now runs from its own copy under
+%LOCALAPPDATA%\LGEngine\host instead of from the app folder. The volume and
+brightness glass hands over cleanly when you switch between them and follows
+the pointer without lag. It bundles the LGEngine 2.7.16.0 host, whose lens
+reads the screen at full resolution.

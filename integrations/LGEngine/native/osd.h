@@ -1,7 +1,7 @@
 #pragma once
 // OSD lens for the LGEngine preview: knob springs, slider drawing, chip buttons, and the volume/brightness sources.
 // The indicator sample, bar finding, slider drawing and ink marking are a line-for-line port of the owner's Glass.cs (DrawIndicatorSample, MarkInk,
-// FindBar, AdoptBar, DrawSlider, StepSlider; the Knob springs below). Alpha convention (LGEngine): even alpha = grey ink that
+// FindBar, AdoptBar, DrawSlider, StepSlider; the Knob springs below), except the lens knob style and its wob, which are LGEngine's own. Alpha convention (LGEngine): even alpha = grey ink that
 // light glass may turn dark; odd alpha = final colour the engine leaves alone. The slider is drawn for the glass it is on
 // (light 0..1) and marked odd; glyph, number and chip labels are ink (even).
 #include <objbase.h>
@@ -25,45 +25,60 @@ namespace Gdiplus {using std::min;using std::max;} // gdiplus.h wants min/max, w
 #endif
 
 namespace osd {
-constexpr float SliderSpring=52.f,SliderDamping=1.f,LiftSpring=26.f,LiftDamping=.9f,LiftHold=.5f;
+constexpr float SliderSpring=52.f,SliderDamping=1.f,LiftSpring=26.f,LiftDamping=.9f,LiftHold=.5f,HoverSpring=20.f,HoverDamping=.75f,PressSpring=34.f,PressDamping=.45f,WobSpring=22.f,WobDamping=.26f;
 constexpr GUID ConsoleDisplayGuid={0x6fe69556,0x704a,0x47a0,{0x8f,0x24,0xc2,0x8d,0x93,0x6f,0xda,0x47}}; // GUID_CONSOLE_DISPLAY_STATE: DWORD 0 off, 1 on, 2 dimmed
 constexpr GUID BrightnessGuid={0x8ffee2c6,0x2d01,0x46be,{0xad,0xb9,0x39,0x8a,0xdd,0xc5,0xb4,0xff}}; // GUID_VIDEO_CURRENT_MONITOR_BRIGHTNESS
 inline float clamp01(float v){return v<0?0:(v>1?1:v);}
 // Glass.cs styles: 0 lens, 1 pill, 2 round. The combo lists round, pill, lens.
 inline int styleOf(int combo){return combo==2?0:(combo==1?1:2);}
 // The knob rides two springs: its place glides to the level (never past it), its lift follows "moving, or moved in the last 0.5 s".
+// Two more follow the pointer: hover (over the indicator) swells it a little, press (held down on it) squashes it, with a wobble back on release.
+// wob (the lens's stretch) follows the glide's flow on a loose spring: it lags into a drag and swings a little past 0 when the knob stops (a liquid slosh), then settles.
 struct Knob {
-    float at=-1,speed=0,goal=0,lift=0,liftSpeed=0,flow=0,hold=0;
-    void jump(float v){at=goal=clamp01(v);speed=lift=liftSpeed=flow=hold=0;}
+    float at=-1,speed=0,goal=0,lift=0,liftSpeed=0,flow=0,hold=0,hover=0,hoverSpeed=0,hoverGoal=0,press=0,pressSpeed=0,pressGoal=0,wob=0,wobSpeed=0;
+    void jump(float v){at=goal=clamp01(v);speed=lift=liftSpeed=flow=hold=wob=wobSpeed=0;}
+    void snap(float v){if(at<0)return;at=goal=clamp01(v);speed=flow=wob=wobSpeed=0;} // moves the knob at once but keeps its lift (a switch of kind mid-show)
     void set(float v){v=clamp01(v);if(at<0){jump(v);return;}if(std::fabs(v-goal)>.0005f){hold=LiftHold;if((v-at)*speed<0)speed=0;goal=v;}}
+    void aim(bool over,bool down){hoverGoal=over||down?1.f:0.f;pressGoal=down?1.f:0.f;}
+    void rest(){hover=hoverSpeed=hoverGoal=press=pressSpeed=pressGoal=0;}
     bool moving()const{return std::fabs(goal-at)>.002f||std::fabs(speed)>.02f;}
-    bool active()const{return moving()||hold>0||lift!=0||liftSpeed!=0;}
-    bool step(float dt){ // true if the knob's place or lift changed (a redraw is due)
-        if(at<0)return false;dt=std::min(.034f,std::max(0.f,dt));float wasAt=at,wasLift=lift;
+    bool touching()const{return std::fabs(hoverGoal-hover)>.002f||std::fabs(hoverSpeed)>.02f||std::fabs(pressGoal-press)>.002f||std::fabs(pressSpeed)>.02f;}
+    bool active()const{return moving()||hold>0||lift!=0||liftSpeed!=0||wob!=0||wobSpeed!=0||touching();}
+    bool step(float dt){ // true if the knob's place, lift, hover, press or stretch changed (a redraw is due)
+        if(at<0)return false;dt=std::min(.034f,std::max(0.f,dt));float wasAt=at,wasLift=lift,wasHover=hover,wasPress=press,wasWob=wob;
         hold=std::max(0.f,hold-dt);bool going=moving();float liftGoal=going||hold>0?1.f:0.f; // (the owner's hold counts this step's time too)
         for(float left=dt;left>0;left-=.005f){float s=std::min(.005f,left),before=goal-at;
             speed+=(SliderSpring*SliderSpring*(goal-at)-2*SliderDamping*SliderSpring*speed)*s;at+=speed*s;
             if(before!=0&&(goal-at)*before<=0){at=goal;speed=0;}
             liftSpeed+=(LiftSpring*LiftSpring*(liftGoal-lift)-2*LiftDamping*LiftSpring*liftSpeed)*s;lift+=liftSpeed*s;
-            flow+=(speed-flow)*std::min(1.f,s*22.f);}
+            hoverSpeed+=(HoverSpring*HoverSpring*(hoverGoal-hover)-2*HoverDamping*HoverSpring*hoverSpeed)*s;hover+=hoverSpeed*s;
+            pressSpeed+=(PressSpring*PressSpring*(pressGoal-press)-2*PressDamping*PressSpring*pressSpeed)*s;press+=pressSpeed*s;
+            flow+=(speed-flow)*std::min(1.f,s*22.f);
+            wobSpeed+=(WobSpring*WobSpring*(flow-wob)-2*WobDamping*WobSpring*wobSpeed)*s;wob+=wobSpeed*s;}
         if(!going&&std::fabs(goal-at)<=.002f&&std::fabs(speed)<=.02f){at=goal;speed=0;}
         if(liftGoal==0&&std::fabs(lift)<.004f&&std::fabs(liftSpeed)<.05f){lift=liftSpeed=0;flow=0;}
-        return at!=wasAt||lift!=wasLift;
+        if(std::fabs(wob)<.003f&&std::fabs(wobSpeed)<.05f&&std::fabs(flow)<.003f){wob=wobSpeed=0;}
+        if(std::fabs(hoverGoal-hover)<=.002f&&std::fabs(hoverSpeed)<=.02f){hover=hoverGoal;hoverSpeed=0;}
+        if(std::fabs(pressGoal-press)<=.002f&&std::fabs(pressSpeed)<=.02f){press=pressGoal;pressSpeed=0;}
+        return at!=wasAt||lift!=wasLift||hover!=wasHover||press!=wasPress||wob!=wasWob;
     }
 };
 // The sample sweep: 0.7 s per waypoint, then back to `restore`. Never touches the system.
 inline float sampleGoal(float t,float restore,bool&done){static const float way[4]={.15f,.9f,.3f,.7f};int i=int(t/.7f);done=i>=5;return i<4?way[i]:restore;}
 struct State {
-    Knob knob;int source=0;bool muted=false,sampling=false,haveSource=false,volInit=false,briInit=false;float vol=-1,bri=-1,sampleT=0,restore=.5f;
+    Knob knob;int source=0;bool muted=false,sampling=false,haveSource=false,volInit=false,briInit=false,switched=false;float vol=-1,bri=-1,sampleT=0,restore=.5f;
     float current()const{float v=source==0?vol:bri;return v<0?.5f:v;}
+    // A change of kind (volume then brightness, or back) starts the knob at the new kind's last level, so it glides only that kind's step
+    // instead of across from the other kind's level; switched tells the caller to redraw the number and symbol at once.
+    void take(int to,float was){switched=haveSource&&source!=to;if(switched)knob.snap(was);sampling=false;source=to;haveSource=true;}
     // Return the way of a real change (+1 up, -1 down, 0 none or first reading, which only initialises).
     int onVolume(float level,bool mute){level=clamp01(level);
         if(!volInit){volInit=true;vol=level;muted=mute;if(!haveSource){haveSource=true;source=0;knob.jump(level);}return 0;}
         int way=0;if(std::fabs(level-vol)>=.0005f)way=level>vol?1:-1;else if(mute!=muted)way=mute?-1:1;
-        vol=level;muted=mute;if(!way)return 0;sampling=false;source=0;haveSource=true;knob.set(level);return way;}
+        float was=vol;vol=level;muted=mute;if(!way)return 0;take(0,was);knob.set(level);return way;}
     int onBrightness(int percent){float level=clamp01(float(percent)/100.f);
         if(!briInit){briInit=true;bri=level;if(!haveSource){haveSource=true;source=1;knob.jump(level);}return 0;}
-        if(std::fabs(level-bri)<.0005f)return 0;int way=level>bri?1:-1;bri=level;sampling=false;source=1;haveSource=true;knob.set(level);return way;}
+        if(std::fabs(level-bri)<.0005f)return 0;int way=level>bri?1:-1;float was=bri;bri=level;take(1,was);knob.set(level);return way;}
     void resetVolume(float level,bool mute){volInit=true;vol=clamp01(level);muted=mute;if(source==0&&haveSource&&!sampling)knob.jump(vol);} // default device changed: silent
     void resetBrightness(int percent){briInit=true;bri=clamp01(float(percent)/100.f);if(!haveSource){haveSource=true;source=1;knob.jump(bri);}else if(source==1&&!sampling)knob.jump(bri);} // dimming or adaptive change: silent
     void startSample(){restore=current();if(knob.at<0)knob.jump(restore);sampling=true;sampleT=0;}
@@ -88,30 +103,47 @@ inline float pill(float px,float py,float cx,float cy,float hx,float hy){float r
 inline float cover(float d){return d<=-.5f?1.f:(d>=.5f?0.f:.5f-d);}
 inline float smooth(float t){t=clamp01(t);return t*t*(3-2*t);}
 // Glass.cs DrawSlider: puts the base strip back, then draws the track, fill and knob over it in `px` (premultiplied ARGB, W wide). style: 0 lens, 1 pill, 2 round; t: glass light 0..1.
+// Pill and round are the owner's. The lens is LGEngine's own: clear convex glass over the track, which is seen through it refracted (magnified in the middle,
+// squeezed into a band at the rim), with a bright rim on top, a caustic glow inside the bottom and a darker edge; it is drawn out along its way by Knob::wob.
 inline void drawSlider(uint32_t*px,int W,const Slider&sl,const Knob&kn,int style,float k,float t){
     const RECT&S=sl.strip;const Bar&bar=sl.bar;int sw=S.right-S.left;if(bar.empty()||sw<=0||S.bottom<=S.top||sl.base.size()<size_t(sw)*size_t(S.bottom-S.top))return;
     for(int y=0;y<S.bottom-S.top;++y)memcpy(&px[size_t(S.top+y)*size_t(W)+size_t(S.left)],&sl.base[size_t(y)*size_t(sw)],size_t(sw)*4);
     float barL=float(bar.r.left),barR=float(bar.r.right),cy=float(bar.r.top)+float(bar.r.bottom-bar.r.top)/2.f,trackR=std::max(float(bar.r.bottom-bar.r.top),4*k)/2;bool lens=style==0;float knobHy,knobHx,popUp,drawMost;
-    if(lens){knobHy=trackR*2.6f;knobHx=knobHy*1.6f;popUp=.24f;drawMost=.2f;}else if(style==1){knobHy=trackR*2.3f;knobHx=knobHy*1.5f;popUp=.14f;drawMost=.1f;}else{knobHy=knobHx=trackR*2.1f;popUp=.3f;drawMost=0;}
+    if(lens){knobHy=trackR*3.6f;knobHx=knobHy*1.22f;popUp=.14f;drawMost=.3f;}else if(style==1){knobHy=trackR*2.3f;knobHx=knobHy*1.5f;popUp=.14f;drawMost=.1f;}else{knobHy=knobHx=trackR*2.1f;popUp=.3f;drawMost=0;}
     float x0=barL+trackR,x1=barR-trackR,travel0=barL+knobHx,travel1=std::max(travel0,barR-knobHx);
     float kx=travel0+(travel1-travel0)*std::max(-.05f,std::min(1.05f,kn.at));
-    float lift=clamp01(kn.lift),clear=lift,grow=1+popUp*lift,drawOut=1+std::min(drawMost,std::fabs(kn.flow)*.3f);
-    float rest=knobHx*grow,extra=rest*(drawOut-1),hx=rest+extra,hy=knobHy*grow/std::sqrt(drawOut),kc=kx-(kn.flow>=0?extra:-extra);
-    float magnify=1.25f+.45f*clear,shadowMost=(.24f-.06f*clear)*(1+.55f*t),shadowDrop=(1.5f+clear)*k,shadowWide=(3+1.5f*clear)*k;
-    float reachX=hx+4.5f*k+1,reachUp=hy+3*k+1,reachDown=hy+7*k+1,outlineA=.14f+.26f*t,rimBoost=1+2*t,shadeBelow=.09f*t;
+    // Hover lifts the knob part way; a press flattens and widens it and presses its shadow in; the wobble back after it (press below 0) stands it a touch taller.
+    // Moving draws it out behind: the pill by the glide's flow (capped), the lens by wob (softly capped), which on a stop swings a touch ahead before it settles.
+    float hov=lens?std::max(0.f,std::min(1.2f,kn.hover)):0.f,prs=lens?std::max(-.35f,std::min(1.2f,kn.press)):0.f,down=clamp01(prs),bright=std::min(1.f,hov); // (the pill and round styles stay as they were)
+    float lift=std::max(clamp01(kn.lift),.55f*hov),clear=lift,grow=1+popUp*lift,sway=lens?kn.wob:kn.flow,pace=std::fabs(sway)*.6f;
+    float drawOut=1+(lens?drawMost*pace/(1+pace):std::min(drawMost,std::fabs(kn.flow)*.3f)),squash=1-(lens?.16f:.14f)*prs,spread=1+(lens?.14f:.12f)*prs;
+    float rest=knobHx*grow*spread,extra=rest*(drawOut-1),hx=rest+extra,hy=knobHy*grow*squash/std::sqrt(drawOut),kc=kx-(sway>=0?extra:-extra);
+    float shadowMost=(.24f-.06f*clear)*(1+.55f*t)*(1+.3f*down),shadowDrop=(1.5f+clear)*k*(1-.45f*down),shadowWide=(3+1.5f*clear)*k*(1-.3f*down);
+    float reachX=hx+4.5f*k+1,reachUp=hy+3*k+1,reachDown=hy+7*k+1,outlineA=.14f+.26f*t,shadeBelow=.09f*t;
+    // The lens is a capsule round its core line (2*half long, lensR round). A point r of the way out from the core (0..1) shows the place f(r)=r*(lensA+lensB*r*r) out:
+    // magnified 1/lensA in the middle (more when lifted, less when pressed flat), f(1)=1.12 at the rim, so the band at the edge shows the track from just past it, squeezed.
+    float lensR=std::min(hx,hy),half=std::max(0.f,hx-hy),invR=1/std::max(lensR,.5f),lensA=1/(1.45f+.25f*lift-.12f*down),lensB=1.12f-lensA;
+    float tintA=.07f+.05f*bright+.03f*lift,tintC=tintA*(1-.25f*t),edgeA=.14f+.12f*t,glowMost=.2f+.12f*bright+.08f*lift+.06f*down,specMost=.55f+.25f*bright+.2f*down;
+    if(lens){shadowMost=(.16f-.04f*lift)*(1+.55f*t)*(1+.3f*down);shadowDrop=(1.2f+1.2f*lift)*k*(1-.45f*down);shadowWide=(2.5f+1.5f*lift)*k*(1-.3f*down);
+        reachUp=hy+2*k+1;reachDown=hy+shadowDrop+shadowWide+1;outlineA=.1f+.22f*t;}
     for(int y=S.top;y<S.bottom;++y){float py=float(y)+.5f;
         for(int x=S.left;x<S.right;++x){float pxf=float(x)+.5f,a=0,c=0;
             if(py>cy-trackR-1&&py<cy+trackR+1){float track=cover(capsule(pxf,py,x0,x1,cy,trackR)),fill=cover(capsule(pxf,py,x0,std::min(x1,std::max(x0,kx)),cy,trackR));
                 if(track>0)lay(a,c,.3f*track,.3f*track*(1-t));if(fill>0)lay(a,c,fill,fill*(1-t));}
             if(std::fabs(pxf-kc)<reachX&&py>cy-reachUp&&py<cy+reachDown){
-                float knob=pill(pxf,py,kc,cy,hx,hy),shade=shadowMost*smooth(1-(pill(pxf,py-shadowDrop,kc,cy,hx,hy)+.5f)/shadowWide);
-                if(shade>0)lay(a,c,shade,0);float body=cover(knob);
-                if(body>0){float bodyA=body,bodyC=body,milk=1;
-                    if(lens){float lx=kc+(pxf-kc)/magnify,ly=cy+(py-cy)/magnify,lensTrack=cover(capsule(lx,ly,x0,x1,cy,trackR)),lensFill=cover(capsule(lx,ly,x0,std::min(x1,std::max(x0,kx)),cy,trackR));
-                        float seen=lensFill+.3f*lensTrack*(1-lensFill);milk=.94f-.6f*clear;bodyA=body*(milk+(1-milk)*seen);bodyC=body*(milk+(1-milk)*seen*(1-t));}
-                    lay(a,c,bodyA,bodyC);float lower=std::max(0.f,(py-cy)/hy);if(shadeBelow>0)lay(a,c,shadeBelow*lower*lower*body,0);
-                    if(lens){float rim=cover(std::fabs(knob+.8f*k)-.6f*k)*body,upper=std::max(0.f,(cy-py)/hy);c=std::min(a,c+rim*.15f*(.4f+.6f*upper)*(1-milk+.3f)*rimBoost);}}
-                float line=outlineA*cover(std::fabs(knob)-.5f*k);if(line>0)lay(a,c,line,0);}
+                if(lens){float nx=std::max(kc-half,std::min(kc+half,pxf)),vx=pxf-nx,vy=py-cy,rho=std::sqrt(vx*vx+vy*vy),d=rho-lensR,body=cover(d),sy=vy-shadowDrop; // (d: the capsule's distance, rho along its normal)
+                    float shade=shadowMost*smooth(1-(std::sqrt(vx*vx+sy*sy)-lensR+.5f)/shadowWide)*(1-body);if(shade>0)lay(a,c,shade,0); // (its shadow shows round it, not through it)
+                    if(body>0){float r=std::min(1.f,rho*invR),g=lensA+lensB*r*r,sharp=1/g,lx=kc+(nx-kc)*lensA+vx*g,ly=cy+vy*g; // (sharp: an edge seen magnified stays a pixel soft)
+                        float lensTrack=cover(capsule(lx,ly,x0,x1,cy,trackR)*sharp),lensFill=cover(capsule(lx,ly,x0,std::min(x1,std::max(x0,kx)),cy,trackR)*sharp),va=.3f*lensTrack,vc=va*(1-t);
+                        lay(va,vc,lensFill,lensFill*(1-t));lay(va,vc,tintA,tintC);float edge=smooth((r-.7f)/.3f);lay(va,vc,edgeA*edge*edge,0); // the track seen through it, the glass, its darker edge
+                        float ny=vy/std::max(rho,.001f),up=std::max(0.f,-ny),low=std::max(0.f,ny),glow=glowMost*9.48f*r*r*r*(1-r)*low*low;lay(va,vc,glow,glow); // light gathered inside the bottom
+                        float rimLine=cover(std::fabs(d+.9f*k)-.55f*k),spec=std::min(1.f,specMost*(up*up*(.82f*rimLine+.14f*smooth((r-.45f)/.55f))+.18f*rimLine));lay(va,vc,spec,spec); // the rim catching the light, on top
+                        a+=(va-a)*body;c+=(vc-c)*body;}
+                    float line=outlineA*cover(std::fabs(d)-.5f*k);if(line>0)lay(a,c,line,0);}
+                else{float knob=pill(pxf,py,kc,cy,hx,hy),shade=shadowMost*smooth(1-(pill(pxf,py-shadowDrop,kc,cy,hx,hy)+.5f)/shadowWide);
+                    if(shade>0)lay(a,c,shade,0);float body=cover(knob);
+                    if(body>0){lay(a,c,body,body);float lower=std::max(0.f,(py-cy)/hy);if(shadeBelow>0)lay(a,c,shadeBelow*lower*lower*body,0);}
+                    float line=outlineA*cover(std::fabs(knob)-.5f*k);if(line>0)lay(a,c,line,0);}}
             if(a<.002f)continue;
             size_t at=size_t(y)*size_t(W)+size_t(x);uint32_t under=px[at];int ua=int(under>>24)&255;float keep=1-a;int A=int(a*255+float(ua)*keep+.5f);
             if(A<=0){px[at]=0;continue;}if(A>255)A=255;A|=1; // odd: final, left alone by the light-glass flip
@@ -208,9 +240,9 @@ inline bool adoptBar(std::vector<uint32_t>&content,int W,int H,float k,Slider&sl
     if(!bar.empty()&&std::abs(int(found.left-bar.r.left))<=2&&std::abs(int(found.right-bar.r.right))<=2&&std::abs(int(found.top-bar.r.top))<=1){
         // (the same bar as before, give or take its softened edges: kept as it was, so that the knob's travel does not change with every reading)
         level=clamp01((float(found.left)+level*float(fw)-float(bar.r.left))/std::max(1.f,float(bar.r.right-bar.r.left)));found=bar.r;fw=found.right-found.left;fh=found.bottom-found.top;}
-    int knobH=int(std::ceil(std::max(float(fh),4.f*k)*2.6f*1.45f))+int(12*k),cy=found.top+fh/2;
+    int knobH=int(std::ceil(std::max(float(fh),4.f*k)*3.6f*1.45f))+int(14*k),cy=found.top+fh/2; // (the lens: 3.6 track radii, lifted and pressed taller, and its shadow)
     // (room either side for the lifted knob and its shadow at either end of the bar)
-    int sx=found.left-int(10*k),sy=cy-knobH/2;RECT strip=intersect(RECT{sx,sy,sx+fw+int(20*k),sy+knobH},area);
+    int sx=found.left-int(12*k),sy=cy-knobH/2;RECT strip=intersect(RECT{sx,sy,sx+fw+int(24*k),sy+knobH},area);
     // (out with the bar: a pixel or two round it too, for its softened edges)
     RECT u{std::min(seen.left,found.left)-2,std::min(seen.top,found.top)-2,std::max(seen.right,found.right)+2,std::max(seen.bottom,found.bottom)+2},clear=intersect(u,area);
     for(int y=clear.top;y<clear.bottom;y++)memset(&content[size_t(y)*size_t(W)+size_t(clear.left)],0,size_t(clear.right-clear.left)*4);

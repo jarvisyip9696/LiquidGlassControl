@@ -7,6 +7,11 @@ inline CapsulePlacement placeCapsule(double width,double appLeft,double appRight
     if(apps<=0||tray<=0||total>width-16)return {};
     double left=(width-total)/2;return {left,left+total,left-appLeft,left+apps+8-trayLeft,true};
 }
+// The element's layout position in host space without its own RenderTransform, so a measure never reads back the capsule's shift.
+inline double naturalLeft(winrt::Windows::UI::Xaml::FrameworkElement const&e,winrt::Windows::UI::Xaml::UIElement const&host){
+    auto parent=winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetParent(e).try_as<winrt::Windows::UI::Xaml::UIElement>();auto o=e.ActualOffset();
+    return parent?(double)parent.TransformToVisual(host).TransformPoint({o.x,o.y}).X:(double)e.TransformToVisual(host).TransformPoint({0,0}).X;
+}
 // XAML transforms move both visuals and hit testing. Never change the native
 // taskbar window, monitor work area, or the user's taskbar alignment preference.
 class CapsuleLayout {
@@ -21,15 +26,14 @@ class CapsuleLayout {
         Target t;t.element=winrt::make_weak(e);t.original=e.RenderTransform();t.group=Group();t.shift=Translation();if(t.original){winrt::Windows::UI::Xaml::Media::MatrixTransform copy;auto origin=t.original.TransformPoint({0,0}),x=t.original.TransformPoint({1,0}),y=t.original.TransformPoint({0,1});copy.Matrix({x.X-origin.X,x.Y-origin.Y,y.X-origin.X,y.Y-origin.Y,origin.X,origin.Y});t.group.Children().Append(copy);}t.group.Children().Append(t.shift);t.used=true;targets.push_back(std::move(t));return targets.back();}
     void move(Element const&e,double x){auto&t=target(e);auto current=e.RenderTransform();if(t.applied&&current!=t.group)throw winrt::hresult_error(E_ABORT);
         if(std::abs(t.shift.X()-x)>.25)t.shift.X(x);if(!t.applied){e.RenderTransform(t.group);t.applied=true;}}
-    double offset(Element const&e){for(auto&t:targets)if(t.element.get()==e&&e.RenderTransform()==t.group)return t.shift.X();return 0;}
 public:
     explicit CapsuleLayout(std::function<void(const std::wstring&)> logger={}):log(std::move(logger)){}
     ~CapsuleLayout(){stop();}
     void stop(){for(auto&t:targets)restore(t);targets.clear();}
     CapsulePlacement apply(std::vector<Element>const&icons,Element const&tray,Element const&host){try{
         if(icons.empty()||!tray||!host||host.ActualWidth()<host.ActualHeight()){if(log)log(L"capsule layout missing icons="+std::to_wstring(icons.size())+L" tray="+std::to_wstring((bool)tray)+L" host="+std::to_wstring((bool)host));stop();return {};}
-        double left=host.ActualWidth(),right=0;for(auto const&e:icons){auto p=e.TransformToVisual(host).TransformPoint({0,0});double x=p.X-offset(e);left=std::min(left,x);right=std::max(right,x+e.ActualWidth());}
-        auto p=tray.TransformToVisual(host).TransformPoint({0,0});double trayLeft=p.X-offset(tray);auto plan=placeCapsule(host.ActualWidth(),left,right,trayLeft,trayLeft+tray.ActualWidth());if(log)log(L"capsule layout measure width="+std::to_wstring(host.ActualWidth())+L" apps="+std::to_wstring(left)+L","+std::to_wstring(right)+L" tray="+std::to_wstring(trayLeft)+L","+std::to_wstring(trayLeft+tray.ActualWidth())+L" valid="+std::to_wstring(plan.valid));if(!plan.valid){stop();return {};}
+        double left=host.ActualWidth(),right=0;for(auto const&e:icons){double x=naturalLeft(e,host);left=std::min(left,x);right=std::max(right,x+e.ActualWidth());}
+        double trayLeft=naturalLeft(tray,host);auto plan=placeCapsule(host.ActualWidth(),left,right,trayLeft,trayLeft+tray.ActualWidth());if(log)log(L"capsule layout measure width="+std::to_wstring(host.ActualWidth())+L" apps="+std::to_wstring(left)+L","+std::to_wstring(right)+L" tray="+std::to_wstring(trayLeft)+L","+std::to_wstring(trayLeft+tray.ActualWidth())+L" valid="+std::to_wstring(plan.valid));if(!plan.valid){stop();return {};}
         for(auto&t:targets)t.used=false;for(auto const&e:icons)move(e,plan.apps);move(tray,plan.tray);
         for(auto i=targets.begin();i!=targets.end();)if(!i->used){restore(*i);i=targets.erase(i);}else ++i;
         host.UpdateLayout();
