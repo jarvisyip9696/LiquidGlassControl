@@ -35,7 +35,7 @@ void localize(){
       {TaskbarToggle,L"任务栏玻璃",L"Taskbar glass"},{StartToggle,L"开始菜单玻璃",L"Start menu glass"},{NotificationToggle,L"通知中心玻璃",L"Notification center glass"},
       {TaskbarHeading,L"任务栏",L"Taskbar"},{StartHeading,L"开始菜单",L"Start menu"},{NotificationHeading,L"通知中心",L"Notification center"},{CalendarHeading,L"日历",L"Calendar"},{CalendarToggle,L"日历玻璃",L"Calendar glass"},
       {ExplorerToggle,L"资源管理器玻璃",L"Explorer glass"},{ExplorerHeading,L"资源管理器",L"File Explorer"},
-      {BatteryFriendly,L"使用电池或节电模式时降低材质开销",L"Reduce material cost on battery or in battery saver"},
+      {BatteryFriendly,L"节电模式时降低材质开销",L"Reduce material cost in battery saver"},
       {RestoreOriginal,L"重置所有外观",L"Reset all looks"},
       {KeyboardToggle,L"键盘布局切换",L"Keyboard layout switcher"},
       {OpticalPreview,L"LGEngine 光学预览",L"LGEngine optical preview"},

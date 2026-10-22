@@ -94,7 +94,7 @@ class Controller {
     void attachThread(DWORD tid,HWND targetWindow=nullptr){if(threads.count(tid)||pendingHooks.count(tid)||attemptedThreads.count(tid)||pendingHooks.size()>=32)return;
         // Worker threads without a message queue make the hook fail with 87; skip them (not blacklisted, a queue can appear later).
         GUITHREADINFO gui{};gui.cbSize=sizeof(gui);if(!GetGUIThreadInfo(tid,&gui))return;
-        attemptedThreads.insert(tid);HHOOK h=SetWindowsHookExW(WH_GETMESSAGE,messageHook,module,tid);if(!h){DWORD error=GetLastError(),pid=0;if(targetWindow)GetWindowThreadProcessId(targetWindow,&pid);else if(HANDLE t=OpenThread(THREAD_QUERY_LIMITED_INFORMATION,FALSE,tid)){pid=GetProcessIdOfThread(t);CloseHandle(t);}if(hookErrorPids.insert(pid).second)trace("message hook error",error);return;}
+        attemptedThreads.insert(tid);HHOOK h=SetWindowsHookExW(WH_GETMESSAGE,messageHook,module,tid);if(!h){DWORD error=GetLastError(),pid=0;if(targetWindow)GetWindowThreadProcessId(targetWindow,&pid);else if(HANDLE t=OpenThread(THREAD_QUERY_LIMITED_INFORMATION,FALSE,tid)){pid=GetProcessIdOfThread(t);CloseHandle(t);}if(error!=ERROR_INVALID_PARAMETER&&hookErrorPids.insert(pid).second)trace("message hook error",error);return;}
         // As in the Styler's deferred ShellHost initialization, enqueue on the
         // real window so modal/window-filtered message loops also receive it.
         BOOL posted=targetWindow?PostMessageW(targetWindow,attach,GetCurrentProcessId(),0):PostThreadMessageW(tid,attach,GetCurrentProcessId(),0);

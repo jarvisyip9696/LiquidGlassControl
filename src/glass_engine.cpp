@@ -168,9 +168,11 @@ class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
     std::atomic<unsigned long long> notification{~0ull};
     void notify(HRESULT hr,DWORD feature){unsigned long long key=((unsigned long long)feature<<32)|(DWORD)hr;if(notification.exchange(key)!=key)report(hr,feature);}
     void unregister(InstanceHandle h){if(cache&&h)cache->Unregister(h);}
-    bool wantsSubscription(){glass::Config c;auto state=snapshot(c);if(state==Read::Transient)return subscribed.load();if(state!=Read::Ok)return false;bool wanted=(c.features&hostMask(host))!=0;
-        // Off and unsubscribed: the next On starts a fresh compatibility budget.
-        if(!wanted&&!subscribed.load())compatibilityReports=0;
+    bool wantsSubscription(){glass::Config c;auto state=snapshot(c);if(state==Read::Transient)return subscribed.load();if(state!=Read::Ok)return false;// Once subscribed, switching Off keeps the subscription while the controller runs: Windows refuses another Advise on this
+        // connection (E_UNEXPECTED), so unsubscribing left every window opened after the next On without glass.
+        bool wanted=(c.features&hostMask(host))!=0||subscribed.load();
+        // Off (subscribed or not): the next On starts a fresh compatibility budget.
+        if(!(c.features&hostMask(host)))compatibilityReports=0;
         return wanted&&(cache||compatibilityReports.load()<8192);}
     void markSubscribed(bool on){subscribed=on;AcquireSRWLockShared(&configLock);if(sharedStatus){if(on)InterlockedOr(&sharedStatus->subscribed,1<<host);else InterlockedAnd(&sharedStatus->subscribed,~(1<<host));}ReleaseSRWLockShared(&configLock);}
     // Sessions stay in `sessions` for the life of the process, so the pool timer never outlives this object.
@@ -184,7 +186,8 @@ class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
         if(msg==WM_NCCREATE){t=(Thread*)((CREATESTRUCTW*)l)->lpCreateParams;SetWindowLongPtrW(h,GWLP_USERDATA,(LONG_PTR)t);}
         if(t){if(msg==WM_TIMER&&w==9){if(t->session->subscriptionWorker)return 0;auto now=GetTickCount64();if(t->release.size()<512&&now-t->lastMutation<200&&now-t->releaseStarted<1000)return 0;unsigned budget=256;while(!t->release.empty()&&budget--){auto i=t->release.begin();auto value=*i;t->release.erase(i);t->session->unregister(value);}if(t->release.empty())KillTimer(h,9);return 0;}
             if(msg==WM_APP+4){SetTimer(h,8,30,nullptr);return 0;}if(msg==WM_TIMER&&w==8){if(t->session->subscriptionWorker)return 0;KillTimer(h,8);t->updateQueued=false;t->session->update(*t);return 0;}
-            if(msg==refreshMsg){if(t->session->subscriptionWorker)SetTimer(h,10,100,nullptr);else t->session->update(*t);return 0;}
+            // Posted refreshes (one per slider tick) coalesce to one update per 30 ms; a sent one (shutdown) still runs at once.
+            if(msg==refreshMsg){if(t->session->subscriptionWorker)SetTimer(h,10,100,nullptr);else if(InSendMessage())t->session->update(*t);else scheduleUpdate(*t);return 0;}
             if(msg==WM_TIMER&&w==10){if(!t->session->subscriptionWorker){KillTimer(h,10);t->session->update(*t);}return 0;}
             if(msg==WM_TIMER&&w==11){KillTimer(h,11);t->session->update(*t);return 0;}
             if(msg==WM_TIMER&&w==20){if(!t->session->subscriptionWorker){glass::Config c;if(snapshot(c)==Read::Ok&&(c.sequence!=t->observedSequence||c.features!=t->observedFeatures)){t->observedSequence=c.sequence;t->observedFeatures=c.features;t->session->update(*t);}for(auto root:t->notificationRoots){auto node=t->nodes.find(root);if(node!=t->nodes.end())t->session->recordRoot(node->second);}}return 0;}
@@ -208,7 +211,7 @@ class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
     static void scheduleUpdate(Thread&t){if(!t.updateQueued){t.updateQueued=PostMessageW(t.window,WM_APP+4,0,0)!=FALSE;}}
     void releaseLater(Thread&t,InstanceHandle h){if(cache&&h){bool first=t.release.empty();t.release.insert(h);t.lastMutation=GetTickCount64();if(first){t.releaseStarted=t.lastMutation;SetTimer(t.window,9,250,nullptr);}}}
     Ptr<IInspectable> brush(const glass::Config&c,bool transparent,InstanceHandle handle,DWORD feature,bool&custom,bool&fallback){custom=false;fallback=false;
-        if(!transparent)try{auto target=from(handle);if(target){winrt::Windows::Foundation::IInspectable obj{nullptr};winrt::copy_from_abi(obj,target.p);Ptr<IInspectable> result;if(modern){auto element=obj.try_as<winrt::Microsoft::UI::Xaml::UIElement>();if(element){auto value=winrt::make<liquid::ModernBrush>(element,c,[feature](HRESULT hr){trace("composition material",hr);report(hr,feature);});winrt::get_unknown(value)->QueryInterface(__uuidof(IInspectable),(void**)result.put());}}else{auto element=obj.try_as<winrt::Windows::UI::Xaml::UIElement>();if(element){auto value=winrt::make<liquid::SystemBrush>(element,c,[feature](HRESULT hr){trace("composition material",hr);report(hr,feature);},feature==glass::Keyboard||c.tint==3);winrt::get_unknown(value)->QueryInterface(__uuidof(IInspectable),(void**)result.put());}}if(result){custom=true;return result;}}}catch(...){fallback=true;trace("composition brush fallback",winrt::to_hresult());}
+        if(!transparent)try{auto target=from(handle);if(target){winrt::Windows::Foundation::IInspectable obj{nullptr};winrt::copy_from_abi(obj,target.p);Ptr<IInspectable> result;if(modern){auto element=obj.try_as<winrt::Microsoft::UI::Xaml::UIElement>();if(element){auto value=winrt::make<liquid::ModernBrush>(element,c,[feature](HRESULT hr){trace("composition material",hr);report(hr,feature);});winrt::get_unknown(value)->QueryInterface(__uuidof(IInspectable),(void**)result.put());}}else{auto element=obj.try_as<winrt::Windows::UI::Xaml::UIElement>();if(element){auto value=winrt::make<liquid::SystemBrush>(element,c,[feature](HRESULT hr){trace("composition material",hr);report(hr,feature);},true);winrt::get_unknown(value)->QueryInterface(__uuidof(IInspectable),(void**)result.put());}}if(result){custom=true;return result;}}}catch(...){fallback=true;trace("composition brush fallback",winrt::to_hresult());}
         Ptr<XamlReader> reader;const wchar_t*cls=modern?L"Microsoft.UI.Xaml.Markup.XamlReader":L"Windows.UI.Xaml.Markup.XamlReader";
         HSTRING className{};WindowsCreateString(cls,(UINT32)wcslen(cls),&className);HRESULT hr=RoGetActivationFactory(className,ReaderIds[modern?1:0],reinterpret_cast<void**>(reader.put()));
         if(FAILED(hr)&&modern){auto mod=GetModuleHandleW(L"Microsoft.UI.Xaml.dll");auto fn=mod?reinterpret_cast<HRESULT(WINAPI*)(HSTRING,IActivationFactory**)>(GetProcAddress(mod,"DllGetActivationFactory")):nullptr;Ptr<IActivationFactory> factory;if(fn&&SUCCEEDED(fn(className,factory.put())))hr=factory->QueryInterface(ReaderIds[1],reinterpret_cast<void**>(reader.put()));}
@@ -283,7 +286,8 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         auto rim=markup(L"<LinearGradientBrush xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" StartPoint=\"0,0\" EndPoint=\"0,1\"><GradientStop Color=\"#80FFFFFF\" Offset=\"0\"/><GradientStop Color=\"#18303030\" Offset=\"0.5\"/><GradientStop Color=\"#60FFFFFF\" Offset=\"1\"/></LinearGradientBrush>");
         if(rim)set(n,h,rectangle?L"Stroke":L"BorderBrush",rim.p,false);
         typed(n,h,rectangle?L"StrokeThickness":L"BorderThickness",rectangle?L"Double":L"Thickness",L"1");
-        if(rectangle){typed(n,h,L"RadiusX",L"Double",std::to_wstring(c.radius));typed(n,h,L"RadiusY",L"Double",std::to_wstring(c.radius));}
+        // While the capsule geometry is applied its pill radius stays; a look change does not overwrite it.
+        if(rectangle&&n.capsuleGeometry.empty()){typed(n,h,L"RadiusX",L"Double",std::to_wstring(c.radius));typed(n,h,L"RadiusY",L"Double",std::to_wstring(c.radius));}
     }
     std::vector<const wchar_t*> importedStyles(IInspectable*p){
         std::vector<imported_glass::Element> ancestry;winrt::Windows::Foundation::IInspectable object{nullptr};winrt::copy_from_abi(object,p);
@@ -339,17 +343,17 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
                 unsigned visited=0;while(!pending.empty()&&visited++<2048){auto object=pending.back();pending.pop_back();auto child=object.try_as<Element>();
                     if(child&&child.Visibility()!=winrt::Windows::UI::Xaml::Visibility::Visible)continue;
                     auto type=winrt::get_class_name(object);
-                    if(child&&child.Name()==L"SystemTrayFrameGrid"&&child.ActualWidth()>0)try{auto origin=child.TransformToVisual(host).TransformPoint({0,0});double a=std::max(0.0,(double)origin.X),b=std::min(width,(double)origin.X+child.ActualWidth());if(b>a)trayElement=child;continue;}catch(...){}
+                    if(child&&child.Name()==L"SystemTrayFrameGrid"&&child.ActualWidth()>0)try{double x=liquid::naturalLeft(child,host),a=std::max(0.0,x),b=std::min(width,x+child.ActualWidth());if(b>a)trayElement=child;continue;}catch(...){}
                     bool icon=type==L"Taskbar.TaskListButton"||type==L"Taskbar.TaskListLabeledButton"||type==L"Taskbar.ExperienceToggleButton"||type==L"SearchUx.SearchUI.SearchIconButton"||type==L"SearchUx.SearchUI.SearchBoxButton";
-                    if(icon&&child&&child.ActualWidth()>0){auto origin=child.TransformToVisual(host).TransformPoint({0,0});double a=std::max(0.0,(double)origin.X),b=std::min(width,(double)origin.X+child.ActualWidth());
+                    if(icon&&child&&child.ActualWidth()>0){double x=liquid::naturalLeft(child,host),a=std::max(0.0,x),b=std::min(width,x+child.ActualWidth());
                         if(b>a){layoutIcons.push_back(child);if(type==L"Taskbar.TaskListButton"||type==L"Taskbar.TaskListLabeledButton"){left=std::min(left,a);right=std::max(right,b);}else if(type!=L"Taskbar.ExperienceToggleButton"||b-a<=height*2)auxiliary.emplace_back(a,b);}continue;}
                     int count=Tree::GetChildrenCount(object);for(int i=0;i<count;++i)pending.push_back(Tree::GetChild(object,i));}
                 // Only include controls contiguous with the task buttons. A
                 // separate Widgets button at the screen edge must not stretch
                 // the icon capsule across the whole taskbar.
                 if(right>left)for(size_t pass=0;pass<auxiliary.size();++pass){bool changed=false;for(auto span:auxiliary)if(span.first<=right+height&&span.second>=left-height){double a=std::min(left,span.first),b=std::max(right,span.second);changed=changed||a!=left||b!=right;left=a;right=b;}if(!changed)break;}
-                std::vector<Element> cluster;for(auto const&e:layoutIcons){auto origin=e.TransformToVisual(host).TransformPoint({0,0});if(origin.X+e.ActualWidth()>=left-.5&&origin.X<=right+.5)cluster.push_back(e);}
-                if(right>left)for(auto const&entry:thread().nodes){if(entry.second.surface!=glass::TaskbarRoot)continue;try{Ptr<IInspectable> value;if(entry.second.weak)entry.second.weak->Resolve(__uuidof(IInspectable),value.put());if(!value)continue;winrt::Windows::Foundation::IInspectable object{nullptr};winrt::copy_from_abi(object,value.p);auto tray=object.try_as<Element>();if(!tray||tray.Name()!=L"SystemTrayFrameGrid"||tray.ActualWidth()<=0)continue;auto origin=tray.TransformToVisual(host).TransformPoint({0,0});double a=std::max(0.0,(double)origin.X),b=std::min(width,(double)origin.X+tray.ActualWidth());if(b>a&&!trayElement)trayElement=tray;}catch(...){}}
+                std::vector<Element> cluster;for(auto const&e:layoutIcons){double x=liquid::naturalLeft(e,host);if(x+e.ActualWidth()>=left-.5&&x<=right+.5)cluster.push_back(e);}
+                if(right>left)for(auto const&entry:thread().nodes){if(entry.second.surface!=glass::TaskbarRoot)continue;try{Ptr<IInspectable> value;if(entry.second.weak)entry.second.weak->Resolve(__uuidof(IInspectable),value.put());if(!value)continue;winrt::Windows::Foundation::IInspectable object{nullptr};winrt::copy_from_abi(object,value.p);auto tray=object.try_as<Element>();if(!tray||tray.Name()!=L"SystemTrayFrameGrid"||tray.ActualWidth()<=0)continue;double x=liquid::naturalLeft(tray,host),a=std::max(0.0,x),b=std::min(width,x+tray.ActualWidth());if(b>a&&!trayElement)trayElement=tray;}catch(...){}}
                 if(!n.capsuleLayout)n.capsuleLayout=std::make_shared<liquid::CapsuleLayout>([](auto const&line){note(line);});
                 if(!n.watchers.count(L"CapsuleContent")){auto layout=n.capsuleLayout;n.watchers[L"CapsuleContent"]=[layout]{layout->stop();};}
                 auto placement=n.capsuleLayout->apply(cluster,trayElement,host);
@@ -357,6 +361,8 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
                 else{n.lastCapsule=E_NOINTERFACE;n.capsuleReported=true;report(E_NOINTERFACE,glass::Capsule);return;}
                 if(right>left){
                     double a=std::max(0.0,left-8),b=std::max(0.0,width-right-8),vertical=std::min(height/4,std::max(2.0,(height-44.0)/2)),radius=std::min(height-2*vertical,width-a-b)/2;
+                    // Half-DIP steps: float noise in a measure must not rewrite Margin (each write is another layout pass).
+                    auto half=[](double v){return std::round(v*2)/2;};a=half(a);b=half(b);vertical=half(vertical);radius=half(radius);
                     auto geometry=std::to_wstring(a)+L","+std::to_wstring(vertical)+L","+std::to_wstring(b)+L","+std::to_wstring(vertical);
                     if(n.capsuleGeometry==geometry)return;
                     bool ok=typed(n,h,L"Margin",L"Thickness",geometry);
@@ -421,9 +427,10 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         DWORD signature=1|(c.opacity<<1)|(c.radius<<8)|(c.tint<<13)|(c.economy?1u<<15:0)|(c.blur<<16)|((c.features&glass::Capsule)?1u<<24:0)|((c.features&glass::Taskbar)?1u<<25:0)|((n.surface==glass::TaskbarRoot&&thread().unifiedCapsule)?1u<<26:0);
         // Unchanged parameters are not written again, but the controller may have cleared its status after a rediscovery; repeat the last result so status matches the live surface.
         if(n.appliedSignature==signature){if(n.surface==glass::TaskbarFill&&n.capsuleDirty&&(c.features&glass::Capsule))applyCapsule(n,h,c);if(n.reported)report(n.lastReport,glass::feature(n.surface));if(n.capsuleReported&&(c.features&glass::Capsule))report(n.lastCapsule,glass::Capsule);return;}
-        // Capsule-only: the material is removed, the geometry remains. Otherwise the geometry is reset before the material and capsule are applied again.
+        // Capsule-only: the material is removed, the geometry remains. The geometry is reset only when the Taskbar or Capsule switch
+        // changes (or on a first apply); a look change replaces the material and keeps it, so a slider drag never re-lays the taskbar.
         if(n.surface==glass::TaskbarFill&&!(c.features&glass::Taskbar)&&!(c.features&glass::Capsule)){restore(n,h);return;}
-        if(n.surface==glass::TaskbarFill)restoreNamed(n,h,{L"Margin",L"RadiusX",L"RadiusY"});
+        if(n.surface==glass::TaskbarFill&&((n.appliedSignature^signature)&(3u<<24)))restoreNamed(n,h,{L"Margin",L"RadiusX",L"RadiusY"});
         bool iconPanel=false;if(!modern&&n.surface==glass::TaskbarRoot){auto p=from(h);winrt::Windows::Foundation::IInspectable obj{nullptr};if(p)winrt::copy_from_abi(obj,p.p);auto e=obj.try_as<winrt::Windows::UI::Xaml::FrameworkElement>();iconPanel=e&&e.Name()==L"RootGrid";}
         bool joinedTray=n.surface==glass::TaskbarRoot&&!iconPanel&&thread().unifiedCapsule&&(c.features&glass::Capsule);
         if(n.surface==glass::TaskbarRoot&&(!(c.features&glass::Capsule)||joinedTray)){auto i=n.watchers.find(L"CapsuleClip");if(i!=n.watchers.end()){i->second();n.watchers.erase(i);}}
@@ -434,7 +441,7 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         applied=set(n,h,(n.surface==glass::TaskbarFill||n.surface==glass::TaskbarOverlay)?L"Fill":L"Background",b.p);
         if(applied&&!(iconPanel&&(c.features&glass::Capsule))&&(n.surface==glass::TaskbarRoot||n.surface==glass::TaskbarFill||n.surface==glass::StartPlate||n.surface==glass::NotificationPlate||n.surface==glass::ExplorerPlate||n.surface==glass::KeyboardPlate))edge(n,h,c);
         if(applied){hostStageSet(slot,4);everApplied=true;}
-        if(applied&&n.surface==glass::TaskbarFill)applyCapsule(n,h,c);
+        if(applied&&n.surface==glass::TaskbarFill){if(n.capsuleDirty||n.capsuleGeometry.empty())applyCapsule(n,h,c);else if(n.capsuleReported&&(c.features&glass::Capsule))report(n.lastCapsule,glass::Capsule);}
         // Round only native material plates; never change layout constraints.
         if(n.surface==glass::StartPlate||n.surface==glass::NotificationPlate||n.surface==glass::TaskbarRoot||n.surface==glass::VolumePlate||n.surface==glass::BrightnessPlate||n.surface==glass::KeyboardPlate){
             InstanceHandle r=0;BSTR type=SysAllocString(modern?L"Microsoft.UI.Xaml.CornerRadius":L"Windows.UI.Xaml.CornerRadius");auto text=std::to_wstring(c.radius);BSTR value=SysAllocString(text.c_str());
@@ -460,7 +467,8 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         // Imported material rules and the built-in brush path both need the
         // tray clip. Keep geometry outside the material-selection branch.
         if(applied&&!modern&&n.surface==glass::TaskbarRoot&&!iconPanel&&!joinedTray&&(c.features&glass::Capsule)&&!n.watchers.count(L"CapsuleClip")){try{auto p=from(h);auto cleanup=liquid::clipCapsule(p.p);if(cleanup)n.watchers.emplace(L"CapsuleClip",std::move(cleanup));}catch(...){trace("tray capsule clip",winrt::to_hresult());}}
-        if(applied)note(L"surface="+std::to_wstring((int)n.surface)+L" path="+(!n.imported.empty()?L"imported":n.composition?L"composition":n.fallback?L"acrylic-after-composition-error":L"acrylic")+L" blur="+std::to_wstring(c.blur)+L" opacity="+std::to_wstring(c.opacity)+L" tint="+std::to_wstring(c.tint)+L" radius="+std::to_wstring(c.radius));
+        // First apply only: each line is a synchronous file write on the shell's UI thread.
+        if(applied&&!n.appliedSignature)note(L"surface="+std::to_wstring((int)n.surface)+L" path="+(!n.imported.empty()?L"imported":n.composition?L"composition":n.fallback?L"acrylic-after-composition-error":L"acrylic")+L" blur="+std::to_wstring(c.blur)+L" opacity="+std::to_wstring(c.opacity)+L" tint="+std::to_wstring(c.tint)+L" radius="+std::to_wstring(c.radius));
         if(applied){n.appliedSignature=signature;for(auto property:{L"Background",L"Fill",L"BorderBrush",L"Stroke"})if(n.saved.count(property)&&!n.watchers.count(property))try{auto p=from(h);auto&t=thread();auto callback=liquid::watch(p.p,modern,property,[&t,key=n.key]{if(t.updating)return;auto node=t.nodes.find(key);if(node!=t.nodes.end()){node->second.appliedSignature=0;scheduleUpdate(t);}});if(callback)n.watchers.emplace(property,std::move(callback));}catch(...){trace("watch property",winrt::to_hresult());}}
     }
     void update(Thread&t){if(t.updating)return;glass::Config c;Read state=snapshot(c);
@@ -524,8 +532,9 @@ public:
         AddRef();AcquireSRWLockExclusive(&sessionsLock);sessions.push_back(this);ReleaseSRWLockExclusive(&sessionsLock);ensureSubscription();return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnVisualTreeChange(ParentChildRelation relation,VisualElement element,VisualMutationType mutation)override{
-        // Out of compatibility budget: unsubscribe once, from the thread's queue rather than inside this callback.
-        try{auto&t=thread();if(!cache&&++compatibilityReports==8192)PostMessageW(t.window,WM_APP+5,0,0);if(mutation==Add){auto surface=glass::identify(element.Name?element.Name:L"",element.Type?element.Type:L"",host);
+        // Out of compatibility budget: unsubscribe once, from the thread's queue rather than inside this callback. Only an Add hands out a new
+        // handle (a Remove names one already held), so only Adds count; running out is logged, since every later window goes without glass.
+        try{auto&t=thread();if(!cache&&mutation==Add&&++compatibilityReports==8192){trace("observation budget used: new elements unstyled until this host restarts",S_OK);PostMessageW(t.window,WM_APP+5,0,0);}if(mutation==Add){auto surface=glass::identify(element.Name?element.Name:L"",element.Type?element.Type:L"",host);
                 if(host==0&&surface==glass::NoSurface)surface=glass::identify(element.Name?element.Name:L"",element.Type?element.Type:L"",3);
                 if(host==0&&surface==glass::NoSurface&&element.Name&&wcscmp(element.Name,L"RootGrid")==0&&relation.Parent){auto parent=from(relation.Parent);HSTRING type{};if(parent&&SUCCEEDED(parent->GetRuntimeClassName(&type))){auto name=WindowsGetStringRawBuffer(type,nullptr);if(name&&wcscmp(name,L"Taskbar.TaskbarFrame")==0){surface=glass::TaskbarRoot;t.taskbarPanel=true;}WindowsDeleteString(type);}}
 
@@ -533,7 +542,10 @@ public:
                 auto target=from(element.Handle);auto imported=target&&imported_glass::candidate(imported_glass::theme(host),{element.Type?element.Type:L"",element.Name?element.Name:L""})?importedStyles(target.p):std::vector<const wchar_t*>{};
                 if(!imported.empty()&&surface==glass::NoSurface)surface=host==1?glass::StartPlate:host==2?glass::NotificationAuxiliary:host==3?glass::ExplorerPlate:glass::TaskbarAuxiliary;
                 if(surface!=glass::NoSurface){hostStageSet(slot,3);everMatched=true;auto p=std::move(target);Ptr<IWeakReferenceSource> source;if(p&&SUCCEEDED(p->QueryInterface(__uuidof(IWeakReferenceSource),reinterpret_cast<void**>(source.put())))){
-                    Node n;if(host==2&&element.Name){if(wcscmp(element.Name,L"NotificationCenterGrid")==0)n.notificationRoot=0;else if(wcscmp(element.Name,L"CalendarCenterGrid")==0)n.notificationRoot=1;if(n.notificationRoot>=0)t.notificationRoots[n.notificationRoot]=element.Handle;}n.key=element.Handle;n.imported=std::move(imported);n.surface=surface;source->GetWeakReference(n.weak.put());auto old=t.nodes.find(element.Handle);if(old!=t.nodes.end()){t.updating=true;restore(old->second,element.Handle);t.updating=false;if(!old->second.saved.empty()){releaseLater(t,element.Handle);return S_OK;}}t.nodes[element.Handle]=std::move(n);
+                    Node n;if(host==2&&element.Name){if(wcscmp(element.Name,L"NotificationCenterGrid")==0)n.notificationRoot=0;else if(wcscmp(element.Name,L"CalendarCenterGrid")==0)n.notificationRoot=1;if(n.notificationRoot>=0)t.notificationRoots[n.notificationRoot]=element.Handle;}n.key=element.Handle;n.imported=std::move(imported);n.surface=surface;source->GetWeakReference(n.weak.put());auto old=t.nodes.find(element.Handle);
+                    // A new Advise lists the whole tree again: an element already wearing its material keeps it (restoring first snapped the capsule back for a frame).
+                    if(old!=t.nodes.end()&&old->second.surface==surface&&!old->second.saved.empty()){releaseLater(t,element.Handle);releaseLater(t,relation.Parent);return S_OK;}
+                    if(old!=t.nodes.end()){t.updating=true;restore(old->second,element.Handle);t.updating=false;if(!old->second.saved.empty()){releaseLater(t,element.Handle);return S_OK;}}t.nodes[element.Handle]=std::move(n);
                     glass::Config c;if(snapshot(c)==Read::Ok){t.updating=true;apply(t.nodes[element.Handle],element.Handle,c);t.updating=false;}
                 }}glass::Config keyboardConfig;if(snapshot(keyboardConfig)==Read::Ok&&(keyboardConfig.features&glass::Keyboard))for(auto const&entry:t.nodes)if(entry.second.surface==glass::KeyboardPlate&&!entry.second.appliedSignature){scheduleUpdate(t);break;}releaseLater(t,element.Handle);releaseLater(t,relation.Parent);
             }else if(mutation==Remove){auto i=t.nodes.find(element.Handle);if(i!=t.nodes.end()){t.updating=true;restore(i->second,element.Handle);t.updating=false;for(auto&w:i->second.watchers)w.second();t.nodes.erase(i);}releaseLater(t,element.Handle);}
@@ -592,8 +604,10 @@ extern "C" __declspec(dllexport) HRESULT WINAPI GlassConnectTest(){
     AcquireSRWLockExclusive(&configLock);releaseOwnerLocked();ReleaseSRWLockExclusive(&configLock);
     return connected&&idle()?S_OK:E_FAIL;
 }
-void bootstrap(DWORD owner){if(connect(owner)){
-        AcquireSRWLockShared(&sessionsLock);for(auto s:sessions)s->ensureSubscription(true);ReleaseSRWLockShared(&sessionsLock);
+void bootstrap(DWORD owner){AcquireSRWLockShared(&configLock);DWORD was=ownerPid;ReleaseSRWLockShared(&configLock);if(connect(owner)){
+        // Only a new controller gets a fresh Advise budget; another attach by the same one (a newly shown shell window) must not restart failed retries.
+        AcquireSRWLockShared(&configLock);bool fresh=was!=ownerPid;ReleaseSRWLockShared(&configLock);
+        AcquireSRWLockShared(&sessionsLock);for(auto s:sessions)s->ensureSubscription(fresh);ReleaseSRWLockShared(&sessionsLock);
         for(int modern=0;modern<2;++modern)if(GetModuleHandleW(modern?L"Microsoft.Internal.FrameworkUdk.dll":L"Windows.UI.Xaml.dll")&&!injecting[modern].exchange(true)){HANDLE t=CreateThread(nullptr,0,attachFramework,(void*)(INT_PTR)modern,0,nullptr);if(t)CloseHandle(t);else injecting[modern]=false;}
         refreshWindows();
     auto controller=ownerWindow();if(controller)PostMessageW(controller,RegisterWindowMessageW(glass::AttachAckMessage),GetCurrentThreadId(),0);

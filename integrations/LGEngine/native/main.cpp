@@ -22,7 +22,7 @@
 namespace {
 constexpr UINT HostEvent=WM_APP+60,OsdEvent=WM_APP+61,MsgVolume=WM_APP+62,MsgDevice=WM_APP+63,MsgOwner=WM_APP+64,MsgForeground=WM_APP+65,MsgFlyout=WM_APP+66,TitleEvent=WM_APP+67;
 enum : int {IdArrival=101,IdIndicator,IdSlosh,IdKnob,IdReplay,IdSample,IdOn,IdLabel1=111,IdLabel2,IdLabel3,IdLabel4};
-enum : UINT_PTR {TimerAnim=2,TimerHide=3,TimerReplay=4,TimerRecheck=5,TimerTitle=6,TimerFlyout=7};
+enum : UINT_PTR {TimerAnim=2,TimerHide=3,TimerReplay=4,TimerRecheck=5,TimerTitle=6,TimerFlyout=7,TimerPointer=8,TimerLimit=9};
 // Language order everywhere: English, Simplified Chinese, Traditional Chinese, Polish, Vietnamese.
 using namespace opticalui;
 HWND gWindow{},gOwner{};
@@ -139,6 +139,8 @@ struct App {
     osd::State state;osd::AudioWatch audio;std::vector<uint32_t> osdFrame;osd::Slider slider;int drawnNumber=-1,drawnW=0,drawnH=0;float drawnK=0;wchar_t drawnGlyph=0;
     lghost::Look lensLook{5,32,90,68,30,24,100,50};int lensShape=0;ULONGLONG kickUntil=0; // the lens's own look and profile (Controls.shape), and when the last kick's slosh is over
     bool osdAnimating=false,osdShown=false,osdIn=false;bool osdDirty=false;LONGLONG lastTick=0; // osdIn: the lens is fully in (the Shown event), which is when the owner kicks it
+    // pointerOver: the pointer is on the lens or on Windows' pop-up under it; pointerDown: the main button is held after a press that began there (a drag of Windows' slider). osdSince: the last change, key or touch.
+    bool pointerOver=false,pointerDown=false,buttonWas=false;ULONGLONG osdSince=0;int limitWaits=0; // limitWaits: extra 150 ms waits for a level change after Windows showed its pop-up
     const wchar_t* title(unsigned event)const{
         static const wchar_t* connected[]={L"LGEngine host connected — drag to move",L"LGEngine 宿主已连接 — 拖动移动",L"LGEngine 宿主已連線 — 拖動移動",L"Połączono z LGEngine — przeciągnij",L"Đã kết nối LGEngine — kéo để di chuyển"};
         static const wchar_t* lost[]={L"LGEngine disconnected — reconnecting",L"LGEngine 已断开 — 正在重连",L"LGEngine 已中斷 — 正在重新連線",L"LGEngine rozłączony — ponowne łączenie",L"LGEngine ngắt kết nối — đang kết nối lại"};
@@ -247,8 +249,8 @@ struct App {
         spec.adapt=true;spec.inShots=true;client->setSpec(spec); // inShots: the card and the lens show in screenshots
         if(osdClient){ // the lens: its own look and profile (Controls), the owner's motion numbers (lensSpec), the arrival and indicator of the combos
             static const char* const profiles[]={"","Tighter rim","Thin lens","Flat pane"};
-            lens=osd::lensSpec(spec,spec.scale);lens.inShots=true;lens.look=lensLook;lens.profile=profiles[lensShape<0||lensShape>3?0:lensShape];lens.savePower=settings.savePower!=0;lens.hover=false;
-            lens.motion=rm?0:arrival;lens.indicator=spec.indicator;osdClient->setSpec(lens);}
+            lens=osd::lensSpec(spec,spec.scale);lens.inShots=true;lens.look=lensLook;lens.profile=profiles[lensShape<0||lensShape>3?0:lensShape];lens.savePower=false; // (the lens shows for under 2 s at a time: it keeps full frame rate even on battery)
+            lens.motion=rm?0:arrival;lens.indicator=spec.indicator;lens.hover=!rm;osdClient->setSpec(lens);osdClient->setPointerArea(RECT{0,0,lens.width,lens.height});} // hover: the host leans the lens to the pointer and squashes it on a press
         cardPlaced=lensPlaced=false;place(); // setSpec carried the spec's own place (the lens's is under the card): send the real one now
         int slosh=rm?3:sel(IdSlosh);client->setSlosh(slosh,60);if(osdClient)osdClient->setSlosh(slosh,50);
         client->setPointerArea(RECT{0,0,spec.width,spec.height});
@@ -277,8 +279,37 @@ struct App {
     }
     void osdKick(int way){if(!osdClient||!osdIn)return;osdClient->kick(way);kickUntil=GetTickCount64()+700;} // Glass.cs Kick/LevelChanged: only a lens that is fully in is kicked; the frames carry on 700 ms for the slosh
     LONGLONG now()const{LARGE_INTEGER t{};QueryPerformanceCounter(&t);return t.QuadPart;}
-    void osdWake(){if(osdAnimating)return;osdAnimating=true;lastTick=now();SetTimer(window,TimerAnim,16,nullptr);osdClient->setBusy(true);}
-    void osdStop(){KillTimer(window,TimerAnim);KillTimer(window,TimerHide);osdAnimating=false;osdShown=false;osdIn=false;osdDirty=false;state.sampling=false;if(state.knob.at>=0)state.knob.jump(state.current());if(osdClient){osdClient->setBusy(false);osdClient->hide(false);}}
+    // A 16 ms SetTimer rounds up to two 15.6 ms clock ticks (about 32 frames a second); the minimum, never coalesced, fires every tick (about 64).
+    void osdWake(){if(osdAnimating)return;osdAnimating=true;lastTick=now();SetCoalescableTimer(window,TimerAnim,USER_TIMER_MINIMUM,nullptr,TIMERV_NO_COALESCING);osdClient->setBusy(true);}
+    void osdStop(){for(UINT_PTR timer:{TimerAnim,TimerHide,TimerPointer,TimerLimit})KillTimer(window,timer);osdAnimating=false;osdShown=false;osdIn=false;osdDirty=false;state.sampling=false;pointerOver=pointerDown=false;state.knob.rest();if(state.knob.at>=0)state.knob.jump(state.current());if(osdClient){osdClient->setBusy(false);osdClient->hide(false);}}
+    // A hidden pop-up of Windows' that is up right now (invisible, but its slider takes clicks and drags).
+    bool flyoutUp()const{bool up=false;lgpreview::eachFlyout([&](HWND h){if(!up&&IsWindowVisible(h)&&GetPropW(h,lgpreview::FlyoutMark))up=true;});return up;}
+    // Polled every 20 ms while the lens shows: the pointer on it (or on Windows' pop-up under it), a press that began there, a volume key held. The knob swells on hover and squashes on the press.
+    void osdPointer(){POINT p{};bool over=false;ULONGLONG t=GetTickCount64();
+        if(GetCursorPos(&p)){RECT r{lens.x,lens.y,lens.x+lens.width,lens.y+lens.height};over=PtInRect(&r,p)!=0;
+            if(!over&&!lensAtCard)lgpreview::eachFlyout([&](HWND h){RECT f{};if(!over&&IsWindowVisible(h)&&GetWindowRect(h,&f)&&PtInRect(&f,p))over=true;});}
+        bool button=(GetAsyncKeyState(GetSystemMetrics(SM_SWAPBUTTON)?VK_RBUTTON:VK_LBUTTON)&0x8000)!=0;
+        if(!button)pointerDown=false;else if(!buttonWas&&over)pointerDown=true;buttonWas=button;pointerOver=over;
+        if(over||pointerDown||(GetAsyncKeyState(VK_VOLUME_DOWN)&0x8000)||(GetAsyncKeyState(VK_VOLUME_UP)&0x8000))osdSince=t; // (a key held at its limit changes nothing, but Windows keeps its pop-up up)
+        float hoverWas=state.knob.hoverGoal,pressWas=state.knob.pressGoal;state.knob.aim(over&&!reduced(),pointerDown&&!reduced());
+        if(osdClient&&(state.knob.hoverGoal!=hoverWas||state.knob.pressGoal!=pressWas))osdWake();}
+    // Shown or changed: the lens stays 1.8 s, and the pointer is watched meanwhile.
+    void osdHold(){osdSince=GetTickCount64();SetTimer(window,TimerHide,1800,nullptr);SetTimer(window,TimerPointer,20,nullptr);}
+    // The lens never goes from under the pointer or a drag, nor while Windows' invisible pop-up is still up (its slider would go on taking clicks unseen).
+    // 4 s on with no change, key or touch and Windows' pop-up still up, the lens goes and Windows' own pop-up is let back into view instead.
+    void osdHideDue(){osdPointer();bool up=!lensAtCard&&flyoutUp();
+        if(pointerOver||pointerDown||(up&&GetTickCount64()<osdSince+4000)){SetTimer(window,TimerHide,200,nullptr);return;}
+        KillTimer(window,TimerPointer);if(osdClient){osdClient->hide(true);osdShown=false;osdIn=false;}pointerOver=pointerDown=false;state.knob.rest();flyoutOnUntil=0;
+        if(up)holdFlyout();else syncFlyout();} // the lens is gone: with a mask other than 3 Windows' pop-up may show again for a key at its limit
+    // Windows showed its pop-up, kept invisible, and no level changed: a key at its limit (volume at 0 or 100 or muted, brightness at 0 or 100), or a press on it.
+    // The lens shows the level instead of nothing: the kind at a limit, else the last one shown.
+    void limitShow(){if(osdShown||state.sampling||!flyoutUp())return;
+        bool volEnd=state.volInit&&(state.vol<=.0005f||state.vol>=.9995f||state.muted),briEnd=state.briInit&&(state.bri<=.0005f||state.bri>=.9995f);
+        bool volMay=state.volInit&&!volEnd,briMay=state.briInit&&!briEnd;
+        if((volMay||briMay)&&limitWaits<2){++limitWaits;SetTimer(window,TimerLimit,150,nullptr);return;} // a kind not at a limit may still send its level change (a slow brightness reading while muted)
+        int source=volEnd!=briEnd?(volEnd?0:1):state.source;if(source==1&&!state.briInit)source=0;
+        if(source!=state.source||!state.haveSource){state.source=source;state.haveSource=true;state.knob.jump(state.current());}
+        float level=state.current();osdShowChange(level<=.0005f||(source==0&&state.muted)?-1:(level>=.9995f?1:0));}
     void osdTick(){
         if(!osdClient)return;LARGE_INTEGER f{};QueryPerformanceFrequency(&f);LONGLONG t=now();float dt=float(double(t-lastTick)/double(f.QuadPart));lastTick=t;
         bool was=state.sampling;int kick=0;bool changed=state.tick(dt,kick);if(kick)osdKick(kick);if(changed||kick||osdDirty){osdDirty=false;osdRender(false);}
@@ -290,11 +321,11 @@ struct App {
         flyoutKeepUntil=0;if(osdMask!=3){flyoutOnUntil=GetTickCount64()+2500;SetTimer(window,TimerFlyout,2550,nullptr);} // an on-kind change was seen for this show: the pop-up may be hidden now, and comes back when this runs out
         if(!osdShown)syncFlyout(); // already showing: coalesce, the MsgFlyout hook covers a re-shown pop-up
         if(!osdOk()||deferring){state.knob.jump(state.current());return;} // not shown: snap, so the next show does not glide from an old level
-        if(osdShown&&!lensAtCard){osdDirty=true;osdKick(way);osdWake();SetTimer(window,TimerHide,1800,nullptr);return;} // no place/render here: the tick redraws once
-        lensAtCard=false;place();osdRender(!osdShown);osdKick(way);osdClient->show(true);osdShown=true;osdWake();SetTimer(window,TimerHide,1800,nullptr);
+        if(osdShown&&!lensAtCard){if(state.switched)osdRender(false);else osdDirty=true;osdKick(way);osdWake();osdHold();return;} // no place here; a change of kind redraws its number and symbol now, else the tick redraws once
+        lensAtCard=false;place();osdRender(!osdShown);osdKick(way);osdClient->show(true);osdShown=true;osdWake();osdHold();
     }
     void sample(){ // a sweep on the lens only: nothing here reads or writes the system volume or brightness
-        if(!osdOk())return;lensAtCard=visible;place();KillTimer(window,TimerHide);state.startSample();osdRender(true);osdClient->show(true);osdShown=true;osdWake();
+        if(!osdOk())return;lensAtCard=visible;place();KillTimer(window,TimerHide);state.startSample();osdRender(true);osdClient->show(true);osdShown=true;osdWake();SetTimer(window,TimerPointer,20,nullptr);
     }
     void replay(){if(!client||!visible)return;client->hide(true);SetTimer(window,TimerReplay,UINT(spec.outMs+150),nullptr);}
     // Title-bar glass: up to 3 more clients put a glass strip over each empty drag area of the title bar of the target window (the host surface is click-through, so the window stays usable). No contents are published: the host zero-fills a size that has none, which is plain glass with no ink.
@@ -384,7 +415,7 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
     case MsgOwner:app->refresh();SetTimer(hwnd,TimerRecheck,400,nullptr);return 0; // the event can come before the minimize/restore finishes: look again once
     case TitleEvent:if(w==lghost::Connected||w==lghost::Restarted)app->titlePlace();else if(w==lghost::Failed){app->titleFailed=true;app->titleReset();}return 0; // no retry loop: a new target clears titleFailed
     case MsgForeground:app->refresh();if(app->titleTarget){app->titleCache.stale=true;app->titleCache.ttl=1000;app->titlePlace();}return 0;
-    case MsgFlyout:app->syncFlyout();return 0;
+    case MsgFlyout:app->syncFlyout();app->limitWaits=0;SetTimer(hwnd,TimerLimit,150,nullptr);return 0; // a level change, if any, comes in meanwhile; else limitShow
     case WM_DISPLAYCHANGE:if(app->osdLive())app->osdStop();app->place();app->titlePlace();return 0;
     case WM_POWERBROADCAST:
         if(w==PBT_APMSUSPEND||w==PBT_APMRESUMEAUTOMATIC||w==PBT_APMRESUMESUSPEND){if(app->osdLive())app->osdStop();app->titleHide();app->quietUntil=GetTickCount64()+3000;if(app->titleTarget)SetTimer(hwnd,TimerTitle,3050,nullptr);} // a stuck card after sleep; the resume brightness restore stays silent
@@ -409,7 +440,9 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
         if(w==TimerRecheck){KillTimer(hwnd,TimerRecheck);app->refresh();}else if(w==TimerAnim)app->osdTick();
         else if(w==TimerTitle){KillTimer(hwnd,TimerTitle);app->titlePlace();}
         else if(w==TimerFlyout){KillTimer(hwnd,TimerFlyout);app->syncFlyout();}
-        else if(w==TimerHide){KillTimer(hwnd,TimerHide);if(app->osdClient){app->osdClient->hide(true);app->osdShown=false;}app->flyoutOnUntil=0;app->syncFlyout();} // the lens is gone: with a mask other than 3 Windows' pop-up may show again for a key at its limit
+        else if(w==TimerHide){KillTimer(hwnd,TimerHide);app->osdHideDue();}
+        else if(w==TimerPointer)app->osdPointer();
+        else if(w==TimerLimit){KillTimer(hwnd,TimerLimit);app->limitShow();}
         else if(w==TimerReplay){KillTimer(hwnd,TimerReplay);if(app->visible&&app->client){app->client->show(true);app->client->kick(1);}}
         return 0;
     case WM_SETTINGCHANGE:case WM_SIZE:app->refresh();break;
@@ -419,7 +452,7 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
     case WM_APP+17:if(!app->owner){ShowWindow(hwnd,SW_RESTORE);SetForegroundWindow(hwnd);}return 0;
     case WM_CLOSE:DestroyWindow(hwnd);return 0;
     case WM_DESTROY:
-        for(UINT_PTR timer:{TimerAnim,TimerHide,TimerReplay,TimerRecheck,TimerTitle,TimerFlyout})KillTimer(hwnd,timer);app->titleUnhook();app->titleTarget=nullptr;app->titleReset();
+        for(UINT_PTR timer:{TimerAnim,TimerHide,TimerReplay,TimerRecheck,TimerTitle,TimerFlyout,TimerPointer,TimerLimit})KillTimer(hwnd,timer);app->titleUnhook();app->titleTarget=nullptr;app->titleReset();
         if(app->wait){UnregisterWaitEx(app->wait,INVALID_HANDLE_VALUE);app->wait=nullptr;}
         for(auto&hook:app->hooks)if(hook){UnhookWinEvent(hook);hook=nullptr;}
         lgpreview::restoreFlyouts(); // Windows' own pop-up comes back with the lens gone
@@ -439,12 +472,18 @@ int selfTest(){lghost::Spec spec;auto frame=lghost::wire::frame(3,42,lghost::wir
     // OSD: springs
     osd::Knob knob;knob.jump(0);knob.set(1);int steps=0;float top=0;while(knob.active()&&steps<400){knob.step(.016f);top=std::max(top,knob.at);++steps;}
     check(steps<400&&knob.at==1.f&&knob.speed==0.f&&top<=1.f,"knob settles at target, never past it");check(knob.lift==0.f&&knob.liftSpeed==0.f&&knob.flow==0.f,"lift returns to 0");
+    {osd::Knob k;k.jump(.5f);k.aim(true,true);int n=0;while(k.active()&&n<400){k.step(.016f);++n;}bool held=n<400&&k.hover==1.f&&k.press==1.f&&k.at==.5f;
+        k.aim(false,false);n=0;float low=0;while(k.active()&&n<400){k.step(.016f);low=std::min(low,k.press);++n;}
+        check(held&&n<400&&k.hover==0.f&&k.press==0.f&&k.hoverSpeed==0.f&&k.pressSpeed==0.f&&low<0.f,"hover and press settle, the press wobbles back past 0, the place stays");}
     osd::State state;check(state.onVolume(.5f,false)==0&&state.onBrightness(40)==0,"first readings only initialise");check(state.onVolume(.7f,false)==1&&state.onVolume(.2f,false)==-1&&state.onBrightness(60)==1,"changes give their way");
     state.startSample();int kicks=0,ticks=0;while((state.sampling||state.knob.active())&&ticks<1000){int kick=0;state.tick(.016f,kick);kicks+=kick!=0;++ticks;}
     check(ticks<1000&&kicks>=3&&std::fabs(state.knob.at-state.current())<.0001f,"sample sweep returns to the real level");
+    {osd::State s;s.onVolume(.8f,false);s.onBrightness(30);s.onVolume(.9f,false);int way=s.onBrightness(40);bool start=way==1&&s.source==1&&s.switched&&s.knob.at==.3f&&s.knob.goal==.4f;float lo=1,hi=0;int n=0;
+        while(s.knob.active()&&n<400){int kick=0;s.tick(.016f,kick);lo=std::min(lo,s.knob.at);hi=std::max(hi,s.knob.at);++n;}
+        check(start&&n<400&&lo>=.2999f&&hi<=.4001f&&s.percent()==40&&s.glyph()==wchar_t(0xE706),"a switch to brightness starts the knob at its last level and glides only its step");}
     // OSD: alpha convention (slider odd, ink even, premultiplied)
     {const int W=192,H=47;osd::Slider sl;sl.bar.r=RECT{50,20,140,26};sl.strip=RECT{40,0,150,H};sl.base.assign(size_t(110)*size_t(H),0);std::vector<uint32_t> pixels(size_t(W)*size_t(H),0);bool final=true,any=false;
-        for(int style=0;style<3;++style){osd::Knob k;k.jump(.6f);k.lift=.8f;for(auto&p:pixels)p=0;osd::drawSlider(pixels.data(),W,sl,k,style,1.f,style*.5f);
+        for(int style=0;style<3;++style)for(float press:{0.f,1.f,-.35f}){osd::Knob k;k.jump(.6f);k.lift=.8f;k.hover=press!=0?1.f:0.f;k.press=press;for(auto&p:pixels)p=0;osd::drawSlider(pixels.data(),W,sl,k,style,1.f,style*.5f);
             for(auto p:pixels)if(p){any=true;if(!osd::isFinal(p))final=false;}}
         check(any&&final,"slider pixels have odd alpha and are premultiplied");}
     {osd::GdiSession gdi;bool sizesOk=true,barsOk=true,premulOk=true,inkOk=true;
@@ -503,7 +542,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR,int){
         app.buildUi(instance);
         app.rescale();app.place();
         app.spec.inShots=true;app.client=std::make_unique<lghost::Client>(options,app.spec);
-        app.lens=osd::lensSpec(app.spec,app.spec.scale);app.lens.inShots=true;app.lens.hover=false;app.lensOptions=options;app.lensOptions.message=OsdEvent;app.lensOptions.hostPath.clear(); // the lens client starts on HostEvent Connected
+        app.lens=osd::lensSpec(app.spec,app.spec.scale);app.lens.inShots=true;app.lens.hover=!app.reduced();app.lensOptions=options;app.lensOptions.message=OsdEvent;app.lensOptions.hostPath.clear(); // the lens client starts on HostEvent Connected
         app.apply();
         float level=0;bool mute=false;if(app.audio.start(hwnd,MsgVolume,MsgDevice)&&app.audio.read(level,mute))app.state.onVolume(level,mute); // the first reading only initialises
         app.power2=RegisterPowerSettingNotification(hwnd,&osd::ConsoleDisplayGuid,DEVICE_NOTIFY_WINDOW_HANDLE);app.power=RegisterPowerSettingNotification(hwnd,&osd::BrightnessGuid,DEVICE_NOTIFY_WINDOW_HANDLE);

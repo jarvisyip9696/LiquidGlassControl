@@ -1,9 +1,9 @@
 # LGEngine desktop integration
 
-The C++17 client and adapter use the official LGEngine 2.7.15.0 host at
-`4e24ca4e55e6b8c6b119a1b2325002a139deff63` (protocol 1.1).
+The C++17 client and adapter use the official LGEngine 2.7.16.0 host at
+`ed79cc959725de34253ca2d580631d7b804302ba` (protocol 1.1).
 `prepare-upstream.ps1` downloads/verifies the pinned checkout in
-`build/LGEngine-2.7.15`; `build-native.ps1` compiles it and the adapter.
+`build/LGEngine-2.7.16`; `build-native.ps1` compiles it and the adapter.
 Release route: `stage-host.ps1`, `build-native.ps1` and CI build that pinned host
 unpatched. Developer route: `build-candidate.ps1` applies `fixes.patch` (explicit
 appearance mode) to `build/LGEngine-upstream` for local candidates only; none of
