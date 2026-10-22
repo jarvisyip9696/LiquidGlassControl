@@ -344,9 +344,9 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
                     if(child&&child.Visibility()!=winrt::Windows::UI::Xaml::Visibility::Visible)continue;
                     auto type=winrt::get_class_name(object);
                     if(child&&child.Name()==L"SystemTrayFrameGrid"&&child.ActualWidth()>0)try{double x=liquid::naturalLeft(child,host),a=std::max(0.0,x),b=std::min(width,x+child.ActualWidth());if(b>a)trayElement=child;continue;}catch(...){}
-                    bool icon=type==L"Taskbar.TaskListButton"||type==L"Taskbar.TaskListLabeledButton"||type==L"Taskbar.ExperienceToggleButton"||type==L"SearchUx.SearchUI.SearchIconButton"||type==L"SearchUx.SearchUI.SearchBoxButton";
+                    bool icon=type==L"Taskbar.TaskListButton"||type==L"Taskbar.TaskListLabeledButton"||type==L"Taskbar.ExperienceToggleButton"||type==L"SearchUx.SearchUI.SearchIconButton"||type==L"SearchUx.SearchUI.SearchBoxButton"||type==L"Taskbar.SearchBoxButton";
                     if(icon&&child&&child.ActualWidth()>0){double x=liquid::naturalLeft(child,host),a=std::max(0.0,x),b=std::min(width,x+child.ActualWidth());
-                        if(b>a){layoutIcons.push_back(child);if(type==L"Taskbar.TaskListButton"||type==L"Taskbar.TaskListLabeledButton"){left=std::min(left,a);right=std::max(right,b);}else if(type!=L"Taskbar.ExperienceToggleButton"||b-a<=height*2)auxiliary.emplace_back(a,b);}continue;}
+                        if(b>a){layoutIcons.push_back(child);if(type==L"Taskbar.TaskListButton"||type==L"Taskbar.TaskListLabeledButton"){left=std::min(left,a);right=std::max(right,b);}else if(type!=L"Taskbar.ExperienceToggleButton"||liquid::joinsCapsule(liquid::automationId(child),b-a,height))auxiliary.emplace_back(a,b);}continue;}
                     int count=Tree::GetChildrenCount(object);for(int i=0;i<count;++i)pending.push_back(Tree::GetChild(object,i));}
                 // Only include controls contiguous with the task buttons. A
                 // separate Widgets button at the screen edge must not stretch

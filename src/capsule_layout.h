@@ -1,5 +1,7 @@
 #pragma once
 #include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.UI.Xaml.Automation.h>
+#include <winrt/Windows.UI.Xaml.Automation.Peers.h>
 namespace liquid {
 struct CapsulePlacement {double left=0,right=0,apps=0,tray=0;bool valid=false;};
 inline CapsulePlacement placeCapsule(double width,double appLeft,double appRight,double trayLeft,double trayRight){
@@ -12,6 +14,14 @@ inline double naturalLeft(winrt::Windows::UI::Xaml::FrameworkElement const&e,win
     auto parent=winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetParent(e).try_as<winrt::Windows::UI::Xaml::UIElement>();auto o=e.ActualOffset();
     return parent?(double)parent.TransformToVisual(host).TransformPoint({o.x,o.y}).X:(double)e.TransformToVisual(host).TransformPoint({0,0}).X;
 }
+// The id UI Automation reports: the attached AutomationId, else the peer's. Not x:Name: every experience button is LaunchListButton.
+inline std::wstring automationId(winrt::Windows::UI::Xaml::FrameworkElement const&e){
+    std::wstring id;try{id=winrt::Windows::UI::Xaml::Automation::AutomationProperties::GetAutomationId(e).c_str();}catch(...){}
+    if(id.empty())try{if(auto peer=winrt::Windows::UI::Xaml::Automation::Peers::FrameworkElementAutomationPeer::FromElement(e))id=peer.GetAutomationId().c_str();}catch(...){}
+    return id;
+}
+// Widgets is the one experience button that may stand apart from the apps. Search is as wide, so judge by id; width only without one.
+inline bool joinsCapsule(std::wstring const&id,double span,double height){return id.empty()?span<=height*2:id!=L"WidgetsButton";}
 // XAML transforms move both visuals and hit testing. Never change the native
 // taskbar window, monitor work area, or the user's taskbar alignment preference.
 class CapsuleLayout {
@@ -43,5 +53,6 @@ public:
         return plan;
     }catch(...){if(log)log(L"capsule layout exception="+std::to_wstring((long)winrt::to_hresult()));stop();return {};}}
 };
-inline bool testCapsulePlacement(){auto p=placeCapsule(1920,550,1350,1600,1900);return p.valid&&p.left==406&&p.right==1514&&550+p.apps==406&&1600+p.tray==1214&&1214-(1350+p.apps)==8&&!placeCapsule(900,0,800,800,1000).valid&&!placeCapsule(1920,550,550,1600,1900).valid;}
+inline bool testCapsulePlacement(){auto p=placeCapsule(1920,550,1350,1600,1900);return p.valid&&p.left==406&&p.right==1514&&550+p.apps==406&&1600+p.tray==1214&&1214-(1350+p.apps)==8&&!placeCapsule(900,0,800,800,1000).valid&&!placeCapsule(1920,550,550,1600,1900).valid
+    &&joinsCapsule(L"SearchButton",240,48)&&joinsCapsule(L"StartButton",48,48)&&joinsCapsule(L"",48,48)&&!joinsCapsule(L"WidgetsButton",48,48)&&!joinsCapsule(L"",240,48);}
 }

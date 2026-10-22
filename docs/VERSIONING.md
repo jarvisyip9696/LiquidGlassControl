@@ -73,3 +73,8 @@ deleted again: the engine host now runs from its own copy under
 brightness glass hands over cleanly when you switch between them and follows
 the pointer without lag. It bundles the LGEngine 2.7.16.0 host, whose lens
 reads the screen at full resolution.
+
+0.13.2 fixes the taskbar capsule. Start and the Search box now move with the
+app icons instead of staying put underneath them. The capsule used to skip any
+wide taskbar button so that Widgets would stay out, and the Search box is just
+as wide, so it now tells Widgets apart by its id.
