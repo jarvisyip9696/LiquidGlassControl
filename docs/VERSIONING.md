@@ -78,3 +78,9 @@ reads the screen at full resolution.
 app icons instead of staying put underneath them. The capsule used to skip any
 wide taskbar button so that Widgets would stay out, and the Search box is just
 as wide, so it now tells Widgets apart by its id.
+
+0.13.3 fixes the taskbar capsule again. 0.13.2 still left Start and the Search
+box behind on some PCs, because the capsule's search through the taskbar
+missed them. It now takes them from the same row as the app icons and leaves
+out only Widgets, by its id. The engine log gets a "capsule row" line that
+lists what that row holds.
