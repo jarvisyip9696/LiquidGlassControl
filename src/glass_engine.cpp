@@ -156,7 +156,7 @@ bool connect(DWORD pid,HANDLE cfgH=nullptr,HANDLE stH=nullptr,HANDLE procH=nullp
     ReleaseSRWLockExclusive(&configLock);return true;
 }
 struct Saved {unsigned index{};bool local=false;Ptr<IInspectable> value;winrt::Windows::UI::Xaml::DependencyProperty direct{nullptr};};
-struct Node {InstanceHandle key{};bool nativeProbed=false;int notificationRoot=-1;std::vector<const wchar_t*> imported;Ptr<IWeakReference> weak;glass::Surface surface=glass::NoSurface;std::map<std::wstring,Saved> saved;std::map<std::wstring,std::function<void()>> watchers;std::wstring capsuleGeometry;std::shared_ptr<liquid::CapsuleLayout> capsuleLayout;DWORD appliedSignature=0;bool composition=false,fallback=false;HRESULT lastReport=S_FALSE;bool reported=false;HRESULT lastCapsule=E_NOINTERFACE;bool capsuleReported=false,capsuleDirty=true;};
+struct Node {InstanceHandle key{};bool nativeProbed=false;int notificationRoot=-1;std::vector<const wchar_t*> imported;Ptr<IWeakReference> weak;glass::Surface surface=glass::NoSurface;std::map<std::wstring,Saved> saved;std::map<std::wstring,std::function<void()>> watchers;std::wstring capsuleGeometry;std::shared_ptr<liquid::CapsuleLayout> capsuleLayout;DWORD appliedSignature=0;bool composition=false,fallback=false;HRESULT lastReport=S_FALSE;bool reported=false;HRESULT lastCapsule=E_NOINTERFACE;bool capsuleReported=false,capsuleDirty=true;std::wstring capsuleRow;unsigned capsuleRows=0;};
 class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
     std::atomic<ULONG> refs{1};Ptr<IUnknown> site;Ptr<IXamlDiagnostics> diag;Ptr<IVisualTreeService2> service;Ptr<CacheRelease> cache;
     struct Thread {Session*session{};HWND window{};std::map<InstanceHandle,Node> nodes;std::set<InstanceHandle> release;ULONGLONG lastMutation=0,releaseStarted=0;std::deque<std::pair<winrt::weak_ref<winrt::Windows::UI::Xaml::FrameworkElement>,int>> nativeProbes;lghost::NativeCaptureLane nativeLane;std::shared_ptr<lghost::NativeInspectionControl> nativeControl;uint64_t nativeToken=0;bool updating=false,updateQueued=false;bool taskbarPanel=false,unifiedCapsule=false;InstanceHandle notificationRoots[2]{};unsigned retries{};LONG observedSequence=-1;DWORD observedFeatures=0;bool heartbeatTimer=false;liquid::DockAnimation dock;~Thread(){if(nativeControl)nativeControl->cancel();for(auto&n:nodes)for(auto&w:n.second.watchers)w.second();}};
@@ -337,7 +337,7 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
                 for(int depth=0;root&&depth<16;++depth){if(winrt::get_class_name(root)==L"Taskbar.TaskbarFrame"){taskbar=true;break;}root=Tree::GetParent(root).try_as<Element>();}
                 if(taskbar&&!n.watchers.count(L"CapsuleLayout")){auto&t=thread();auto token=root.LayoutUpdated([&t,h](auto const&,auto const&){if(t.updating)return;auto i=t.nodes.find(h);if(i==t.nodes.end()||i->second.capsuleDirty)return;i->second.capsuleDirty=true;scheduleUpdate(t);});auto weak=winrt::make_weak(root);n.watchers[L"CapsuleLayout"]=[weak,token]{try{if(auto e=weak.get())e.LayoutUpdated(token);}catch(...){}};}
                 double left=width,right=0;bool joined=false;std::vector<std::pair<double,double>> auxiliary;
-                Element trayElement{nullptr};std::vector<Element> layoutIcons;
+                Element trayElement{nullptr};std::vector<Element> layoutIcons;winrt::Windows::UI::Xaml::DependencyObject appRow{nullptr};
                 Element scanRoot=root;if(taskbar)for(unsigned depth=0;depth<8;++depth){auto parent=Tree::GetParent(scanRoot).try_as<Element>();if(!parent)break;scanRoot=parent;}
                 std::vector<winrt::Windows::UI::Xaml::DependencyObject> pending;if(taskbar)pending.push_back(scanRoot);
                 unsigned visited=0;while(!pending.empty()&&visited++<2048){auto object=pending.back();pending.pop_back();auto child=object.try_as<Element>();
@@ -346,8 +346,25 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
                     if(child&&child.Name()==L"SystemTrayFrameGrid"&&child.ActualWidth()>0)try{double x=liquid::naturalLeft(child,host),a=std::max(0.0,x),b=std::min(width,x+child.ActualWidth());if(b>a)trayElement=child;continue;}catch(...){}
                     bool icon=type==L"Taskbar.TaskListButton"||type==L"Taskbar.TaskListLabeledButton"||type==L"Taskbar.ExperienceToggleButton"||type==L"SearchUx.SearchUI.SearchIconButton"||type==L"SearchUx.SearchUI.SearchBoxButton"||type==L"Taskbar.SearchBoxButton";
                     if(icon&&child&&child.ActualWidth()>0){double x=liquid::naturalLeft(child,host),a=std::max(0.0,x),b=std::min(width,x+child.ActualWidth());
-                        if(b>a){layoutIcons.push_back(child);if(type==L"Taskbar.TaskListButton"||type==L"Taskbar.TaskListLabeledButton"){left=std::min(left,a);right=std::max(right,b);}else if(type!=L"Taskbar.ExperienceToggleButton"||liquid::joinsCapsule(liquid::automationId(child),b-a,height))auxiliary.emplace_back(a,b);}continue;}
+                        if(b>a){layoutIcons.push_back(child);if(type==L"Taskbar.TaskListButton"||type==L"Taskbar.TaskListLabeledButton"){left=std::min(left,a);right=std::max(right,b);if(!appRow)appRow=Tree::GetParent(object);}else if(type!=L"Taskbar.ExperienceToggleButton"||liquid::joinsCapsule(liquid::automationId(child),b-a,height))auxiliary.emplace_back(a,b);}continue;}
                     int count=Tree::GetChildrenCount(object);for(int i=0;i<count;++i)pending.push_back(Tree::GetChild(object,i));}
+                // Start and the Search box share the app buttons' row. Take them from that row, not by type name: the 0.13.2 log
+                // measured the apps alone. In that row only Widgets stays out. Its id may sit on a child, so the item's subtree
+                // is searched for one; a Search box without any id still joins. The first "capsule row" lines show what the row held.
+                std::wstring row;
+                if(appRow){int count=Tree::GetChildrenCount(appRow);for(int i=0;i<count;++i)try{auto item=Tree::GetChild(appRow,i).try_as<Element>();
+                    if(!item||item.Visibility()!=winrt::Windows::UI::Xaml::Visibility::Visible||item.ActualWidth()<=0)continue;
+                    auto type=winrt::get_class_name(item);if(type==L"Taskbar.TaskListButton"||type==L"Taskbar.TaskListLabeledButton")continue;
+                    double x=liquid::naturalLeft(item,host),a=std::max(0.0,x),b=std::min(width,x+item.ActualWidth());if(b<=a)continue;
+                    std::wstring id;std::vector<winrt::Windows::UI::Xaml::DependencyObject> inside{item};
+                    for(size_t k=0;k<inside.size()&&id.empty();++k){if(auto e=inside[k].try_as<Element>())id=liquid::automationId(e);int kids=Tree::GetChildrenCount(inside[k]);for(int j=0;j<kids&&inside.size()<64;++j)inside.push_back(Tree::GetChild(inside[k],j));}
+                    bool joins=id!=L"WidgetsButton";
+                    // An icon the scan already took may be this item or sit inside it; moving both would move it twice.
+                    bool known=false;for(auto const&e:layoutIcons){winrt::Windows::UI::Xaml::DependencyObject up=e;for(int d=0;up&&d<8&&!known;++d){known=up==item;up=Tree::GetParent(up);}if(known)break;}
+                    row+=L" "+std::wstring(type.c_str())+L"#"+id+L"@"+std::to_wstring((int)a)+L"-"+std::to_wstring((int)b)+(joins?L"+":L"-")+(known?L"k":L"");
+                    if(joins){if(!known)layoutIcons.push_back(item);auxiliary.emplace_back(a,b);}}catch(...){}}
+                {auto line=L"capsule row"+(appRow?row:std::wstring(L" missing"))+L" apps="+std::to_wstring((int)left)+L"-"+std::to_wstring((int)right)+L" visited="+std::to_wstring(visited);
+                    if(line!=n.capsuleRow&&n.capsuleRows<8){n.capsuleRow=line;++n.capsuleRows;note(line);}}
                 // Only include controls contiguous with the task buttons. A
                 // separate Widgets button at the screen edge must not stretch
                 // the icon capsule across the whole taskbar.
