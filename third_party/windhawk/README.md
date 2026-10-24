@@ -34,3 +34,7 @@ or a full visual-state/theme-resource/private-symbol engine.
 The corresponding engine source and build scripts are included in the portable
 ZIP as LiquidGlass-engine-source.zip. This directory's license does not select
 a separate license for controller UI code; see the docs/LICENSING.md for its authorization scope.
+
+## User supplied Taskbar Styler 1.10 source (2026-10-23)
+
+upstream/windows-11-taskbar-styler-1.10.wh.cpp preserves the supplied complete source after the pasted website heading. Taskbar-LiquidGlass-Source.h preserves its exact g_themeLiquidGlass preset with only the C++ symbol changed to TaskbarSource. The standalone engine now selects its CommonStates assignments and subscribes to the corresponding native XAML group. Background opacity and accent theme color follow those state rules; WindhawkBlur still maps to the standalone Gaussian/tint composition brush. This is not the full Windhawk runtime or expression parser. Unrelated presets, network image loading, private hooks, text replacement and visibility/layout assignments from the complete snapshot are not enabled. Native LGEngine taskbar content is refreshed on state changes.

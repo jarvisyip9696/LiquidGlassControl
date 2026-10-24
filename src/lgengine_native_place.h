@@ -23,7 +23,9 @@ inline HWND nativeIslandWindow(winrt::Windows::UI::Xaml::FrameworkElement const&
 inline bool nativePlace(winrt::Windows::UI::Xaml::FrameworkElement const&e,HWND island,Spec&spec){
     if(!island||!IsWindow(island)||!IsWindowVisible(island)||!e.IsLoaded())return false;
     DWORD pid{};if(GetWindowThreadProcessId(island,&pid)!=GetCurrentThreadId()||pid!=GetCurrentProcessId())return false;
-    auto root=e.XamlRoot();if(!root||!root.IsHostVisible())return false;
+    // Shell-owned XamlRoot visibility can disagree with its live HWND. The exact
+    // same-thread island and ancestor visibility checks are authoritative here.
+    auto root=e.XamlRoot();if(!root)return false;
     using namespace winrt::Windows::UI::Xaml;
     DependencyObject parent=e;for(unsigned n=0;parent&&n<128;++n){if(auto ui=parent.try_as<UIElement>();ui&&ui.Visibility()!=Visibility::Visible)return false;parent=Media::VisualTreeHelper::GetParent(parent);}
     auto transform=e.TransformToVisual(root.Content());auto top=transform.TransformPoint({0,0});

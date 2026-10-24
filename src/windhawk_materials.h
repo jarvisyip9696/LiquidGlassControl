@@ -8,6 +8,7 @@ namespace imported_glass {
 struct ThemeTargetStyles{const wchar_t*target;std::vector<const wchar_t*>styles;};
 struct Theme{std::vector<ThemeTargetStyles>targets;std::vector<const wchar_t*>constants;};
 #include "../third_party/windhawk/Taskbar-LiquidGlass.h"
+#include "../third_party/windhawk/Taskbar-LiquidGlass-Source.h"
 #include "../third_party/windhawk/Start-LiquidGlass.h"
 #include "../third_party/windhawk/Notifications-LiquidGlass.h"
 #include "../third_party/windhawk/Explorer-LiquidGlass.h"
@@ -29,6 +30,9 @@ inline std::vector<const wchar_t*>styles(Theme const&t,std::vector<Element>const
 inline bool assignment(std::wstring text,std::wstring&property,std::wstring&value){auto equal=text.find(L'=');if(equal==text.npos)return false;property=trim(text.substr(0,equal));if(!property.empty()&&property.back()==L':')property.pop_back();property=trim(property);value=trim(text.substr(equal+1));return !property.empty();}
 inline std::wstring resolve(Theme const&t,std::wstring value){if(value.empty()||value[0]!=L'$')return value;auto key=value.substr(1);for(auto c:t.constants){std::wstring name,text;if(assignment(c,name,text)&&name==key)return text;}return value;}
 inline bool test(){
+    auto nativeStates=styles(TaskbarSource,{{L"Windows.UI.Xaml.Controls.Border",L"BackgroundElement"},{L"Windows.UI.Xaml.Controls.Grid",L"IconPanel"}});
+    bool hover=false,press=false;for(auto rule:nativeStates){std::wstring property,value;if(!assignment(rule,property,value))return false;if(property==L"Background@ActivePointerOver")hover=resolve(TaskbarSource,value).find(L"SystemAccentColorLight1")!=std::wstring::npos;if(property==L"Background@ActivePressed")press=resolve(TaskbarSource,value).find(L"TintOpacity=\"0.2\"")!=std::wstring::npos;}
+    if(!hover||!press)return false;
     std::vector<Element>path={{L"Windows.UI.Xaml.Controls.Grid",L"RootGrid"},{L"Taskbar.TaskbarFrame",L""}};
     if(!matches(L"Taskbar.TaskbarFrame > Grid#RootGrid",path)||matches(L"Border#RootGrid",path)||matches(L"Grid#Other",path))return false;
     auto found=styles(Taskbar,path);bool background=false;

@@ -30,7 +30,7 @@ inline winrt::fire_and_forget inspectNativeContent(winrt::Windows::UI::Xaml::Fra
         winrt::com_ptr<NativeRenderBitmap> bitmap;const GUID id{0x500dee81,0x893c,0x4c0a,{0x8f,0xec,0x46,0x78,0xac,0x71,0x75,0x89}};
         info.stage=L"interface";winrt::check_hresult(winrt::get_unknown(object)->QueryInterface(id,bitmap.put_void()));
         auto ui=element.as<winrt::Windows::UI::Xaml::UIElement>();winrt::Windows::Foundation::IAsyncAction render{nullptr};
-        info.stage=L"render-call";winrt::check_hresult(bitmap->RenderSized(winrt::get_abi(ui),spec.width,spec.height,winrt::put_abi(render)));control->operation=render.as<winrt::Windows::Foundation::IAsyncInfo>();info.stage=L"render-await";co_await render;control->check();
+        info.stage=L"render-call";winrt::check_hresult(bitmap->RenderSized(winrt::get_abi(ui),std::max(1,int(std::lround(spec.width/scale))),std::max(1,int(std::lround(spec.height/scale))),winrt::put_abi(render)));control->operation=render.as<winrt::Windows::Foundation::IAsyncInfo>();info.stage=L"render-await";co_await render;control->check();
         info.stage=L"pixel-size";winrt::check_hresult(bitmap->Width(&info.pixelWidth));winrt::check_hresult(bitmap->Height(&info.pixelHeight));
         winrt::Windows::Foundation::IAsyncOperation<winrt::Windows::Storage::Streams::IBuffer> operation{nullptr};info.stage=L"pixels-call";winrt::check_hresult(bitmap->Pixels(winrt::put_abi(operation)));control->operation=operation.as<winrt::Windows::Foundation::IAsyncInfo>();info.stage=L"pixels-await";auto buffer=co_await operation;control->check();
         info.stage=L"buffer-length";info.bytes=buffer.Length();

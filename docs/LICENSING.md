@@ -4,7 +4,7 @@ The project owner's and DK (@domk6966)'s original contributions to Liquid Glass 
 
 Third-party code retains its existing copyright notices and licenses:
 
-- The experimental standalone-engine branch contains adapted Windhawk Styler material and engine code under GPL-3.0-only, and MinHook with its own license notices. These components are not part of the current main-branch preview. When distributing that branch, retain its third_party notices and bundled Third Party Notices.
+- The standalone engine contains adapted Styler material and engine code under GPL-3.0-only, and MinHook with its own license notices. Retain the corresponding source and bundled third-party notices when distributing it. This does not require the Windhawk application or runtime.
 
 On 2026-10-16, the repository owner confirmed that DK (@domk6966) also agrees to GPL-3.0-only licensing of their original contributions. This records the owner's confirmation, not an independently collected statement from DK. Any additional contributors must authorize their own work; third-party licenses remain unchanged.
 

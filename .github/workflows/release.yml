@@ -39,5 +39,7 @@ jobs:
           $assets = @(Get-ChildItem dist -File | ForEach-Object FullName)
           gh release view "$env:GITHUB_REF_NAME" *> $null
           if ($LASTEXITCODE -eq 0) { Write-Host "Release already exists; preserving reviewed downloads."; exit 0 }
-          gh release create "$env:GITHUB_REF_NAME" @assets --verify-tag --draft --title "Liquid Glass Control $env:GITHUB_REF_NAME" --generate-notes
+          $prerelease = @()
+          if ($env:GITHUB_REF_NAME.Contains('-')) { $prerelease = @('--prerelease') }
+          gh release create "$env:GITHUB_REF_NAME" @assets --verify-tag --draft @prerelease --title "Liquid Glass Control $env:GITHUB_REF_NAME - Motion Refresh" --notes-file release/RELEASE-NOTES.md
           if ($LASTEXITCODE -ne 0) { throw 'Draft release creation failed' }

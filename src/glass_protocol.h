@@ -17,7 +17,9 @@ enum Feature:DWORD {Volume=1,Brightness=2,Taskbar=4,Start=8,Notifications=16,Exp
 constexpr DWORD NotificationHostFeatures=Notifications|Calendar|Toasts;
 // Each shell effect family has its own look; the shared Config fields stay as the legacy default the per-family values fall back to.
 enum Family {TaskbarLook,StartLook,NotificationLook,CalendarLook,ExplorerLook,FamilyCount};
+// Tint indices are persisted: 0 system, 1 light, 2 dark, 3 adaptive, 4 Windhawk LiquidGlass preset.
 struct Look {DWORD opacity=35,radius=12,tint=0,blur=12;};
+inline DWORD shellTint(DWORD tint,bool light){return tint==0||tint==4?(light?1:2):tint;}
 // Notification Center Styler 1.7 initializes these hosts only once their
 // actual panel window exists. ShellHost's hidden CoreWindow is not ready.
 inline bool notificationHostWindow(const std::wstring&exe,const std::wstring&cls){
@@ -66,6 +68,8 @@ inline ReadState readSnapshot(volatile Config*shared,Config&c,int attempts=16){
 }
 // Regression check for the reader above, run by --self-test: a consistent config is accepted, a writer that never finishes is Transient (bounded), and a foreign header is Invalid.
 inline bool selfTestSnapshot(){
+    const DWORD darkTints[]={2,1,2,3,2},lightTints[]={1,1,2,3,1};
+    for(DWORD tint=0;tint<=4;++tint)if(shellTint(tint,false)!=darkTints[tint]||shellTint(tint,true)!=lightTints[tint])return false;
     Config source;source.features=Taskbar|Dock;source.blur=20;source.looks[CalendarLook].opacity=61;source.dockSpread=170;Config out;
     source.heartbeat=100;if(!alive(&source,5099)||alive(&source,5100))return false;
     source.heartbeat=(LONG)0xfffffff0u;if(!alive(&source,16)||alive(&source,6000))return false;
@@ -74,8 +78,8 @@ inline bool selfTestSnapshot(){
     source.sequence=1;if(readSnapshot((volatile Config*)&source,out,4)!=ReadState::Transient)return false;
     source.sequence=0;source.magic=0;return readSnapshot((volatile Config*)&source,out)==ReadState::Invalid;
 }
-inline Look normalize(Look l){l.blur=bounded(l.blur,0,40);l.opacity=bounded(l.opacity,5,90);l.radius=bounded(l.radius,0,28);l.tint=bounded(l.tint,0,3);return l;}
-inline Config normalize(Config c){c.features&=2047;c.blur=bounded(c.blur,0,40);c.opacity=bounded(c.opacity,5,90);c.radius=bounded(c.radius,0,28);c.tint=bounded(c.tint,0,3);for(auto&l:c.looks)l=normalize(l);c.dockScale=bounded(c.dockScale,100,200);c.dockSpread=bounded(c.dockSpread,50,300);c.dockSpeed=bounded(c.dockSpeed,0,100);c.dockBounce=bounded(c.dockBounce,0,100);return c;}
+inline Look normalize(Look l){l.blur=bounded(l.blur,0,40);l.opacity=bounded(l.opacity,5,90);l.radius=bounded(l.radius,0,28);l.tint=bounded(l.tint,0,4);return l;}
+inline Config normalize(Config c){c.features&=2047;c.blur=bounded(c.blur,0,40);c.opacity=bounded(c.opacity,5,90);c.radius=bounded(c.radius,0,28);c.tint=bounded(c.tint,0,4);for(auto&l:c.looks)l=normalize(l);c.dockScale=bounded(c.dockScale,100,200);c.dockSpread=bounded(c.dockSpread,50,300);c.dockSpeed=bounded(c.dockSpeed,0,100);c.dockBounce=bounded(c.dockBounce,0,100);return c;}
 // Names only identify material surfaces. No width, height, padding, alignment,
 // taskbar position or system work-area property is ever written by this engine.
 enum Surface {NoSurface,TaskbarFill,OsdPlate,VolumePlate,BrightnessPlate,StartPlate,StartOverlay,NotificationPlate,ExplorerPlate,TaskbarRoot,TaskbarOverlay,StartClear,NotificationClear,ExplorerClear,DockRoot,DockIcon,TaskbarAuxiliary,NotificationAuxiliary,KeyboardPlate,CalendarPlate,CalendarAuxiliary,ToastPlate};

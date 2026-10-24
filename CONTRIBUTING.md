@@ -1,68 +1,63 @@
-# Contributing / 参与开发
+# Contributing
 
-The project owner's and DK's original contributions are licensed under GPL-3.0-only. See LICENSE and docs/LICENSING.md for scope and third-party notices. The owner confirmed DK's agreement on 2026-10-16; other copyright holders must authorize any additional contributions.
+Thank you for contributing to Liquid Glass Control. Keep changes focused, preserve native Windows behavior, and make restoration reliable.
 
-项目所有者与 DK 的原创贡献采用 GPL-3.0-only，范围和第三方许可证见 docs/LICENSING.md。所有者已于 2026-10-16 确认 DK 同意；后续其他权利人的贡献仍需取得授权。新增贡献须遵守 docs/LICENSING.md。
+## Before changing code
 
-## Work together
+- Read the relevant implementation and its callers before editing.
+- Keep source, Git history, user settings, and recovery records. Clean only identified generated artifacts.
+- Build into a separate directory. Never overwrite an existing installation or desktop shortcut as part of a routine build.
+- Do not add a Windhawk runtime dependency. The application uses its own embedded engine; imported material code retains its original license.
+- File Explorer styling is no longer a supported feature. Do not reactivate it through old settings or application-wide controls.
 
-1. Clone this repository using your own GitHub account. Each contributor keeps their own checkout.
-2. Create an Issue to describe the problem or proposed behavior and agree who will work on it.
-3. Update `main`, then create one branch per change, for example `fix/settings-tabs` or `feature/native-progress-motion`.
-4. Make a focused change, build it and run the self-test.
-5. Push the branch and open a pull request targeting `main`. Describe the behavior, validation and remaining limitations.
-6. Ask the other maintainer to review. Merge after the Windows build passes, then delete the feature branch.
+## Build
 
-每人一个本地目录、每项改动一个分支，通过 PR 讨论和合并。不要共用账号或密码。合并前请另一位维护者检查并等待自动构建通过。
+Use Windows 11 x64 with either Visual Studio 2022 Build Tools and the Windows SDK, or a compatible MinGW clang++ toolchain. PowerShell is required for the project scripts.
+
+### MinGW clang++
 
 ```powershell
-git switch main
-git pull --ff-only
-git switch -c fix/describe-your-change
-# Edit, build and test.
-git add <changed-files>
-git commit -m "Describe the behavior change"
-git push -u origin HEAD
+./prepare-winrt.ps1
+./build.ps1 -OutputDirectory build/dev -BuildTests
+$test = Start-Process build/dev/LiquidGlassTests.exe -ArgumentList '--self-test' -WindowStyle Hidden -PassThru -Wait
+if ($test.ExitCode -ne 0) { throw 'Self-test failed' }
+Get-Content build/dev/self-test.txt
 ```
 
-## Build on Windows
+Pass `-Compiler` to select a toolchain explicitly. The script can also detect an already installed Windhawk compiler; that compiler is optional and does not introduce a runtime dependency.
 
-Requirements: Windows 11 x64, CMake 3.20+, Visual Studio 2022 Build Tools with Desktop development with C++ and the Windows SDK. Windhawk is not required for compilation, self-tests or the experimental standalone engine.
+### Visual Studio and CMake
 
 ```powershell
 ./prepare-winrt.ps1
 cmake -S . -B build/cmake -A x64
 cmake --build build/cmake --config Release
-$test = Start-Process build/cmake/Release/LiquidGlassTests.exe -ArgumentList '--self-test' -PassThru -Wait
+$test = Start-Process build/cmake/Release/LiquidGlassTests.exe -ArgumentList '--self-test' -WindowStyle Hidden -PassThru -Wait
 if ($test.ExitCode -ne 0) { throw 'Self-test failed' }
-Get-Content build/cmake/Release/self-test.txt
-./package.ps1 -ExecutablePath build/cmake/Release/LiquidGlassControl.exe
 ```
 
-Alternatively, use `./build.ps1 -BuildTests` with MinGW clang++ (the installed Windhawk compiler is detected), then `./package.ps1 -SkipBuild`.
-
-## Project map
-
-| File | Responsibility |
-|---|---|
-| `src/main.cpp` | Window lifecycle, settings, applying/restoring effects, self-test |
-| `src/control_ui.h` | Controls and five-language captions |
-| `src/ui_style.h` | Fonts and GDI rendering |
-| `src/native_osd.h`, `src/native_switches.h` | Native volume/brightness styles and restoration journals |
-| `src/shell_materials.h`, `src/shell_materials_test.h` | Independent shell background rules, journals and isolated registry tests |
-| `src/explorer_background.h` | Explorer-specific styles and restoration |
-| `package.ps1`, `release/` | Clean portable distribution and user instructions |
+The interface needs the generated build's `art/` and `fonts/` directories. LGEngine features also need the staged `lgengine/` runtime. See `integrations/LGEngine/stage-host.ps1` for the pinned host staging process.
 
 ## Validation
 
-- Keep every user-facing caption in all five languages; first launch defaults to English, saved choices persist.
-- Glass rules preserve taskbar geometry. Dock transforms icons visually. Smart hide has been removed; retain the legacy taskbar-state recovery path. Do not intercept media keys or add duplicate indicators.
-- Preserve custom styles and recovery journals; restore original theme and module activation state when Off.
-- The self-test uses local fixtures and temporary files; it does not apply live system styles. DWM assertions are skipped where unsupported.
-- Manually verify UI changes on Windows 11. For live effects, test apply and restore, independent On/Off states and reduced-motion behavior. Record Windows build and whether other styling tools were running. Include memory in injected processes.
-- Do not describe entry transitions as smooth numeric progress animation. The latter is not implemented yet.
-- Do not commit personal INI files, recovery backups, local logs, `build/` or `dist/`.
+- Run `./verify-localization.ps1` and the controller self-test.
+- Test the affected behavior and restoration path. Include reduced-motion behavior and rapid repeated input when changing animation.
+- Keep English, Simplified Chinese, Traditional Chinese, Polish, and Vietnamese supported. Custom-rendered text must use the same translation path as native controls.
+- Verify menus with mouse and keyboard input, multiple DPI scales, and both interface themes.
+- Self-tests use isolated fixtures. Do not test recovery code against a user's real registry settings or recovery journals.
+- Record live Windows testing separately from unit tests. Do not claim measured frame rates, complete transparency, or hardware energy savings without evidence.
+- If Windows application control blocks a build, report the failure. Do not alter security policy, rename blocked executables, or change their hash to evade it.
+
+## Pull requests
+
+Create a focused branch, describe the resulting behavior, and include relevant validation and limitations. Preserve licenses for adapted or vendored code. New original contributions use GPL-3.0-only unless explicitly identified otherwise.
+
+Do not commit `build/`, `dist/`, personal settings, local logs, or recovery backups. Use the repository's existing components and avoid unnecessary dependencies.
 
 ## Releases
 
-See [RELEASING.md](docs/RELEASING.md). Pull requests build/test/package on Windows. Version tags create a **draft** GitHub release; maintainers inspect its assets before publication. While this repository is private, release downloads also require access.
+`src/app_version.h` is the version source. Release tags must match it, for example `v0.14.0-beta.1`. Never replace a published tag.
+
+The release workflow builds and packages a draft from the tagged commit. A portable package must include interface assets, fonts and their licenses, the staged LGEngine runtime when enabled, corresponding source, and SHA-256 checksums. User settings and recovery records must stay out of downloads.
+
+Publish only the intended, reviewed assets. See [RELEASING.md](docs/RELEASING.md), [LICENSING.md](docs/LICENSING.md), and [CODE-SIGNING.md](docs/CODE-SIGNING.md).

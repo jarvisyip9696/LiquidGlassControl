@@ -29,9 +29,11 @@
 #include "capsule_layout.h"
 #include "lgengine_native_inspection.h"
 #include "native_capture_lane.h"
+#include "taskbar_optical_bridge.h"
 #include <deque>
 #include "xaml_subscription.h"
 #include "windhawk_materials.h"
+#include "windhawk_visual_states.h"
 namespace {
 template<class T> struct Ptr {
     T*p=nullptr;Ptr()=default;explicit Ptr(T*v):p(v){};~Ptr(){if(p)p->Release();}
@@ -112,6 +114,15 @@ void explorerBackdrop(bool on){
     ReleaseSRWLockExclusive(&backdropLock);
 }
 bool explorerBackdropActive(){AcquireSRWLockShared(&backdropLock);bool any=!backdrops.empty();ReleaseSRWLockShared(&backdropLock);return any;}
+// Host-backdrop sampling needs the DWM opt-in on Win32 shell hosts.
+// Preserve the existing flag and restore only tagged windows still owned by us.
+SRWLOCK hostBackdropLock=SRWLOCK_INIT;std::map<HWND,BOOL> hostBackdropFlags;
+void hostBackdropWindows(bool on){AcquireSRWLockExclusive(&hostBackdropLock);
+    for(auto i=hostBackdropFlags.begin();i!=hostBackdropFlags.end();){DWORD pid=0;GetWindowThreadProcessId(i->first,&pid);bool ours=IsWindow(i->first)&&pid==GetCurrentProcessId()&&GetPropW(i->first,L"LiquidGlass.HostBackdrop")==&hostBackdropFlags;if(on&&ours){++i;continue;}if(ours){BOOL current=FALSE;if(SUCCEEDED(DwmGetWindowAttribute(i->first,17,&current,sizeof(current)))&&current){BOOL original=i->second;trace("restore host backdrop",DwmSetWindowAttribute(i->first,17,&original,sizeof(original)));}RemovePropW(i->first,L"LiquidGlass.HostBackdrop");}i=hostBackdropFlags.erase(i);}
+    if(on)EnumThreadWindows(GetCurrentThreadId(),[](HWND h,LPARAM)->BOOL{if(hostBackdropFlags.count(h)||!IsWindowVisible(h))return TRUE;BOOL original=FALSE;if(FAILED(DwmGetWindowAttribute(h,17,&original,sizeof(original))))return TRUE;if(original)return TRUE;if(!SetPropW(h,L"LiquidGlass.HostBackdrop",&hostBackdropFlags))return TRUE;BOOL enabled=TRUE;HRESULT hr=DwmSetWindowAttribute(h,17,&enabled,sizeof(enabled));trace("enable host backdrop",hr);if(SUCCEEDED(hr)){hostBackdropFlags[h]=original;note(L"host backdrop enabled");}else RemovePropW(h,L"LiquidGlass.HostBackdrop");return TRUE;},0);
+    ReleaseSRWLockExclusive(&hostBackdropLock);
+}
+bool testHostBackdrop(){HWND h=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,L"STATIC",L"host backdrop regression",WS_POPUP|WS_VISIBLE,-32000,-32000,1,1,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);if(!h)return false;BOOL before=FALSE,enabled=FALSE,after=FALSE;HRESULT supported=DwmGetWindowAttribute(h,17,&before,sizeof(before));bool passed=true;if(SUCCEEDED(supported)){hostBackdropWindows(true);passed=SUCCEEDED(DwmGetWindowAttribute(h,17,&enabled,sizeof(enabled)))&&enabled;hostBackdropWindows(false);passed=passed&&SUCCEEDED(DwmGetWindowAttribute(h,17,&after,sizeof(after)))&&after==before&&!GetPropW(h,L"LiquidGlass.HostBackdrop");}DestroyWindow(h);return passed;}
 // Caller holds configLock exclusively. Releases every owner-scoped resource; safe on a partially connected state.
 void releaseOwnerLocked(){
     if(ownerWait){UnregisterWaitEx(ownerWait,INVALID_HANDLE_VALUE);ownerWait=nullptr;}
@@ -156,7 +167,7 @@ bool connect(DWORD pid,HANDLE cfgH=nullptr,HANDLE stH=nullptr,HANDLE procH=nullp
     ReleaseSRWLockExclusive(&configLock);return true;
 }
 struct Saved {unsigned index{};bool local=false;Ptr<IInspectable> value;winrt::Windows::UI::Xaml::DependencyProperty direct{nullptr};};
-struct Node {InstanceHandle key{};bool nativeProbed=false;int notificationRoot=-1;std::vector<const wchar_t*> imported;Ptr<IWeakReference> weak;glass::Surface surface=glass::NoSurface;std::map<std::wstring,Saved> saved;std::map<std::wstring,std::function<void()>> watchers;std::wstring capsuleGeometry;std::shared_ptr<liquid::CapsuleLayout> capsuleLayout;DWORD appliedSignature=0;bool composition=false,fallback=false;HRESULT lastReport=S_FALSE;bool reported=false;HRESULT lastCapsule=E_NOINTERFACE;bool capsuleReported=false,capsuleDirty=true;std::wstring capsuleRow;unsigned capsuleRows=0;};
+struct Node {unsigned opticalGeneration=0,opticalAttempts=0;DWORD opticalConfigSignature=0;std::shared_ptr<lghost::NativeContentSurface> taskbarOptics;InstanceHandle key{};bool nativeProbed=false;int notificationRoot=-1;std::vector<const wchar_t*> imported;Ptr<IWeakReference> weak;glass::Surface surface=glass::NoSurface;std::map<std::wstring,Saved> saved;std::map<std::wstring,std::function<void()>> watchers;std::wstring capsuleGeometry;std::shared_ptr<liquid::CapsuleLayout> capsuleLayout;DWORD appliedSignature=0;bool composition=false,fallback=false;HRESULT lastReport=S_FALSE;bool reported=false;HRESULT lastCapsule=E_NOINTERFACE;bool capsuleReported=false,capsuleDirty=true;std::wstring capsuleRow;unsigned capsuleRows=0;};
 class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
     std::atomic<ULONG> refs{1};Ptr<IUnknown> site;Ptr<IXamlDiagnostics> diag;Ptr<IVisualTreeService2> service;Ptr<CacheRelease> cache;
     struct Thread {Session*session{};HWND window{};std::map<InstanceHandle,Node> nodes;std::set<InstanceHandle> release;ULONGLONG lastMutation=0,releaseStarted=0;std::deque<std::pair<winrt::weak_ref<winrt::Windows::UI::Xaml::FrameworkElement>,int>> nativeProbes;lghost::NativeCaptureLane nativeLane;std::shared_ptr<lghost::NativeInspectionControl> nativeControl;uint64_t nativeToken=0;bool updating=false,updateQueued=false;bool taskbarPanel=false,unifiedCapsule=false;InstanceHandle notificationRoots[2]{};unsigned retries{};LONG observedSequence=-1;DWORD observedFeatures=0;bool heartbeatTimer=false;liquid::DockAnimation dock;~Thread(){if(nativeControl)nativeControl->cancel();for(auto&n:nodes)for(auto&w:n.second.watchers)w.second();}};
@@ -210,13 +221,14 @@ class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
     Ptr<IInspectable> from(InstanceHandle h){Ptr<IInspectable> p;diag->GetIInspectableFromHandle(h,p.put());return p;}
     static void scheduleUpdate(Thread&t){if(!t.updateQueued){t.updateQueued=PostMessageW(t.window,WM_APP+4,0,0)!=FALSE;}}
     void releaseLater(Thread&t,InstanceHandle h){if(cache&&h){bool first=t.release.empty();t.release.insert(h);t.lastMutation=GetTickCount64();if(first){t.releaseStarted=t.lastMutation;SetTimer(t.window,9,250,nullptr);}}}
-    Ptr<IInspectable> brush(const glass::Config&c,bool transparent,InstanceHandle handle,DWORD feature,bool&custom,bool&fallback){custom=false;fallback=false;
-        if(!transparent)try{auto target=from(handle);if(target){winrt::Windows::Foundation::IInspectable obj{nullptr};winrt::copy_from_abi(obj,target.p);Ptr<IInspectable> result;if(modern){auto element=obj.try_as<winrt::Microsoft::UI::Xaml::UIElement>();if(element){auto value=winrt::make<liquid::ModernBrush>(element,c,[feature](HRESULT hr){trace("composition material",hr);report(hr,feature);});winrt::get_unknown(value)->QueryInterface(__uuidof(IInspectable),(void**)result.put());}}else{auto element=obj.try_as<winrt::Windows::UI::Xaml::UIElement>();if(element){auto value=winrt::make<liquid::SystemBrush>(element,c,[feature](HRESULT hr){trace("composition material",hr);report(hr,feature);},true);winrt::get_unknown(value)->QueryInterface(__uuidof(IInspectable),(void**)result.put());}}if(result){custom=true;return result;}}}catch(...){fallback=true;trace("composition brush fallback",winrt::to_hresult());}
+    Ptr<IInspectable> brush(glass::Config c,bool transparent,InstanceHandle handle,DWORD feature,bool&custom,bool&fallback,winrt::Windows::UI::Color const* tintOverride=nullptr){custom=false;fallback=false;
+        if(c.tint==0||c.tint==4){DWORD light=1,size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",modern?L"AppsUseLightTheme":L"SystemUsesLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);c.tint=glass::shellTint(c.tint,light!=0);}
+        if(!transparent)try{auto target=from(handle);if(target){winrt::Windows::Foundation::IInspectable obj{nullptr};winrt::copy_from_abi(obj,target.p);Ptr<IInspectable> result;if(modern){auto element=obj.try_as<winrt::Microsoft::UI::Xaml::UIElement>();if(element){auto value=winrt::make<liquid::ModernBrush>(element,c,[feature](HRESULT hr){trace("composition material",hr);report(hr,feature);});winrt::get_unknown(value)->QueryInterface(__uuidof(IInspectable),(void**)result.put());}}else{auto element=obj.try_as<winrt::Windows::UI::Xaml::UIElement>();if(element){auto value=winrt::make<liquid::SystemBrush>(element,c,[feature](HRESULT hr){trace("composition material",hr);report(hr,feature);},false,tintOverride);winrt::get_unknown(value)->QueryInterface(__uuidof(IInspectable),(void**)result.put());}}if(result){custom=true;return result;}}}catch(...){fallback=true;trace("composition brush fallback",winrt::to_hresult());}
         Ptr<XamlReader> reader;const wchar_t*cls=modern?L"Microsoft.UI.Xaml.Markup.XamlReader":L"Windows.UI.Xaml.Markup.XamlReader";
         HSTRING className{};WindowsCreateString(cls,(UINT32)wcslen(cls),&className);HRESULT hr=RoGetActivationFactory(className,ReaderIds[modern?1:0],reinterpret_cast<void**>(reader.put()));
         if(FAILED(hr)&&modern){auto mod=GetModuleHandleW(L"Microsoft.UI.Xaml.dll");auto fn=mod?reinterpret_cast<HRESULT(WINAPI*)(HSTRING,IActivationFactory**)>(GetProcAddress(mod,"DllGetActivationFactory")):nullptr;Ptr<IActivationFactory> factory;if(fn&&SUCCEEDED(fn(className,factory.put())))hr=factory->QueryInterface(ReaderIds[1],reinterpret_cast<void**>(reader.put()));}
         WindowsDeleteString(className);if(FAILED(hr)||!reader){lastError=hr;notify(hr,feature);return {};}
-        bool dark=c.tint==2;if(c.tint==0){DWORD light=1,size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"AppsUseLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);dark=!light;}
+        bool dark=c.tint==2;if(c.tint==0||c.tint==4){DWORD light=1,size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"AppsUseLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);dark=glass::shellTint(c.tint,light!=0)==2;}
         auto color=dark?L"#FF18202C":L"#FFF4F7FC";std::wstring xml;
         if(transparent)xml=L"<SolidColorBrush xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Color=\"Transparent\"/>";
         else xml=L"<AcrylicBrush xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" "+std::wstring(modern?L"":L"BackgroundSource=\"HostBackdrop\" ")+L"TintColor=\""+std::wstring(color)+L"\" TintOpacity=\""+std::to_wstring(c.opacity/100.0)+L"\" FallbackColor=\""+color+L"\" AlwaysUseFallback=\""+(c.economy?L"True":L"False")+L"\"/>";
@@ -224,7 +236,7 @@ class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
     }
     // Explorer plates sit over the window's DWM acrylic backdrop, so they are only the look's tint at its opacity (translucent), not an opaque fill or a second blur.
     Ptr<IInspectable> explorerTint(const glass::Config&c,bool&custom,bool&fallback){custom=false;fallback=false;
-        bool dark=c.tint==2;if(c.tint==0){DWORD light=1,size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"AppsUseLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);dark=!light;}
+        bool dark=c.tint==2;if(c.tint==0||c.tint==4){DWORD light=1,size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"AppsUseLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);dark=glass::shellTint(c.tint,light!=0)==2;}
         wchar_t color[16]{};swprintf_s(color,L"#%02X%s",(unsigned)(c.opacity*255/100),dark?L"18202C":L"F4F7FC");
         auto result=markup(L"<SolidColorBrush xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Color=\""+std::wstring(color)+L"\"/>");custom=result.p!=nullptr;return result;
     }
@@ -265,7 +277,7 @@ class Session final:public IObjectWithSite,public IVisualTreeServiceCallback2 {
         trace("set property",hr);if(FAILED(hr)){lastError=hr;if(required)report(hr,glass::feature(n.surface));}else{++writes;// S_OK: custom composition blur applied. S_FALSE: system acrylic, whose blur strength cannot be set by this engine.
 if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::feature(n.surface)&&n.surface!=glass::StartOverlay&&n.surface!=glass::TaskbarOverlay&&n.surface!=glass::StartClear&&n.surface!=glass::NotificationClear&&n.surface!=glass::ExplorerClear){n.lastReport=n.composition?S_OK:S_FALSE;n.reported=true;report(n.lastReport,glass::feature(n.surface));}}return SUCCEEDED(hr);
     }
-    void restore(Node&n,InstanceHandle h){for(auto i=n.saved.begin();i!=n.saved.end();){auto&v=i->second;HRESULT hr=S_OK;InstanceHandle old=0;
+    void restore(Node&n,InstanceHandle h){if(n.taskbarOptics){++n.opticalGeneration;n.taskbarOptics->stop();n.taskbarOptics.reset();}for(auto i=n.saved.begin();i!=n.saved.end();){auto&v=i->second;HRESULT hr=S_OK;InstanceHandle old=0;
             if(v.direct){try{Ptr<IInspectable> p;if(n.weak)n.weak->Resolve(__uuidof(IInspectable),p.put());if(p){winrt::Windows::Foundation::IInspectable object{nullptr},value{nullptr};winrt::copy_from_abi(object,p.p);if(v.value)winrt::copy_from_abi(value,v.value.p);auto target=object.as<winrt::Windows::UI::Xaml::DependencyObject>();if(v.local)target.SetValue(v.direct,value);else target.ClearValue(v.direct);}}catch(...){hr=winrt::to_hresult();}}
             else if(v.local){if(v.value)hr=diag->RegisterInstance(v.value.p,&old);if(SUCCEEDED(hr))hr=write(n,h,i->first,old,v.index);if(old)unregister(old);}else hr=write(n,h,i->first,0,v.index,true);
             trace("restore property",hr);if(SUCCEEDED(hr))i=n.saved.erase(i);else{lastError=hr;report(hr,glass::feature(n.surface));++i;}}if(n.saved.empty()){for(auto&w:n.watchers)w.second();n.watchers.clear();n.capsuleGeometry.clear();n.appliedSignature=0;n.reported=false;n.capsuleReported=false;}
@@ -296,20 +308,39 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
             else{auto e=object.try_as<winrt::Windows::UI::Xaml::FrameworkElement>();if(e)name=e.Name();auto d=object.try_as<winrt::Windows::UI::Xaml::DependencyObject>();if(d)parent=winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetParent(d);}
             ancestry.push_back({winrt::get_class_name(object).c_str(),name});object=parent;}
         }catch(...){trace("theme ancestry",winrt::to_hresult());}
-        return imported_glass::styles(imported_glass::theme(host),ancestry);
+        auto result=imported_glass::styles(imported_glass::theme(host),ancestry);
+        if(host==0)for(auto rule:imported_glass::styles(imported_glass::TaskbarSource,ancestry)){std::wstring property,value;if(imported_glass::assignment(rule,property,value)&&property.find(L'@')!=property.npos)result.push_back(rule);}
+        return result;
     }
-    bool applyImported(Node&n,InstanceHandle h,const glass::Config&c){bool applied=false;
-        for(auto rule:n.imported){std::wstring property,value;if(!imported_glass::assignment(rule,property,value))continue;value=imported_glass::resolve(imported_glass::theme(host),value);
+    bool applyImportedRule(Node&n,InstanceHandle h,const glass::Config&c,std::wstring property,std::wstring value){bool applied=false;
+            glass::Config preset=c;
+            if(c.tint==4){DWORD light=1,size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",host==3?L"AppsUseLightTheme":L"SystemUsesLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);preset.tint=glass::shellTint(c.tint,light!=0);}
             if(property==L"Background"||property==L"Fill"||property==L"BorderBrush"||property==L"Stroke"){
                 bool background=property==L"Background"||property==L"Fill";Ptr<IInspectable> result;
-                if(value.find(L"<WindhawkBlur")==0||(c.tint==3&&background&&value.find(L"AcrylicBrush")!=std::wstring::npos)){bool custom=false,fallback=false;result=brush(c,false,h,background?glass::feature(n.surface):0,custom,fallback);if(background){n.composition=custom;n.fallback=fallback;}}
+                if(value.find(L"<WindhawkBlur")==0||(background&&value.find(L"<AcrylicBrush")==0)){bool custom=false,fallback=false;winrt::Windows::UI::Color accent{};bool useAccent=false;if(!modern&&value.find(L"SystemAccentColorLight1")!=value.npos){auto colorBrush=markup(L"<SolidColorBrush xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Color=\"{ThemeResource SystemAccentColorLight1}\"/>");if(colorBrush){winrt::Windows::Foundation::IInspectable colorObject{nullptr};winrt::copy_from_abi(colorObject,colorBrush.p);if(auto native=colorObject.try_as<winrt::Windows::UI::Xaml::Media::SolidColorBrush>()){accent=native.Color();useAccent=true;}}}result=brush(preset,false,h,background?glass::feature(n.surface):0,custom,fallback,useAccent?&accent:nullptr);if(background){n.composition=custom;n.fallback=fallback;}}
                 else if(value==L"Transparent"||value.empty()){bool custom=false,fallback=false;result=brush(c,true,h,glass::feature(n.surface),custom,fallback);}
                 else if(!value.empty()&&value.front()==L'<'){auto at=value.find(L' ');if(at!=value.npos)value.insert(at,L" xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"");result=markup(value);}
                 if(result){bool ok=set(n,h,property,result.p,background);applied=ok||applied;}
             }else if(property==L"CornerRadius")typed(n,h,property.c_str(),L"CornerRadius",std::to_wstring(c.radius));
             else if(property==L"BorderThickness")typed(n,h,property.c_str(),L"Thickness",value);
             else if(property==L"StrokeThickness")typed(n,h,property.c_str(),L"Double",value);
-        }return applied;
+        return applied;
+    }
+    bool applyImported(Node&n,InstanceHandle h,const glass::Config&c){bool applied=false;std::vector<const wchar_t*> states;
+        if(c.tint!=4){auto previous=n.watchers.find(L"ImportedCommonStates");if(previous!=n.watchers.end()){previous->second();n.watchers.erase(previous);restoreNamed(n,h,{L"Background",L"BorderBrush"});}}
+        for(auto rule:n.imported){std::wstring property,value;if(!imported_glass::assignment(rule,property,value))continue;if(property.find(L'@')!=property.npos){states.push_back(rule);continue;}applied=applyImportedRule(n,h,c,property,imported_glass::resolve(imported_glass::theme(host),value))||applied;}
+        if(host==0&&!modern&&c.tint==4&&!states.empty())try{
+            auto previous=n.watchers.find(L"ImportedCommonStates");if(previous!=n.watchers.end()){previous->second();n.watchers.erase(previous);}
+            auto p=from(h);winrt::Windows::Foundation::IInspectable object{nullptr};if(p)winrt::copy_from_abi(object,p.p);auto element=object.try_as<winrt::Windows::UI::Xaml::FrameworkElement>();
+            if(element){auto&t=thread();auto cancel=imported_glass::watchCommonStates(element,[this,&t,h,states](std::wstring state){auto found=t.nodes.find(h);if(found==t.nodes.end())return;glass::Config current;if(snapshot(current)!=Read::Ok||!(current.features&glass::Taskbar))return;auto&node=found->second;const auto&selected=current.looks[glass::family(node.surface)];if(selected.tint!=4)return;current.opacity=selected.opacity;current.blur=selected.blur;current.radius=selected.radius;current.tint=selected.tint;
+                bool background=false,border=false;for(auto rule:states){std::wstring property,value;if(!imported_glass::assignment(rule,property,value))continue;auto at=property.find(L'@');if(at==property.npos||property.substr(at+1)!=state)continue;property.resize(at);value=imported_glass::resolve(imported_glass::TaskbarSource,value);
+                    auto look=current;if(value.find(L"TintOpacity=\"0.4\"")!=value.npos)look.opacity=40;else if(value.find(L"TintOpacity=\"0.2\"")!=value.npos)look.opacity=20;
+                    applyImportedRule(node,h,look,property,value);background|=property==L"Background";border|=property==L"BorderBrush";
+                }if(!background)restoreNamed(node,h,{L"Background"});if(!border)restoreNamed(node,h,{L"BorderBrush"});note(L"taskbar native CommonStates="+state);
+                for(auto&entry:t.nodes)if(entry.second.taskbarOptics)entry.second.taskbarOptics->invalidateContents();
+            });if(cancel){n.watchers[L"ImportedCommonStates"]=std::move(cancel);note(L"taskbar source LiquidGlass CommonStates attached");}}
+        }catch(...){trace("taskbar source visual states",winrt::to_hresult());}
+        return applied;
     }
     // Restores only the named properties, so the capsule geometry can be removed without dropping the material.
     void restoreNamed(Node&n,InstanceHandle h,std::initializer_list<const wchar_t*> names){
@@ -430,20 +461,35 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
     void apply(Node&n,InstanceHandle h,const glass::Config&published){
         // Each surface uses its own family's look; the shared opacity/radius/tint/blur are only the legacy defaults the controller copies into it.
         glass::Config c=published;{const auto&look=published.looks[glass::family(n.surface)];c.opacity=look.opacity;c.radius=look.radius;c.tint=look.tint;c.blur=look.blur;}
+
         if(nativeProbeEnabled()){
             if(n.nativeProbed||!(n.surface==glass::TaskbarRoot||n.surface==glass::VolumePlate||n.surface==glass::BrightnessPlate||n.surface==glass::StartPlate||n.surface==glass::NotificationPlate||n.surface==glass::KeyboardPlate))return;
             note(L"native-probe observed surface="+std::to_wstring(int(n.surface))+L" modern="+std::to_wstring(modern));
             if(modern){n.nativeProbed=true;note(L"native-probe modern-unsupported surface="+std::to_wstring(int(n.surface)));return;}
-            try{auto p=from(h);if(!p)return;winrt::Windows::Foundation::IInspectable object{nullptr};winrt::copy_from_abi(object,p.p);auto e=object.try_as<winrt::Windows::UI::Xaml::FrameworkElement>();if(!e||!e.IsLoaded()||!e.XamlRoot()||!e.XamlRoot().IsHostVisible()||e.ActualWidth()<1||e.ActualHeight()<1)return;auto parent=e.as<winrt::Windows::UI::Xaml::DependencyObject>();for(unsigned i=0;parent&&i<128;++i){if(auto ui=parent.try_as<winrt::Windows::UI::Xaml::UIElement>();ui&&ui.Visibility()!=winrt::Windows::UI::Xaml::Visibility::Visible)return;parent=winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetParent(parent);}n.nativeProbed=true;auto&t=thread();t.nativeProbes.push_back({winrt::make_weak(e),int(n.surface)});note(L"native-probe queued surface="+std::to_wstring(int(n.surface)));PostMessageW(t.window,WM_APP+6,0,0);}catch(...){trace("native-probe",winrt::to_hresult());}return;
+            try{auto p=from(h);if(!p)return;winrt::Windows::Foundation::IInspectable object{nullptr};winrt::copy_from_abi(object,p.p);auto e=object.try_as<winrt::Windows::UI::Xaml::FrameworkElement>();if(e)note(L"native-probe layout surface="+std::to_wstring(int(n.surface))+L" loaded="+std::to_wstring(e.IsLoaded())+L" root="+std::to_wstring(bool(e.XamlRoot()))+L" visible="+std::to_wstring(e.XamlRoot()&&e.XamlRoot().IsHostVisible())+L" width="+std::to_wstring(e.ActualWidth())+L" height="+std::to_wstring(e.ActualHeight()));if(!e||!e.IsLoaded()||!e.XamlRoot()||e.ActualWidth()<1||e.ActualHeight()<1)return;auto parent=e.as<winrt::Windows::UI::Xaml::DependencyObject>();for(unsigned i=0;parent&&i<128;++i){if(auto ui=parent.try_as<winrt::Windows::UI::Xaml::UIElement>();ui&&ui.Visibility()!=winrt::Windows::UI::Xaml::Visibility::Visible)return;parent=winrt::Windows::UI::Xaml::Media::VisualTreeHelper::GetParent(parent);}n.nativeProbed=true;auto&t=thread();t.nativeProbes.push_back({winrt::make_weak(e),int(n.surface)});note(L"native-probe queued surface="+std::to_wstring(int(n.surface)));PostMessageW(t.window,WM_APP+6,0,0);}catch(...){trace("native-probe",winrt::to_hresult());}return;
         }
 
         if(n.surface==glass::DockRoot||n.surface==glass::DockIcon){auto&t=thread();if(!(c.features&glass::Dock)){t.dock.stop();return;}if(!t.dock.onError){t.dock.onError=dockError;t.dock.onStats=dockStats;}t.dock.configure(c.dockScale,c.dockSpread,c.dockSpeed,c.dockBounce);auto p=from(h);if(p){if(n.surface==glass::DockRoot){if(!t.dock.attach(p.p))report(E_NOINTERFACE,glass::Dock);}else t.dock.add(p.p);if(t.dock.ready())report(S_OK,glass::Dock);}return;}
         if(!glass::active(n.surface,c.features)){restore(n,h);return;}
         if(n.surface==glass::ExplorerPlate||n.surface==glass::ExplorerClear)explorerBackdrop(true);
         if(n.surface==glass::KeyboardPlate&&!keyboardPanel(h))return;
-        DWORD signature=1|(c.opacity<<1)|(c.radius<<8)|(c.tint<<13)|(c.economy?1u<<15:0)|(c.blur<<16)|((c.features&glass::Capsule)?1u<<24:0)|((c.features&glass::Taskbar)?1u<<25:0)|((n.surface==glass::TaskbarRoot&&thread().unifiedCapsule)?1u<<26:0);
+        // The keyboard's native text needs its own theme and a readable backing over white windows.
+        if(n.surface==glass::KeyboardPlate){
+            DWORD light=1,size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"SystemUsesLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);
+            try{auto p=from(h);if(p){winrt::Windows::Foundation::IInspectable object{nullptr};winrt::copy_from_abi(object,p.p);
+                if(modern){if(auto e=object.try_as<winrt::Microsoft::UI::Xaml::FrameworkElement>())light=e.ActualTheme()==winrt::Microsoft::UI::Xaml::ElementTheme::Light;}
+                else if(auto e=object.try_as<winrt::Windows::UI::Xaml::FrameworkElement>())light=e.ActualTheme()==winrt::Windows::UI::Xaml::ElementTheme::Light;
+            }}catch(...){trace("keyboard actual theme",winrt::to_hresult());}
+            c.tint=light?1:2;c.opacity=std::max<DWORD>(c.opacity,82);
+        }
+        DWORD signature=1|(c.opacity<<1)|(c.radius<<8)|(c.tint<<13)|(c.economy?1u<<27:0)|(c.blur<<16)|((c.features&glass::Capsule)?1u<<24:0)|((c.features&glass::Taskbar)?1u<<25:0)|((n.surface==glass::TaskbarRoot&&thread().unifiedCapsule)?1u<<26:0);
         // Unchanged parameters are not written again, but the controller may have cleared its status after a rediscovery; repeat the last result so status matches the live surface.
         if(n.appliedSignature==signature){if(n.surface==glass::TaskbarFill&&n.capsuleDirty&&(c.features&glass::Capsule))applyCapsule(n,h,c);if(n.reported)report(n.lastReport,glass::feature(n.surface));if(n.capsuleReported&&(c.features&glass::Capsule))report(n.lastCapsule,glass::Capsule);return;}
+        if(n.surface==glass::TaskbarFill||n.surface==glass::TaskbarOverlay){
+            if(c.tint==4&&!(c.features&glass::Capsule)){if(n.capsuleLayout){n.capsuleLayout->stop();n.capsuleLayout.reset();}thread().unifiedCapsule=false;restore(n,h);typed(n,h,L"Visibility",L"Visibility",L"Collapsed");n.appliedSignature=signature;return;}
+            restoreNamed(n,h,{L"Visibility"});
+        }
+        if(n.taskbarOptics){++n.opticalGeneration;n.taskbarOptics->stop();n.taskbarOptics.reset();}
         // Capsule-only: the material is removed, the geometry remains. The geometry is reset only when the Taskbar or Capsule switch
         // changes (or on a first apply); a look change replaces the material and keeps it, so a slider drag never re-lays the taskbar.
         if(n.surface==glass::TaskbarFill&&!(c.features&glass::Taskbar)&&!(c.features&glass::Capsule)){restore(n,h);return;}
@@ -452,8 +498,9 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         bool joinedTray=n.surface==glass::TaskbarRoot&&!iconPanel&&thread().unifiedCapsule&&(c.features&glass::Capsule);
         if(n.surface==glass::TaskbarRoot&&(!(c.features&glass::Capsule)||joinedTray)){auto i=n.watchers.find(L"CapsuleClip");if(i!=n.watchers.end()){i->second();n.watchers.erase(i);}}
         if((iconPanel||joinedTray)&&(c.features&glass::Capsule))restoreNamed(n,h,{L"BorderBrush",L"BorderThickness"});
-        if(n.surface==glass::KeyboardPlate)clearKeyboardBacking(n,h);
+
         bool applied=false;if((iconPanel||joinedTray)&&(c.features&glass::Capsule)){auto b=brush(c,true,h,0,n.composition,n.fallback);if(b)applied=set(n,h,L"Background",b.p,false);}
+        else if(c.tint==4&&(n.surface==glass::TaskbarFill||n.surface==glass::TaskbarOverlay)){if(n.surface==glass::TaskbarFill){applied=applyImportedRule(n,h,c,L"Fill",imported_glass::resolve(imported_glass::TaskbarSource,L"$Background"));applyImportedRule(n,h,c,L"Stroke",imported_glass::resolve(imported_glass::TaskbarSource,L"$BorderBrush"));typed(n,h,L"StrokeThickness",L"Double",L"1");if(n.capsuleDirty||n.capsuleGeometry.empty())applyCapsule(n,h,c);}else{auto clear=markup(L"<SolidColorBrush xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Color=\"Transparent\"/>");if(clear)applied=set(n,h,L"Fill",clear.p,false);}}
         else if(!n.imported.empty())applied=applyImported(n,h,c);else{auto b=n.surface==glass::ExplorerPlate?explorerTint(c,n.composition,n.fallback):brush(c,(n.surface==glass::TaskbarFill&&thread().taskbarPanel&&!(c.features&glass::Capsule))||n.surface==glass::OsdPlate||n.surface==glass::StartOverlay||n.surface==glass::TaskbarOverlay||n.surface==glass::StartClear||n.surface==glass::NotificationClear||n.surface==glass::ExplorerClear,h,glass::feature(n.surface),n.composition,n.fallback);if(!b)return;
         applied=set(n,h,(n.surface==glass::TaskbarFill||n.surface==glass::TaskbarOverlay)?L"Fill":L"Background",b.p);
         if(applied&&!(iconPanel&&(c.features&glass::Capsule))&&(n.surface==glass::TaskbarRoot||n.surface==glass::TaskbarFill||n.surface==glass::StartPlate||n.surface==glass::NotificationPlate||n.surface==glass::ExplorerPlate||n.surface==glass::KeyboardPlate))edge(n,h,c);
@@ -465,6 +512,9 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
             if(SUCCEEDED(service->CreateInstance(type,value,&r))){auto p=from(r);if(p)set(n,h,L"CornerRadius",p.p,false);unregister(r);}SysFreeString(type);SysFreeString(value);
         }
         }
+        // Imported background rules use the same reversible rim as built-in
+        // plates, instead of silently retaining an opaque preset outline.
+        if(applied&&c.tint!=4&&!n.imported.empty()&&n.composition&&(n.surface==glass::TaskbarRoot||n.surface==glass::TaskbarFill||n.surface==glass::StartPlate||n.surface==glass::NotificationPlate||n.surface==glass::KeyboardPlate))edge(n,h,c);
         // Native OSD pills use their own radius, independent of shell corners.
         if(applied&&(n.surface==glass::VolumePlate||n.surface==glass::BrightnessPlate||n.surface==glass::OsdPlate)){
             if(!n.watchers.count(L"OsdPillRadius"))try{
@@ -481,8 +531,27 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
             auto clear=markup(L"<SolidColorBrush xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Color=\"Transparent\"/>");if(clear)set(n,h,L"BorderBrush",clear.p,false);
             if(!modern&&!n.watchers.count(L"OsdCapsuleClip"))try{auto p=from(h);auto cleanup=liquid::clipCapsule(p.p);if(cleanup)n.watchers.emplace(L"OsdCapsuleClip",std::move(cleanup));}catch(...){trace("OSD capsule clip",winrt::to_hresult());}
         }
+        if(applied&&n.surface==glass::KeyboardPlate)clearKeyboardBacking(n,h);
         // Imported material rules and the built-in brush path both need the
         // tray clip. Keep geometry outside the material-selection branch.
+        #if defined(LG_ENABLE_EXPERIMENTAL_TASKBAR_OPTICS)
+        // Route native taskbar icon contents through the real optical host.
+        // This does not install a second taskbar or forward synthesized input.
+        if(applied&&!modern&&iconPanel&&!n.taskbarOptics&&(c.features&glass::Taskbar)&&(c.features&glass::Capsule)&&!c.economy&&c.tint==3){
+            try{
+                wchar_t executable[32768]{};DWORD length=32768;
+                HANDLE process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,ownerPid);
+                bool found=process&&QueryFullProcessImageNameW(process,0,executable,&length);if(process)CloseHandle(process);
+                if(found){std::wstring dir(executable,length);auto slash=dir.find_last_of(L"\\");if(slash!=std::wstring::npos){dir.resize(slash+1);
+                    auto p=from(h);winrt::Windows::Foundation::IInspectable object{nullptr};if(p)winrt::copy_from_abi(object,p.p);
+                    if(auto element=object.try_as<winrt::Windows::UI::Xaml::FrameworkElement>()){auto& t=thread();
+                    if(n.opticalConfigSignature!=signature){n.opticalConfigSignature=signature;n.opticalAttempts=0;}
+                    if(!n.watchers.count(L"TaskbarOpticalLayout")){auto weak=winrt::make_weak(element);auto token=element.LayoutUpdated([&t,key=n.key](auto&&,auto&&){if(t.updating)return;auto i=t.nodes.find(key);if(i!=t.nodes.end()&&!i->second.taskbarOptics&&i->second.opticalAttempts<8){i->second.appliedSignature=0;scheduleUpdate(t);}});n.watchers[L"TaskbarOpticalLayout"]=[weak,token]{if(auto e=weak.get())e.LayoutUpdated(token);};}
+                    ++n.opticalAttempts;auto generation=++n.opticalGeneration;n.taskbarOptics=liquid::taskbarOpticalBridge(element,c,dir,[&t,key=n.key,generation](HRESULT hr){trace("taskbar optical bridge",hr);note(L"taskbar-optics presentation hr="+std::to_wstring(long(hr)));auto found=t.nodes.find(key);if(found!=t.nodes.end()&&found->second.opticalGeneration==generation){found->second.lastReport=hr;found->second.reported=true;if(found->second.taskbarOptics)note(L"taskbar-optics "+found->second.taskbarOptics->lastCaptureDetail());report(hr,glass::Taskbar);}}, {},[](std::wstring const& message){note(L"taskbar-optics "+message);});}
+                }}
+            }catch(...){trace("taskbar optical bridge setup",winrt::to_hresult());}
+        }
+        #endif
         if(applied&&!modern&&n.surface==glass::TaskbarRoot&&!iconPanel&&!joinedTray&&(c.features&glass::Capsule)&&!n.watchers.count(L"CapsuleClip")){try{auto p=from(h);auto cleanup=liquid::clipCapsule(p.p);if(cleanup)n.watchers.emplace(L"CapsuleClip",std::move(cleanup));}catch(...){trace("tray capsule clip",winrt::to_hresult());}}
         // First apply only: each line is a synchronous file write on the shell's UI thread.
         if(applied&&!n.appliedSignature)note(L"surface="+std::to_wstring((int)n.surface)+L" path="+(!n.imported.empty()?L"imported":n.composition?L"composition":n.fallback?L"acrylic-after-composition-error":L"acrylic")+L" blur="+std::to_wstring(c.blur)+L" opacity="+std::to_wstring(c.opacity)+L" tint="+std::to_wstring(c.tint)+L" radius="+std::to_wstring(c.radius));
@@ -493,7 +562,7 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         if(state==Read::Transient){if(t.retries<4){++t.retries;SetTimer(t.window,11,25,nullptr);return;}state=Read::Invalid;}
         t.retries=0;if(state!=Read::Ok)c.features=0;
         if(!c.features){t.nativeProbes.clear();KillTimer(t.window,21);t.nativeLane.cancel();if(t.nativeControl)t.nativeControl->cancel();}
-        t.updating=true;if(!(c.features&glass::Capsule))t.unifiedCapsule=false;if(!(c.features&glass::Dock))t.dock.stop();if(!(c.features&glass::Explorer)&&explorerBackdropActive())explorerBackdrop(false);
+        t.updating=true;if(!nativeProbeEnabled())hostBackdropWindows(c.features!=0);if(!(c.features&glass::Capsule))t.unifiedCapsule=false;if(!(c.features&glass::Dock))t.dock.stop();if(!(c.features&glass::Explorer)&&explorerBackdropActive())explorerBackdrop(false);
         for(auto i=t.nodes.begin();i!=t.nodes.end();){Ptr<IInspectable> p;if(i->second.weak) i->second.weak->Resolve(__uuidof(IInspectable),p.put());if(!p){for(auto&w:i->second.watchers)w.second();i=t.nodes.erase(i);continue;}
             InstanceHandle h=0;if(SUCCEEDED(diag->RegisterInstance(p.p,&h))){apply(i->second,h,c);releaseLater(t,h);}
             // Keep only weak descriptors for inactive surfaces. Another switch
@@ -589,7 +658,7 @@ DWORD WINAPI attachFramework(void*arg){int modern=(int)(INT_PTR)arg;CoInitialize
 extern "C" HRESULT WINAPI DllGetClassObject(REFCLSID id,REFIID iid,void**p){if(id!=glass::TapId&&id!=glass::runtimeTapId(runtimePath()))return CLASS_E_CLASSNOTAVAILABLE;auto f=new Factory;auto hr=f->QueryInterface(iid,p);f->Release();return hr;}
 extern "C" HRESULT WINAPI DllCanUnloadNow(){return S_FALSE;}
 extern "C" __declspec(dllexport) HRESULT WINAPI GlassGraphicsTest(){
-    if(!liquid::testTint()||!imported_glass::test()||!liquid::testCapsulePlacement()||!liquid::testDockWeight())return E_FAIL;
+    if(!testHostBackdrop()||!liquid::testTint()||!imported_glass::test()||!liquid::testCapsulePlacement()||!liquid::testDockWeight())return E_FAIL;
     auto subscriptionTest=xaml_subscription::test();if(FAILED(subscriptionTest))return subscriptionTest;
     struct QueueOptions{DWORD size;int thread,apartment;};
     HMODULE messaging=LoadLibraryExW(L"CoreMessaging.dll",nullptr,LOAD_LIBRARY_SEARCH_SYSTEM32);if(!messaging)return HRESULT_FROM_WIN32(GetLastError());
@@ -599,10 +668,10 @@ extern "C" __declspec(dllexport) HRESULT WINAPI GlassGraphicsTest(){
         if(FAILED(gaussian->GetEffectId(&id))||id!=CLSID_D2D1GaussianBlur||FAILED(gaussian->GetPropertyCount(&count))||count!=3)return E_FAIL;
         for(UINT i=0;i<3;++i){Ptr<IUnknown> value;if(FAILED(gaussian->GetProperty(i,value.put()))||!value)return E_FAIL;}
         auto compositor=winrt::Windows::UI::Composition::Compositor();glass::Config config;
-        auto brush=liquid::makeGlass(compositor,config);if(!brush)return E_FAIL;
-        config.blur=0;config.opacity=5;auto clear=liquid::makeGlass(compositor,config);if(!clear)return E_FAIL;
-        config.blur=40;config.opacity=90;config.tint=2;auto dark=liquid::makeGlass(compositor,config);if(!dark)return E_FAIL;
-        config.tint=3;auto adaptive=liquid::makeGlass(compositor,config,true);if(!adaptive)return E_FAIL;
+        note(L"graphics-test stage=default");auto brush=liquid::makeGlass(compositor,config);if(!brush)return E_FAIL;
+        note(L"graphics-test stage=clear");config.blur=0;config.opacity=5;auto clear=liquid::makeGlass(compositor,config);if(!clear)return E_FAIL;
+        note(L"graphics-test stage=dark");config.blur=40;config.opacity=90;config.tint=2;auto dark=liquid::makeGlass(compositor,config);if(!dark)return E_FAIL;
+        note(L"graphics-test stage=host-adaptive");config.tint=3;auto adaptive=liquid::makeGlass(compositor,config,true);if(!adaptive)return E_FAIL;
         return S_OK;
     }catch(...){return winrt::to_hresult();}
 }

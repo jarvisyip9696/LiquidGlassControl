@@ -1,32 +1,24 @@
-Liquid Glass Control 0.13.3— Experimental / 实验版
-Windows 11 x64 · Portable / 免安装
+Liquid Glass Control 0.14.0-beta.1 - Motion Refresh
+Windows 11 x64 - Portable prerelease
 
-中文
-1. 完整解压 ZIP 到可写目录，双击 LiquidGlassControl.exe。保留 lgengine 子目录。
-2. 系统玻璃 → 效果开关：任务栏、开始菜单、通知中心、资源管理器、键盘切换及 Dock。
-3. 系统玻璃 → 材质调节：模糊、着色、圆角与省电设置。
-4. 系统玻璃 → LGEngine：入场动画、独立指示器动画、晃动、旋钮、重播和示例指示器。
-5. 开启音量／亮度指示器后，隐藏至托盘或切换分页仍会响应变化；选择会自动保存。
-6. 设置 → 常规：界面语言与配色。设置 → 关于 → 还原并退出：结束效果并退出。
-7. 可选运行 Create Desktop Shortcut.cmd 创建桌面快捷方式。
+1. Extract the complete ZIP to a writable folder and run LiquidGlassControl.exe.
+   Keep art/, fonts/, and lgengine/ beside the controller.
+2. System glass > Effects controls the supported shell surfaces and Dock.
+   File Explorer styling is no longer included.
+3. System glass > Materials adjusts blur, tint, corners, and power saving.
+4. System glass > LGEngine configures entrance styles, indicator entrance,
+   slosh, knob style, replay, and the sample indicator.
+5. Enabled volume and brightness indicators continue to work on other pages
+   and in the tray. The sample does not change system volume or brightness.
+6. Settings changes the interface language and appearance. Settings save
+   automatically. Use the tray menu to restore managed effects and exit.
+7. Create Desktop Shortcut.cmd can create an optional desktop shortcut.
 
-示例指示器不会更改系统音量或亮度。普通 Windows 通知和原生音量提示不会被替换。
-亮度回调取决于硬件支持。无需 Windhawk；宿主使用 Windows 自带的 .NET Framework 4.x。
-不要只移动主 EXE，否则 LGEngine 功能缺少配套组件。程序未签名，系统策略可能阻止运行。
-升级前保留 settings.ini 和恢复记录，成功还原之前不要删除恢复文件。
-LGEngine 采用 MIT 许可证；许可证和上游说明见 LGEngine Distribution.txt。
+Windows toast notifications and the native volume flyout are not replaced.
+Brightness integration depends on hardware support. Windhawk is not required.
+The LGEngine host uses the Windows-provided .NET Framework runtime.
 
-English
-1. Fully extract the ZIP to a writable directory and run LiquidGlassControl.exe. Keep lgengine/ beside it.
-2. System glass > Effects: shell materials, keyboard switcher and Dock animation.
-3. System glass > Material: blur, tint, corners and battery fallback.
-4. System glass > LGEngine: arrival, indicator arrival, slosh, knob, replay and sample.
-5. Enabled volume/brightness OSD works on other pages and in the tray. Settings save automatically.
-6. Settings > General changes language/colors. Settings > About > Restore and exit ends effects.
-7. Optional: run Create Desktop Shortcut.cmd.
-
-The sample does not change system levels. Windows toasts and the native volume flyout are not replaced.
-Brightness reporting depends on hardware. No Windhawk required; the host uses Windows .NET Framework 4.x.
-This is unsigned experimental software.
-Keep personal settings and recovery files during upgrades until restoration succeeds.
-See LGEngine Distribution.txt for LGEngine's MIT license and upstream notes.
+This build is unsigned and may be blocked by Windows application control.
+Use a trusted, approved build; do not disable security protections.
+Keep your settings and recovery records until restoration succeeds.
+See Third Party Notices.txt and LGEngine Distribution.txt for licenses.

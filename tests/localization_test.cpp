@@ -1,6 +1,11 @@
 #include "../src/localization.h"
 #include <cstdio>
 int main(){
+    const wchar_t* languageLabels[]={L"Interface language",L"界面语言",L"界面語言",L"Język interfejsu",L"Ngôn ngữ giao diện"};
+    const wchar_t* entranceLabels[]={L"Entrance",L"入场",L"入場",L"Wejście",L"Xuất hiện"};
+    for(int i=0;i<l10n::Count;++i){l10n::current=(l10n::Language)i;
+        if(wcscmp(l10n::translate(L"界面语言",L"Interface language"),languageLabels[i])||wcscmp(l10n::translate(L"入场",L"Entrance"),entranceLabels[i]))return 8;
+    }
     for(const auto&entry:l10n::catalog){
         if(l10n::findTranslation(entry.en)!=&entry)return 1;
         l10n::current=l10n::English;if(wcscmp(l10n::translate(L"test",entry.en),entry.en))return 2;

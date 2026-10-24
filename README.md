@@ -1,36 +1,52 @@
 # Liquid Glass Control
 
-轻量 Windows 11 玻璃效果工具 · Windows 11 x64
+**Motion Refresh · v0.14.0-beta.1 · Windows 11 x64**
 
-**[下载完整便携 ZIP](https://github.com/jarvisyip9696/LiquidGlassControl/releases/download/v0.13.3/LiquidGlassControl-0.13.3-win11-x64.zip) · [发布说明](https://github.com/jarvisyip9696/LiquidGlassControl/releases/tag/v0.13.3) · [全部版本](https://github.com/jarvisyip9696/LiquidGlassControl/releases)**
+A native desktop utility for system glass materials, animated controls, and LGEngine volume and brightness indicators. No Windhawk installation or runtime is required.
 
-- 系统玻璃效果（含键盘布局切换面板、任务栏胶囊外观）和 Dock 悬停放大动画（任务栏图标最多放大约 1.26 倍；系统关闭动画效果或节电时自动暂停）。
-- 可调模糊、着色和圆角，一键重置三个滑块，支持五种语言与设置保存。
-- 无需 Windhawk；关闭至托盘，可还原并退出。
-- 后台按需加载、图标缓存释放；[内存对比与节能说明](docs/POWER-MEMORY.md)。
+[Download the complete portable ZIP](https://github.com/jarvisyip9696/LiquidGlassControl/releases/download/v0.14.0-beta.1/LiquidGlassControl-0.14.0-beta.1-win11-x64.zip) · [Release notes](https://github.com/jarvisyip9696/LiquidGlassControl/releases/tag/v0.14.0-beta.1) · [All releases](https://github.com/jarvisyip9696/LiquidGlassControl/releases)
 
-当前版本：**0.13.3**。下载仅包含发布文件，不包含开发缓存或个人设置。
+## Features
 
-新增 **系统玻璃 → LGEngine** 分页：九种入场样式、独立指示器动画、三种旋钮、晃动和重播。音量／亮度 OSD 在其他分页和托盘中继续工作，设置自动保存。完整 ZIP 包含 LGEngine 2.7.16.0 宿主、适配器、示例及源码。请完整解压。普通 Windows 通知和原生音量提示不会被替换。
+- System materials for the taskbar, Start menu, notification center, calendar, and keyboard layout switcher.
+- Adjustable blur, tint, corner radius, and power-saving fallback.
+- Dock hover animation and a capsule-style taskbar appearance.
+- Smooth switch motion and dropdown interaction, targeting 60 fps while animations are active. Idle controls stop requesting frames.
+- LGEngine entrance styles, separate indicator entrance settings, knob styles, slosh, replay, and a sample indicator.
+- English, Simplified Chinese, Traditional Chinese, Polish, and Vietnamese interfaces.
+- Saved settings, tray operation, and restoration of managed effects.
 
-> 实验版，当前未签名。通知中心效果尚未确认；胶囊托盘、弹出菜单及完整恢复仍需实测。实际功耗、开启效果时的内存尚未测量；托盘关闭效果时的应用内存对比见优化说明。
+**File Explorer styling has been removed.** This application does not make arbitrary application content transparent. The material illustrations are previews, not guarantees of transparency in other windows.
 
-<details>
-<summary>English</summary>
+## Get started
 
-**[Full portable ZIP](https://github.com/jarvisyip9696/LiquidGlassControl/releases/download/v0.13.3/LiquidGlassControl-0.13.3-win11-x64.zip) · [Release notes](https://github.com/jarvisyip9696/LiquidGlassControl/releases/tag/v0.13.3) · [All releases](https://github.com/jarvisyip9696/LiquidGlassControl/releases)**
+1. Download the complete portable ZIP and extract it to a writable folder.
+2. Run `LiquidGlassControl.exe`. Keep `art/`, `fonts/`, and `lgengine/` beside it.
+3. Open **System glass** to select effects, adjust materials, or configure LGEngine.
+4. Open **Settings** to choose the interface language and appearance. Changes save automatically.
+5. Closing the window keeps the application in the tray. Use the tray menu to reopen it or restore effects and exit.
 
-Lightweight glass controls for Windows 11 x64, with adjustable blur, tint and corners, five languages, a capsule appearance built into the taskbar switch, and Dock hover magnification (taskbar icons scale up to about 1.26x via one compositor expression animation, paused when system animations are off or on battery saving). No Windhawk runtime required. Close to tray; restore and exit to revert effects. The LGEngine page adds arrival animations, independent indicator animation, knob styles, slosh and replay. Volume/brightness OSD remains active on other pages and in the tray. Extract the full ZIP for the bundled LGEngine 2.7.16.0 host, adapter, example and source. Windows toast notifications and the native volume flyout are not replaced.
+The full ZIP includes the required LGEngine 2.7.16.0 companions, licenses, and corresponding source archives. Moving only the controller EXE is insufficient for the complete interface and indicator features.
 
-Experimental, unsigned build. Notification styling is unconfirmed; capsule tray appearance, popups and complete restoration need live testing. Effects-off tray memory was sampled locally; active-effect memory and hardware energy savings have not been benchmarked.
+## Motion Refresh
 
-</details>
+This prerelease introduces the redesigned workspace, animated switches, localized custom-rendered pages, refined dropdown controls, and improved keyboard-panel contrast. It removes the File Explorer option and prevents legacy settings or the master switch from enabling it again.
 
-<details>
-<summary>开发文档 / Development</summary>
+Switch animation uses elapsed time and respects Windows reduced-motion preferences. Frame pacing targets 60 fps; actual presentation depends on the display, system scheduling, and load.
 
-[参与开发](CONTRIBUTING.md) · [架构](docs/ARCHITECTURE.md) · [构建发布](docs/RELEASING.md) · [版本规则](docs/VERSIONING.md)
+## Requirements and limitations
 
-</details>
+- Windows 11 x64. Brightness integration depends on supported hardware.
+- LGEngine uses the Windows-provided .NET Framework runtime.
+- Builds are currently unsigned. Windows application-control policy may block an executable or engine. Use an approved, trusted build; do not disable security protections to run it.
+- Shell visuals can vary across Windows builds and with other styling tools. A passing self-test does not certify every live shell surface.
+- Windows toast notifications and the native volume flyout are not replaced.
+- Before upgrading or removing the application, restore managed effects and keep settings and recovery records until restoration succeeds.
 
-[GPL-3.0-only](LICENSE) · [许可范围与第三方声明](docs/LICENSING.md) · [签名政策](docs/CODE-SIGNING.md) · 贡献者：[DK](https://github.com/domk6966)
+## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for isolated builds, tests, and contribution guidance. [Release instructions](docs/RELEASING.md), [architecture](docs/ARCHITECTURE.md), and [signing policy](docs/CODE-SIGNING.md) provide additional detail.
+
+## License and credits
+
+Liquid Glass Control is licensed under [GPL-3.0-only](LICENSE). LGEngine by [DK](https://github.com/domk6966) remains MIT-licensed. Adapted Styler material code, MinHook, fonts, and other third-party components retain their respective licenses and notices. See [licensing details](docs/LICENSING.md) and the notices included with each release.

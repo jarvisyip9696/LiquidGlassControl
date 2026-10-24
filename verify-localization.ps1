@@ -14,7 +14,7 @@ foreach ($entry in $entries) {
     $translations.Add($english, $entry.Groups[2].Value)
 }
 $required = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-foreach ($name in @('src/main.cpp', 'src/control_ui.h', 'src/ui_style.h')) {
+foreach ($name in @('src/main.cpp', 'src/control_ui.h', 'src/ui_style.h', 'src/app_glass_ui.h', 'src/workspace_pages.h')) {
     $source = [IO.File]::ReadAllText((Join-Path $PSScriptRoot $name))
     $source = Expand-UiLiterals $source
     $patterns = @(

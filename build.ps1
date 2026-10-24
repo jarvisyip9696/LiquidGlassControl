@@ -1,4 +1,4 @@
-param([string]$Compiler, [ValidatePattern('^[A-Za-z0-9.-]+\.exe$')][string]$OutputName = 'LiquidGlassControl.exe', [string]$WinrtInclude, [string]$OutputDirectory, [switch]$BuildTests)
+param([string]$Compiler, [ValidatePattern('^[A-Za-z0-9.-]+\.exe$')][string]$OutputName = 'LiquidGlassControl.exe', [string]$WinrtInclude, [string]$OutputDirectory, [switch]$BuildTests, [switch]$ExperimentalTaskbarOptics)
 $ErrorActionPreference = 'Stop'
 if (-not $Compiler) {
     $found = Get-Command clang++.exe -ErrorAction SilentlyContinue
@@ -20,8 +20,10 @@ if (-not $WinrtInclude -and -not (Test-Path -LiteralPath (Join-Path $headerDirec
 }
 $engineIncludes = @()
 $controllerOptions = @()
+$controllerOptions += @('-ld2d1','-ldwrite','-lwindowscodecs')
 if (-not $WinrtInclude -and (Test-Path (Join-Path $buildDir 'winrt\include\winrt\Microsoft.UI.Xaml.h'))) { $WinrtInclude = Join-Path $buildDir 'winrt\include' }
 if ($WinrtInclude) { $engineIncludes = @('-I' + [IO.Path]::GetFullPath($WinrtInclude)) }
+if ($ExperimentalTaskbarOptics) { $engineIncludes += '-DLG_ENABLE_EXPERIMENTAL_TASKBAR_OPTICS' }
 $hookObjects = @()
 foreach ($unit in @('buffer','hook','trampoline','hde/hde64')) {
     $object = Join-Path $outputDir (($unit.Replace('/','-')) + '.o')
@@ -29,30 +31,37 @@ foreach ($unit in @('buffer','hook','trampoline','hde/hde64')) {
     if ($LASTEXITCODE -ne 0) { throw 'MinHook compilation failed.' }
     $hookObjects += $object
 }
-& $Compiler --target=x86_64-w64-mingw32 -std=c++20 @engineIncludes -Os -ffunction-sections -fdata-sections -Wall -Wextra -shared -static '-Wl,--gc-sections,--strip-all' (Join-Path $PSScriptRoot 'src/glass_engine.cpp') (Join-Path $PSScriptRoot 'src/glass_engine.def') @hookObjects -o (Join-Path $outputDir 'GlassEngine.dll') -lole32 -loleaut32 -luuid -lruntimeobject -lcomctl32 -ldwmapi -ladvapi32 -ld2d1
+& $Compiler --target=x86_64-w64-mingw32 -std=c++20 @engineIncludes -Os -ffunction-sections -fdata-sections -Wall -Wextra -shared -static '-Wl,--gc-sections,--strip-all' (Join-Path $PSScriptRoot 'src/glass_engine.cpp') (Join-Path $PSScriptRoot 'src/glass_engine.def') @hookObjects -o (Join-Path $outputDir 'GlassEngine.dll') -lole32 -loleaut32 -luuid -lruntimeobject -lcomctl32 -ldwmapi -ladvapi32 -ld2d1 -lbcrypt
 if ($LASTEXITCODE -ne 0) { throw 'Engine compilation failed.' }
 $engineBytes = [IO.File]::ReadAllBytes((Join-Path $outputDir 'GlassEngine.dll'))
 $noticeBytes = [IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'release\Third Party Notices.txt'))
 $writer = [IO.BinaryWriter]::new([IO.File]::Create((Join-Path $outputDir 'engine.res')))
 try {
     # Standard Win32 .res null record followed by RCDATA resource 201.
-    foreach ($record in @(0,1,2)) {
+    $figmaAssets = @('app-study','system-study','identity-study','nav-app','nav-system','nav-settings')
+    foreach ($record in @(0,1,2,3,4,5,6,7,8)) {
         $payload = [byte[]]@()
         if ($record -eq 1) { $payload = $engineBytes } elseif ($record -eq 2) { $payload = $noticeBytes }
+        elseif ($record -ge 3) { $payload = [IO.File]::ReadAllBytes((Join-Path $PSScriptRoot ('assets/figma/' + $figmaAssets[$record - 3] + '.png'))) }
         $writer.Write([uint32]$payload.Length)
         $writer.Write([uint32]32); $writer.Write([uint16]65535); $writer.Write([uint16]$(if ($record) { 10 } else { 0 }))
-        $writer.Write([uint16]65535); $writer.Write([uint16]$(if ($record -eq 1) { 201 } elseif ($record -eq 2) { 202 } else { 0 }))
+        $writer.Write([uint16]65535); $writer.Write([uint16]$(if ($record -ge 3) { 207 + $record } elseif ($record -eq 1) { 201 } elseif ($record -eq 2) { 202 } else { 0 }))
         $writer.Write([uint32]0); $writer.Write([uint16]0); $writer.Write([uint16]0); $writer.Write([uint32]0); $writer.Write([uint32]0)
         if ($record) { $writer.Write([byte[]]$payload); while ($writer.BaseStream.Position % 4) { $writer.Write([byte]0) } }
     }
 } finally { $writer.Dispose() }
-& $Compiler --target=x86_64-w64-mingw32 -std=c++17 -Os -ffunction-sections -fdata-sections -Wall -Wextra -municode -mwindows -static '-Wl,--gc-sections,--strip-all' (Join-Path $PSScriptRoot 'src/main.cpp') (Join-Path $PSScriptRoot 'assets\icon.res') (Join-Path $outputDir 'engine.res') -o (Join-Path $outputDir $OutputName) -ldwmapi -lshell32 -luser32 -lgdi32 -ladvapi32 -lole32 -lcomctl32 -luxtheme -luuid @controllerOptions
+& $Compiler --target=x86_64-w64-mingw32 -std=c++17 -Os -ffunction-sections -fdata-sections -Wall -Wextra -municode -mwindows -static '-Wl,--gc-sections,--strip-all' (Join-Path $PSScriptRoot 'src/main.cpp') (Join-Path $PSScriptRoot 'assets\icon.res') (Join-Path $outputDir 'engine.res') -o (Join-Path $outputDir $OutputName) -ldwmapi -lshell32 -luser32 -lgdi32 -ladvapi32 -lole32 -lcomctl32 -luxtheme -luuid -lgdiplus @controllerOptions
 if ($LASTEXITCODE -ne 0) { throw 'Compilation failed.' }
 if ($BuildTests) {
-& $Compiler --target=x86_64-w64-mingw32 -std=c++17 -DLG_ENABLE_SELF_TEST -Os -ffunction-sections -fdata-sections -Wall -Wextra -municode -mwindows -static '-Wl,--gc-sections,--strip-all' (Join-Path $PSScriptRoot 'src/main.cpp') (Join-Path $PSScriptRoot 'assets\icon.res') (Join-Path $outputDir 'engine.res') -o (Join-Path $outputDir 'LiquidGlassTests.exe') -ldwmapi -lshell32 -luser32 -lgdi32 -ladvapi32 -lole32 -lcomctl32 -luxtheme -luuid @controllerOptions
+& $Compiler --target=x86_64-w64-mingw32 -std=c++17 -DLG_ENABLE_SELF_TEST -Os -ffunction-sections -fdata-sections -Wall -Wextra -municode -mwindows -static '-Wl,--gc-sections,--strip-all' (Join-Path $PSScriptRoot 'src/main.cpp') (Join-Path $PSScriptRoot 'assets\icon.res') (Join-Path $outputDir 'engine.res') -o (Join-Path $outputDir 'LiquidGlassTests.exe') -ldwmapi -lshell32 -luser32 -lgdi32 -ladvapi32 -lole32 -lcomctl32 -luxtheme -luuid -lgdiplus @controllerOptions
 if ($LASTEXITCODE -ne 0) { throw 'Compilation failed.' }
 }
-# Successful binaries are self-contained; do not retain duplicate resource/object files.
+foreach ($assetDirectory in @('app-glass','fonts')) {
+    $destination = Join-Path $outputDir $(if ($assetDirectory -eq 'app-glass') { 'art' } else { 'fonts' })
+    New-Item -ItemType Directory -Force -Path $destination | Out-Null
+    Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot ('assets/' + $assetDirectory)) -File | Copy-Item -Destination $destination -Force
+}
+# Do not retain duplicate resource/object files.
 foreach ($artifact in @($hookObjects) + @(Join-Path $outputDir 'engine.res')) {
     Remove-Item -LiteralPath $artifact -Force -ErrorAction Stop
 }

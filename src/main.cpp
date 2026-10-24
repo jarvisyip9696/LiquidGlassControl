@@ -7,6 +7,11 @@
 #define NOMINMAX
 #include <windows.h>
 #include <objbase.h>
+#include <gdiplus.h>
+#include <memory>
+#include <d2d1.h>
+#include <dwrite.h>
+#include <wincodec.h>
 #include <shellapi.h>
 #include <dwmapi.h>
 #include <string>
@@ -53,6 +58,16 @@ enum {Language=101,Refresh,Apply,Restore,Pause,Scope,Material,Corners,List=113,S
 HWND mainWindow{}, language{}, scope{}, material{}, corners{}, list{}, status{}, note{};
 HFONT font{}; HBRUSH background{}; NOTIFYICONDATAW tray{};
 bool enabled=false,busy=false,selfTestMode=false,nativeProbeMode=false; UINT dpi=96;
+bool appReviewMode=false;
+namespace appui {extern bool legacy;bool active();void paint(HWND,HDC);void invalidate();}
+// Keep the complete Figma workspace inside the current monitor at large DPI.
+UINT workspaceDpi(UINT requested, HWND window=nullptr){
+    MONITORINFO mi{};mi.cbSize=sizeof(mi);POINT origin{};
+    HMONITOR monitor=window?MonitorFromWindow(window,MONITOR_DEFAULTTONEAREST):MonitorFromPoint(origin,MONITOR_DEFAULTTOPRIMARY);
+    if(!GetMonitorInfoW(monitor,&mi))return requested;
+    int width=mi.rcWork.right-mi.rcWork.left-32,height=mi.rcWork.bottom-mi.rcWork.top-72;
+    return std::max(60u,std::min(requested,(UINT)std::max(1,std::min(width*96/1280,height*96/900))));
+}
 std::map<HWND,RECT> controlLayout;
 HWINEVENTHOOK windowEvents{},nameEvents{};unsigned attributeWrites=0;std::set<HWND> pendingWindows,notEligible;bool windowScanPending=false; // notEligible: matching windows App glass could not manage (elevated, no DWM support); cleared on DESTROY and on Apply
 bool volumeOn=false,brightnessOn=false,startupAnimation=true,startupPlayed=false;ULONGLONG startupTime=0;
@@ -69,8 +84,11 @@ enum {AppPages=400,AppBorder,AppText,TitleOn,TitleHeading,TitleNote,TitleInsetLa
 // Row expanders (System glass rows 0..7, then App glass > Title-bar glass) and the System glass panels; each slider directly follows its label.
 enum {ExpandVolume=440,ExpandBrightness,ExpandTaskbar,ExpandStart,ExpandNotification,ExpandCalendar,ExpandExplorer,ExpandDock,ExpandTitle,
     LookOpacityLabel=450,LookOpacity,LookBlurLabel,LookBlur,LookRadiusLabel,LookRadius,LookTintLabel,LookTint,DockScaleLabel=460,DockScale,DockSpreadLabel,DockSpread,DockSpeedLabel,DockSpeed,DockBounceLabel,DockBounce,PageScroll=470};
+enum {SystemEffectsTab=480,SystemMaterialTab,SystemEngineTab,SystemSurface,SystemMaster};
+int systemView=0;
 void syncOpticalControls(int action=0);void syncTitleGlass();
 void applyGlass(bool discover=true);
+bool unifiedSystemGlass=false;bool allSystemGlassOn();void toggleUnifiedSystemGlass();void saveUnifiedLook(const glass::Look& look);
 void queueGlass(bool discover=true);
 void updateEffectLabels();
 void observeWindows();
@@ -155,6 +173,7 @@ void refreshStatus(){
         s+=(s.empty()?L"":L"\r\n")+std::wstring(tr(L"诊断：",L"Diagnostics:"))+L" "+flat;
     }
     SetWindowTextW(status,s.c_str());
+    appui::invalidate();
 }
 void message(const std::wstring& s,int page=-1){statusText=s;statusPage=page<0?currentPage:page;refreshStatus();}
 void updateOpticalButtons(){
@@ -195,7 +214,7 @@ bool startOptical(){
 void syncOpticalPreview(){
     if(opticalPreview.exited())opticalFailed(tr(L"LGEngine 预览未能连接，请检查适配器及 Windows 应用控制状态。",L"LGEngine preview did not connect. Check the adapter and Windows application control."));
     if(!selfTestMode&&!nativeProbeMode&&!opticalSuspended&&opticalUiReady&&GetDlgItem(mainWindow,OptReplay)&&!opticalPreview.running()&&(volumeOn||brightnessOn||IsDlgButtonChecked(mainWindow,TitleOn)==BST_CHECKED||indicatorOpen())){if(!opticalMayStart(false)||!startOptical()){updateOpticalButtons();return;}}
-    lgpreview::Settings value;value.opacity=glassConfig.opacity;value.blur=glassConfig.blur;value.radius=glassConfig.radius;value.tint=glassConfig.tint;value.savePower=batteryFriendly;value.language=(DWORD)l10n::current;
+    lgpreview::Settings value;value.opacity=glassConfig.opacity;value.blur=glassConfig.blur;value.radius=glassConfig.radius;value.tint=glassConfig.tint<=2?glassConfig.tint:0;value.savePower=batteryFriendly;value.language=(DWORD)l10n::current;
     BOOL motion=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&motion,0);HIGHCONTRASTW high{};high.cbSize=sizeof(high);SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(high),&high,0);value.reducedMotion=!motion||(high.dwFlags&HCF_HIGHCONTRASTON);
     if(opticalPreview.publish(value)){syncOpticalControls();opticalStartup=0;if(mainWindow)KillTimer(mainWindow,16);}
     else if(opticalPreview.running()&&mainWindow){if(!opticalStartup)opticalStartup=GetTickCount64();SetTimer(mainWindow,16,500,nullptr);}
@@ -206,7 +225,7 @@ std::wstring classOf(HWND h){wchar_t c[256]{};GetClassNameW(h,c,256);return c;}
 std::wstring executable(DWORD pid){HANDLE p=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid);wchar_t path[32768]{};DWORD n=32768;if(p){if(!QueryFullProcessImageNameW(p,0,path,&n))path[0]=0;CloseHandle(p);}std::wstring s=path;auto i=s.find_last_of(L"\\/");return i==std::wstring::npos?s:s.substr(i+1);}
 bool same(const std::wstring&a,const std::wstring&b){return _wcsicmp(a.c_str(),b.c_str())==0;}
 bool systemExecutable(const std::wstring&exe){return same(exe,L"StartMenuExperienceHost.exe")||same(exe,L"SearchHost.exe")||same(exe,L"SearchApp.exe")||same(exe,L"ShellExperienceHost.exe")||same(exe,L"ShellHost.exe");}
-bool usesExplorer(int selectedMode,const std::wstring&exe){return selectedMode==1||selectedMode==2||(selectedMode==0&&same(exe,L"explorer.exe"));}
+
 bool explorerBackupExists(){auto dir=iniPath.substr(0,iniPath.find_last_of(L"\\")+1);return GetFileAttributesW((dir+L"explorer-background-originals.bin").c_str())!=INVALID_FILE_ATTRIBUTES;}
 bool nativeBackupExists(){auto dir=iniPath.substr(0,iniPath.find_last_of(L"\\")+1);return GetFileAttributesW((dir+L"native-osd-originals.bin").c_str())!=INVALID_FILE_ATTRIBUTES||GetFileAttributesW((dir+L"native-osd-switches.bin").c_str())!=INVALID_FILE_ATTRIBUTES;}
 std::wstring settingsDir(){return iniPath.substr(0,iniPath.find_last_of(L"\\")+1);}
@@ -285,6 +304,7 @@ void CALLBACK foregroundChanged(HWINEVENTHOOK,DWORD,HWND,LONG,LONG,DWORD,DWORD){
 void observeForeground(){bool need=!selfTestMode&&!nativeProbeMode&&IsDlgButtonChecked(mainWindow,TitleOn)==BST_CHECKED;if(need&&!titleHook)titleHook=SetWinEventHook(EVENT_SYSTEM_FOREGROUND,EVENT_SYSTEM_FOREGROUND,nullptr,foregroundChanged,0,0,WINEVENT_OUTOFCONTEXT);else if(!need&&titleHook){UnhookWinEvent(titleHook);titleHook=nullptr;}}
 bool valid(HWND h,const Snapshot& s){DWORD pid=0;GetWindowThreadProcessId(h,&pid);return IsWindow(h)&&pid==s.pid&&classOf(h)==s.cls&&GetPropW(h,L"LiquidGlass.Control.Owner")==mainWindow;}
 void saveLanguage(){l10n::save(iniPath);}
+void sizeDesignWindow(){if(!mainWindow||(selfTestMode&&!appReviewMode))return;RECT outer{},visible{};GetWindowRect(mainWindow,&outer);visible=outer;DwmGetWindowAttribute(mainWindow,9,&visible,sizeof(visible));int extraX=(outer.right-outer.left)-(visible.right-visible.left),extraY=(outer.bottom-outer.top)-(visible.bottom-visible.top);SetWindowPos(mainWindow,nullptr,0,0,MulDiv(1280,dpi,96)+extraX,MulDiv(900,dpi,96)+extraY,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);}
 // Timer 23 (2 s) re-asserts the attributes while App glass has rules: apps reset them when they recreate or retheme a window.
 void setRulesActive(bool active){enabled=active;observeWindows();if(mainWindow){if(active)SetTimer(mainWindow,23,2000,nullptr);else KillTimer(mainWindow,23);}}
 void CALLBACK windowChanged(HWINEVENTHOOK,DWORD event,HWND h,LONG object,LONG child,DWORD,DWORD){
@@ -318,7 +338,7 @@ void observeWindows(){bool need=enabled||glassConfig.features;if(need&&!windowEv
 void selectPage(int page){
     if(page<0||page>2)return;bool changed=currentPage!=page;finishPageMotion();currentPage=page;refreshStatus();
     TabCtrl_SetCurSel(tabs,page);relayout();
-    if(changed){beginPageMotion();if(page==0)refresh(true);else if(list)releaseAppList();}
+    if(changed){if(page==0&&entries.empty())refresh(true);beginPageMotion();}
 }
 // The LGEngine preview runs only while the indicator panel (Volume or Brightness row) is open on System glass.
 void syncIndicatorPanel(){if(indicatorOpen()&&!nativeProbeMode&&!selfTestMode){syncOpticalPreview();if(!opticalPreview.running()&&opticalFailures&&!opticalFailureText.empty())message(opticalFailureText);}else syncOpticalControls();refreshStatus();}
@@ -367,7 +387,7 @@ std::wstring ownManagedText(){int n=0;for(auto&e:originals)if(e.second.managesOw
 BOOL CALLBACK enumerate(HWND h,LPARAM data){
     auto& out=*reinterpret_cast<std::vector<Entry>*>(data);DWORD pid=0;GetWindowThreadProcessId(h,&pid);
     if(pid==GetCurrentProcessId()||!IsWindowVisible(h))return TRUE;
-    auto cls=classOf(h);if(shellClass(cls))return TRUE;
+    auto cls=classOf(h);if(shellClass(cls)||cls==L"CabinetWClass"||cls==L"ExploreWClass")return TRUE;
     if(GetWindow(h,GW_OWNER)||GetWindowLongPtrW(h,GWL_EXSTYLE)&WS_EX_TOOLWINDOW)return TRUE;
     wchar_t title[512]{};GetWindowTextW(h,title,512);if(!title[0])return TRUE;
     std::wstring exe=executable(pid);if(exe.empty())return TRUE;
@@ -390,7 +410,7 @@ void refresh(bool recollect=true){
     HWND previous=lastListedWindow;int n=(int)SendMessageW(list,LB_GETCURSEL,0,0);if(n>=0&&n<(int)entries.size())previous=entries[n].hwnd;
     SendMessageW(list,WM_SETREDRAW,FALSE,0);if(recollect)entries=collect();SendMessageW(list,LB_RESETCONTENT,0,0);int sel=0;
     for(size_t i=0;i<entries.size();++i){if(!entries[i].icon)entries[i].icon=applicationIcon(entries[i]);bool explorer=entries[i].cls==L"CabinetWClass"||entries[i].cls==L"ExploreWClass";std::wstring text=entries[i].exe+(explorer?tr(L" [整窗后端]  —  ",L" [whole-window backend]  —  "):tr(L" [仅外框/待验证]  —  ",L" [frame only/unverified]  —  "))+entries[i].title;SendMessageW(list,LB_ADDSTRING,0,reinterpret_cast<LPARAM>(text.c_str()));if(entries[i].hwnd==previous)sel=(int)i;}
-    if(!entries.empty())SendMessageW(list,LB_SETCURSEL,sel,0);
+    if(!previous){for(size_t i=0;i<entries.size();++i)if(_wcsicmp(entries[i].exe.c_str(),L"chrome.exe")==0){sel=(int)i;break;}}if(!entries.empty())SendMessageW(list,LB_SETCURSEL,sel,0);
     SendMessageW(list,WM_SETREDRAW,TRUE,0);InvalidateRect(list,nullptr,FALSE);
     for(auto i=appIcons.begin();i!=appIcons.end();){bool used=false;for(auto&e:entries)if(e.icon==i->second){used=true;break;}if(!used){DestroyIcon(i->second);i=appIcons.erase(i);}else ++i;}
     updateCompatibility();
@@ -402,7 +422,8 @@ void releaseAppList(){
 }
 void updateCompatibility(){
     if(!compatibility)return;
-    int n=(int)SendMessageW(list,LB_GETCURSEL,0,0);bool explorer=selection(scope)==1||(n>=0&&n<(int)entries.size()&&(entries[n].cls==L"CabinetWClass"||entries[n].cls==L"ExploreWClass"));
+    appui::invalidate();
+    int n=(int)SendMessageW(list,LB_GETCURSEL,0,0);bool explorer=false||(n>=0&&n<(int)entries.size()&&(entries[n].cls==L"CabinetWClass"||entries[n].cls==L"ExploreWClass"));
     SetWindowTextW(compatibility,explorer?tr(L"资源管理器：独立 XAML 材质；经典内容区可能仍不透明。",L"Explorer: standalone XAML materials; classic content may remain opaque."):tr(L"其他应用：仅尝试外框材质；Chrome / Electron 等内容区通常不受影响。",L"Other apps: frame material only; Chrome / Electron content usually stays opaque."));
 }
 void sync(bool report){
@@ -495,20 +516,20 @@ void loadAppGlass(){
     auto get=[](const wchar_t* key,int fallback,int high){return std::clamp((int)GetPrivateProfileIntW(L"AppGlass",key,fallback,iniPath.c_str()),0,high);};
     int m=get(L"Mode",2,2),mat=get(L"Material",0,3),cor=get(L"Corners",0,2),bor=get(L"Border",0,4),txt=get(L"Text",0,2);
     wchar_t exe[MAX_PATH]{};GetPrivateProfileStringW(L"AppGlass",L"Exe",L"",exe,MAX_PATH,iniPath.c_str());
-    SendMessageW(scope,CB_SETCURSEL,m,0);SendMessageW(material,CB_SETCURSEL,mat,0);SendMessageW(corners,CB_SETCURSEL,cor,0);SendDlgItemMessageW(mainWindow,AppBorder,CB_SETCURSEL,bor,0);SendDlgItemMessageW(mainWindow,AppText,CB_SETCURSEL,txt,0);
+    if(m==1)m=0;SendMessageW(scope,CB_SETCURSEL,m==2?1:0,0);SendMessageW(material,CB_SETCURSEL,mat,0);SendMessageW(corners,CB_SETCURSEL,cor,0);SendDlgItemMessageW(mainWindow,AppBorder,CB_SETCURSEL,bor,0);SendDlgItemMessageW(mainWindow,AppText,CB_SETCURSEL,txt,0);
     mode=m;selectedExe=exe;setRule(mat,cor,bor,txt);explorerByApp=get(L"ExplorerByApp",0,1)&&explorerOn;updateCompatibility();
     if(get(L"Active",0,1)==1&&!(mode==0&&selectedExe.empty())){setRulesActive(true);windowScanPending=SetTimer(mainWindow,3,1200,nullptr)!=0;}
     observeForeground();syncTitleGlass();
 }
 void apply(){
     // App glass only writes DWM window attributes, so a pending old-theme restore does not block it; only the System glass part (File Explorer) waits.
-    int nextMode=selection(scope);std::wstring exe;
+    int nextMode=selection(scope)==1?2:0;std::wstring exe;
     if(nextMode==0){int n=(int)SendMessageW(list,LB_GETCURSEL,0,0);if(n<0||n>=(int)entries.size()){message(tr(L"请先选择一个应用窗口。",L"Select an application window first."));return;}exe=entries[n].exe;}
     // A restore that failed for some windows no longer stops the new rule: those windows keep their snapshot and are re-applied below, and the status line says so.
     setRulesActive(false);restoreWindows();size_t stuck=originals.size();
     mode=nextMode;selectedExe=exe;setRule(selection(material),selection(corners),selection(GetDlgItem(mainWindow,AppBorder)),selection(GetDlgItem(mainWindow,AppText)));
     // explorerByApp: App glass turned File Explorer on, so App glass may turn it off again (never a System glass choice).
-    if(usesExplorer(mode,selectedExe)){if(!explorerOn)explorerByApp=true;explorerOn=true;applyGlass();}
+    if(explorerOn){explorerOn=explorerByApp=false;applyGlass();}
     else if(explorerByApp){explorerByApp=false;explorerOn=false;applyGlass();}
     setRulesActive(true);sync(true);saveRule();syncTitleGlass();
     std::wstring more;if(stuck)more+=std::wstring(L" · ")+tr(L"此前未能还原的窗口：",L"windows that could not be restored earlier: ")+std::to_wstring(stuck);
@@ -530,11 +551,13 @@ void restoreAll(bool exit){
     message(tr(L"已还原所有效果。",L"All effects restored."));if(exit)DestroyWindow(mainWindow);
 }
 void combo(HWND h,std::initializer_list<const wchar_t*> labels,int sel){SendMessageW(h,CB_RESETCONTENT,0,0);for(auto s:labels)SendMessageW(h,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(s));SendMessageW(h,CB_SETCURSEL,sel<0?0:sel,0);}
+void showThemedCombo(HWND);
 #include "ui_style.h"
+#include "liquid_optics.h"
+#include "app_glass_ui.h"
+void showThemedCombo(HWND h){appui::showCombo(h);}
 #include "control_ui.h"
-#ifdef LG_ENABLE_SELF_TEST
 #include "ui_snapshot_test.h"
-#endif
 #include "glass_features.h"
 // System glass panels: one Opacity/Frost/Radius/Tint set serves whichever surface row is open (Taskbar..Explorer = families 0..4), the Dock row has its own four sliders. Changes save to the family/Dock ini sections and apply live.
 glass::Family lookFamily(){return (glass::Family)(systemOpen>=2&&systemOpen<=6?systemOpen-2:0);}
@@ -553,14 +576,14 @@ ULONGLONG panelApplyTime=0;
 void savePanel(bool dock){
     auto pos=[](int id){return (DWORD)SendDlgItemMessageW(mainWindow,id,TBM_GETPOS,0,0);};
     if(dock)saveDock(pos(DockScale),pos(DockSpread),pos(DockSpeed),pos(DockBounce));
-    else{glass::Look look;look.opacity=pos(LookOpacity);look.blur=pos(LookBlur);look.radius=pos(LookRadius);int tint=selection(GetDlgItem(mainWindow,LookTint));look.tint=tint<0?0:(DWORD)tint;saveGlassLook(lookFamily(),look);}
+    else{glass::Look look;look.opacity=pos(LookOpacity);look.blur=pos(LookBlur);look.radius=pos(LookRadius);int tint=selection(GetDlgItem(mainWindow,LookTint));look.tint=tint<0?0:(DWORD)tint;if(unifiedSystemGlass)saveUnifiedLook(look);else saveGlassLook(lookFamily(),look);}
     updatePanelLabels();KillTimer(mainWindow,31);panelApplyTime=GetTickCount64();applyGlass(false);
 }
 // While a look or dock slider is dragged: memory only (the ini is written on release by savePanel), applied at most every 33 ms; timer 31 flushes the latest value.
 void previewPanel(bool dock){
     auto pos=[](int id){return (DWORD)SendDlgItemMessageW(mainWindow,id,TBM_GETPOS,0,0);};
     if(dock){glass::Config c=glassConfig;c.dockScale=pos(DockScale);c.dockSpread=pos(DockSpread);c.dockSpeed=pos(DockSpeed);c.dockBounce=pos(DockBounce);c=glass::normalize(c);glassConfig.dockScale=c.dockScale;glassConfig.dockSpread=c.dockSpread;glassConfig.dockSpeed=c.dockSpeed;glassConfig.dockBounce=c.dockBounce;}
-    else{auto f=lookFamily();glass::Look look;look.opacity=pos(LookOpacity);look.blur=pos(LookBlur);look.radius=pos(LookRadius);int tint=selection(GetDlgItem(mainWindow,LookTint));look.tint=tint<0?0:(DWORD)tint;glassConfig.looks[f]=glass::normalize(look);glassLookLinked[f]=false;} // unlinked in memory so applyGlass does not copy the shared values over it
+    else{auto f=lookFamily();glass::Look look;look.opacity=pos(LookOpacity);look.blur=pos(LookBlur);look.radius=pos(LookRadius);int tint=selection(GetDlgItem(mainWindow,LookTint));look.tint=tint<0?0:(DWORD)tint;if(unifiedSystemGlass){look=glass::normalize(look);glassConfig.opacity=look.opacity;glassConfig.blur=look.blur;glassConfig.radius=look.radius;glassConfig.tint=look.tint;for(int family=0;family<glass::FamilyCount;++family){glassConfig.looks[family]=look;glassLookLinked[family]=true;}}else{glassConfig.looks[f]=glass::normalize(look);glassLookLinked[f]=false;}} // unlinked in memory so applyGlass does not copy the shared values over it
     ULONGLONG now=GetTickCount64();if(now-panelApplyTime>=33){KillTimer(mainWindow,31);panelApplyTime=now;glassPreviewOnly=true;applyGlass(false);glassPreviewOnly=false;}else SetTimer(mainWindow,31,UINT(33-(now-panelApplyTime)),nullptr);
 }
 #ifdef LG_ENABLE_SELF_TEST
@@ -570,7 +593,13 @@ int selfTest(){
     auto record=[&](const char*name){checks+=(passed?"PASS: ":"FAIL: ");checks+=name;checks+="\r\n";allPassed=passed&&allPassed;passed=true;};
     record("embedded notices and app/shell boundary");
     passed=uiMotion::test();record("spring motion is frame-rate independent, continuous on reversal and settles to idle");
-    passed=!engineReady&&!engineAttempted&&!engine.available();record("idle startup defers engine loading");
+    {for(int count:{3,5,9,10}){std::vector<appui::MenuRow>rows(count);appui::PopupState state{};state.rows=&rows;state.width=260;state.height=12+36*count;
+        for(bool above:{false,true}){state.opensAbove=above;auto first=appui::popupRevealRect(state,0),middle=appui::popupRevealRect(state,.5f),last=appui::popupRevealRect(state,1);
+            passed=passed&&first.bottom-first.top==1&&middle.bottom-middle.top>1&&middle.bottom-middle.top<state.height&&last.top==0&&last.bottom==state.height&&last.right==state.width&&(above?first.bottom==state.height:first.top==0);}
+        for(ULONGLONG ready:{1000ull,1500ull}){state.opened=ready;passed=passed&&appui::popupOpeningProgress(state,ready)==0&&std::abs(appui::popupOpeningProgress(state,ready+100)-.875f)<.0001f&&appui::popupOpeningProgress(state,ready+200)==1&&appui::popupOpeningProgress(state,ready+400)==1;}}
+        record("dropdown containers reveal their height in either direction without moving or scaling menu content");}
+    {appui::SegmentMotion motion;motion.fromX=252;motion.toX=456;motion.fromWidth=98;motion.toWidth=107;motion.start=1000;motion.moving=true;auto first=appui::segmentAt(motion,1000),middle=appui::segmentAt(motion,1110),last=appui::segmentAt(motion,1220);passed=first.first==252&&middle.first>252&&middle.first<456&&last.first==456&&last.second==107;motion.fromX=middle.first;motion.fromWidth=middle.second;motion.toX=252;motion.start=1110;auto reverse=appui::segmentAt(motion,1110);passed=passed&&reverse.first==middle.first&&reverse.second==middle.second;record("segment highlight eases to destination and retargets without a position jump");}
+    passed=!engineReady&&!engineAttempted&&!engine.available();record("idle startup defers engine loading");passed=liquidfx::test();record("optical sampler preserves identity, bends real source pixels and softens contrast");
     {auto previous=lastListedWindow;auto icon=CopyIcon(LoadIconW(nullptr,IDI_APPLICATION));appIcons[L"test-only"]=icon;entries.push_back({mainWindow,GetCurrentProcessId(),L"test",L"test",L"test",icon});SendMessageW(list,LB_ADDSTRING,0,reinterpret_cast<LPARAM>(L"test"));SendMessageW(list,LB_SETCURSEL,0,0);releaseAppList();passed=entries.empty()&&entries.capacity()==0&&appIcons.empty()&&SendMessageW(list,LB_GETCOUNT,0,0)==0&&lastListedWindow==mainWindow;lastListedWindow=previous;record("tray cleanup releases application entries and icon handles");}
     {glass::StatusCursor cursor;auto a=cursor.take(glass::Taskbar,0,0,0);auto b=cursor.take(glass::Taskbar,0,0,0);auto c=cursor.take(glass::Taskbar,glass::Taskbar,0,0);auto d=cursor.take(0,0,glass::Taskbar,E_FAIL);auto e=cursor.take(0,0,glass::Taskbar,E_FAIL);auto f=cursor.take(0,0,glass::Taskbar,E_ACCESSDENIED);auto g=cursor.take(glass::Taskbar,0,0,0);auto h=cursor.take(glass::Taskbar,0,0,0,true);passed=a.success==glass::Taskbar&&!b.success&&!b.failed&&c.success==glass::Taskbar&&d.failed==glass::Taskbar&&!e.failed&&f.failed==glass::Taskbar&&g.success==glass::Taskbar&&h.success==glass::Taskbar;record("material reporting suppresses duplicates and retains state/error transitions");}
     // Exercise the embedded engine and its COM factory without attaching to
@@ -585,7 +614,7 @@ int selfTest(){
         passed=inspection&&!regular&&isolated&&SUCCEEDED(probe.connectTest());if(regular)CloseHandle(regular);if(isolated)CloseHandle(isolated);probe.shutdown();record("native inspection uses isolated config and engine connection");
         DeleteFileW(runtime.c_str());RemoveDirectoryW(testDir.c_str());
     }else{passed=false;record("create isolated engine test directory");}
-    glass::Config invalid;invalid.features=0xffffffff;invalid.opacity=500;invalid.radius=999;invalid.tint=999;auto safe=glass::normalize(invalid);passed=passed&&safe.features==2047&&glass::active(glass::TaskbarFill,glass::Capsule)&&glass::active(glass::TaskbarRoot,glass::Capsule)&&!glass::active(glass::TaskbarFill,glass::Dock)&&safe.opacity==90&&safe.radius==28&&safe.tint==3;
+    glass::Config invalid;invalid.features=0xffffffff;invalid.opacity=500;invalid.radius=999;invalid.tint=999;auto safe=glass::normalize(invalid);passed=passed&&safe.features==2047&&glass::active(glass::TaskbarFill,glass::Capsule)&&glass::active(glass::TaskbarRoot,glass::Capsule)&&!glass::active(glass::TaskbarFill,glass::Dock)&&safe.opacity==90&&safe.radius==28&&safe.tint==4;
     passed=glass::selfTestSnapshot()&&passed;
     passed=passed&&glass::notificationHostWindow(L"ShellHost.exe",L"ControlCenterWindow")&&glass::notificationHostWindow(L"ShellExperienceHost.exe",L"Windows.UI.Core.CoreWindow")&&!glass::notificationHostWindow(L"ShellHost.exe",L"Windows.UI.Core.CoreWindow")&&!glass::notificationHostWindow(L"ShellExperienceHost.exe",L"ControlCenterWindow")&&!glass::notificationHostWindow(L"other.exe",L"ControlCenterWindow");
     {auto quick=glass::identify(L"ControlCenterRegion",L"Windows.UI.Xaml.Controls.Grid",2);auto calendar=glass::identify(L"CalendarCenterGrid",L"Windows.UI.Xaml.Controls.Grid",2);auto notification=glass::identify(L"NotificationCenterGrid",L"Windows.UI.Xaml.Controls.Grid",2);
@@ -612,10 +641,13 @@ int selfTest(){
     if(!passed){char d[96];snprintf(d,sizeof(d)," (row %d, slider %d, scale %lu, ini scale %d)",row,slider,(unsigned long)glassConfig.dockScale,scale);name+=d;}record(name.c_str());}
     expandSystemRow(2);SendMessageW(mainWindow,WM_COMMAND,RestoreOriginal,0);
     passed=passed&&glassConfig.opacity==35&&glassConfig.blur==12&&glassConfig.radius==12&&glassConfig.tint==2&&!batteryFriendly&&glassConfig.features==(glass::Keyboard|glass::Taskbar)&&GetPrivateProfileIntW(L"Glass",L"Opacity",999,iniPath.c_str())==35&&glassLookLinked[glass::TaskbarLook]&&glassConfig.dockScale==126&&SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETPOS,0,0)==35&&SendDlgItemMessageW(mainWindow,LookBlur,TBM_GETPOS,0,0)==12&&SendDlgItemMessageW(mainWindow,DockScale,TBM_GETPOS,0,0)==126;
+    glass::Look presetLook; presetLook.tint=4;saveGlassLook(glass::TaskbarLook,presetLook);loadGlassSettings();passed=passed&&glassConfig.looks[glass::TaskbarLook].tint==4&&GetPrivateProfileIntW(L"Glass.Taskbar",L"Tint",999,iniPath.c_str())==4;loadLookPanel();passed=passed&&SendDlgItemMessageW(mainWindow,LookTint,CB_GETCURSEL,0,0)==4;record("Windhawk LiquidGlass option persists and reloads per-surface without changing legacy indices");
+    {bool savedUnified=unifiedSystemGlass;unifiedSystemGlass=true;glass::Look common{47,18,4,21};saveUnifiedLook(common);loadGlassSettings();passed=passed&&unifiedSystemGlass&&glassConfig.opacity==47&&glassConfig.blur==21&&glassConfig.radius==18&&glassConfig.tint==4;for(int family=0;family<glass::FamilyCount;++family)passed=passed&&glassLookLinked[family]&&glassConfig.looks[family].tint==4&&glassConfig.looks[family].opacity==47&&GetPrivateProfileIntW(glassLookSections[family],L"Tint",999,iniPath.c_str())==4;record("unified material parameters persist and reload identically for all five families");unifiedSystemGlass=savedUnified;}
     DeleteFileW(iniPath.c_str());iniPath=savedPath;glassConfig=savedConfig;batteryFriendly=savedBattery;std::copy(std::begin(savedLinked),std::end(savedLinked),glassLookLinked);expandSystemRow(-1);loadLookPanel();selectPage(0);}
     record("Reset all looks relinks and restores defaults");
     // Rapid switch changes publish only the final requested mask after batching.
     {auto savedConfig=glassConfig;bool oldVolume=volumeOn,oldBrightness=brightnessOn,oldExplorer=explorerOn,oldDock=dockOn,oldKeyboard=keyboardOn;bool oldShell[3]={shellOn[0],shellOn[1],shellOn[2]};DWORD oldExtra=glassExtraFeatures;
+    volumeOn=brightnessOn=explorerOn=dockOn=keyboardOn=false;for(bool& on:shellOn)on=false;glassExtraFeatures=0;toggleUnifiedSystemGlass();passed=allSystemGlassOn()&&(desiredGlassFeatures()&(glass::Taskbar|glass::Start|glass::Notifications|glass::Calendar|glass::Dock|glass::Keyboard))==(glass::Taskbar|glass::Start|glass::Notifications|glass::Calendar|glass::Dock|glass::Keyboard);toggleUnifiedSystemGlass();passed=passed&&!allSystemGlassOn()&&desiredGlassFeatures()==0&&!volumeOn&&!brightnessOn;record("master switch enables and disables all visible system effects including both indicators");
     // Volume/Brightness no longer reach the XAML engine; Calendar is its own bit, independent of Notifications.
     volumeOn=brightnessOn=true;glassExtraFeatures=0;explorerOn=dockOn=keyboardOn=false;for(bool&on:shellOn)on=false;shellOn[0]=true;queueGlass();shellOn[0]=false;shellOn[2]=true;glassExtraFeatures=glass::Calendar;queueGlass();shellOn[2]=false;queueGlass();
     passed=passed&&glassPendingDiscover&&glassConfig.features==glass::Calendar&&(desiredGlassFeatures()&(glass::Volume|glass::Brightness))==0&&SendMessageW(GetDlgItem(mainWindow,TaskbarToggle),BM_GETCHECK,0,0)==BST_UNCHECKED&&SendMessageW(GetDlgItem(mainWindow,CalendarToggle),BM_GETCHECK,0,0)==BST_CHECKED&&SendMessageW(GetDlgItem(mainWindow,VolumeOn),BM_GETCHECK,0,0)==BST_CHECKED;
@@ -624,7 +656,7 @@ int selfTest(){
         auto a=osdMigration(false,1,0,false,false),b=osdMigration(false,0,glass::Volume|glass::Brightness,false,false),c=osdMigration(true,0,0,true,false),d=osdMigration(true,1,glass::Volume,false,true);
         passed=passed&&a.volume&&a.brightness&&!b.volume&&!b.brightness&&c.volume&&!c.brightness&&!d.volume&&d.brightness;
     }
-    passed=passed&&glass::unifiedTaskbar(0)==0&&glass::unifiedTaskbar(glass::Taskbar)==(glass::Taskbar|glass::Capsule)&&glass::unifiedTaskbar(glass::Capsule|glass::Dock)==(glass::Taskbar|glass::Capsule|glass::Dock)&&glass::unifiedTaskbar(glass::Start)==glass::Start&&pageControls[1].size()==26+indicatorPanel.items.size()+lookPanel.items.size()+dockPanel.items.size()+systemFooter.items.size()&&indicatorPanel.items.size()==30&&lookPanel.items.size()==8&&dockPanel.items.size()==8&&systemFooter.items.size()==2;
+    passed=passed&&glass::unifiedTaskbar(0)==0&&glass::unifiedTaskbar(glass::Taskbar)==(glass::Taskbar|glass::Capsule)&&glass::unifiedTaskbar(glass::Capsule|glass::Dock)==(glass::Taskbar|glass::Capsule|glass::Dock)&&glass::unifiedTaskbar(glass::Start)==glass::Start&&pageControls[1].size()==23+indicatorPanel.items.size()+lookPanel.items.size()+dockPanel.items.size()+systemFooter.items.size()&&indicatorPanel.items.size()==30&&lookPanel.items.size()==8&&dockPanel.items.size()==8&&systemFooter.items.size()==2;
     passed=passed&&!glass::active(glass::TaskbarAuxiliary,glass::Capsule)&&glass::active(glass::TaskbarAuxiliary,glass::Taskbar)&&glass::feature(glass::TaskbarAuxiliary)==glass::Taskbar;
     passed=passed&&glass::identify(L"BackgroundFill",L"Windows.UI.Xaml.Shapes.Rectangle",0)==glass::TaskbarFill&&glass::identify(L"BackgroundFill",L"Windows.UI.Xaml.Shapes.Rectangle",3)==glass::NoSurface&&glass::identify(L"MyDocument",L"Grid",3)==glass::NoSurface;
     passed=passed&&!glass::active(glass::VolumePlate,glass::Brightness)&&glass::active(glass::BrightnessPlate,glass::Brightness)&&!glass::active(glass::TaskbarFill,glass::Start);
@@ -632,27 +664,28 @@ int selfTest(){
     // Exercise first launch and saved preferences without touching the user's INI.
     auto userIni=iniPath;auto userLanguage=l10n::current;
     iniPath=userIni+L".language-test-"+std::to_wstring(GetCurrentProcessId());
-    passed=passed&&l10n::read(iniPath)==l10n::English;
+    passed=passed&&l10n::read(iniPath)==l10n::Simplified;
     for(int i=0;i<l10n::Count;++i){l10n::current=(l10n::Language)i;saveLanguage();passed=passed&&l10n::read(iniPath)==l10n::current;}
     passed=DeleteFileW(iniPath.c_str())&&passed;iniPath=userIni;l10n::current=userLanguage;
     record("language preference round trips");
     // Removed commands must not retain hidden controls or message handlers.
     for(int removedId:{109,110,111,112,116,117,120,121})passed=passed&&!GetDlgItem(mainWindow,removedId);
-    passed=passed&&usesExplorer(0,L"explorer.exe")&&usesExplorer(1,L"")&&usesExplorer(2,L"")&&!usesExplorer(0,L"notepad.exe");
+    passed=passed&&!(desiredGlassFeatures()&glass::Explorer)&&!GetDlgItem(mainWindow,ExplorerToggle)&&!GetDlgItem(mainWindow,ExpandExplorer);
     passed=passed&&TabCtrl_GetItemCount(tabs)==3;
     selectPage(1);passed=passed&&((GetWindowLongPtrW(GetDlgItem(mainWindow,VolumeOn),GWL_STYLE)&WS_VISIBLE)!=0)&&((GetWindowLongPtrW(list,GWL_STYLE)&WS_VISIBLE)==0);
     passed=passed&&!GetDlgItem(mainWindow,VolumeOff)&&!GetDlgItem(mainWindow,BrightnessOff);
-    for(int id:{VolumeOn,BrightnessOn,TaskbarToggle,StartToggle,NotificationToggle,CalendarToggle,ExplorerToggle,DockToggle}){HWND h=GetDlgItem(mainWindow,id);RECT r{};GetWindowRect(h,&r);passed=passed&&h&&((GetWindowLongPtrW(h,GWL_STYLE)&BS_TYPEMASK)==BS_OWNERDRAW)&&r.right-r.left<=MulDiv(110,dpi,96)&&r.bottom-r.top<=MulDiv(40,dpi,96);}
-    passed=shell_materials::regressionTest(settingsDir())&&passed;
-    passed=full_themes::regressionTest(settingsDir())&&passed;
+    for(int id:{VolumeOn,BrightnessOn,TaskbarToggle,StartToggle,NotificationToggle,CalendarToggle,DockToggle}){HWND h=GetDlgItem(mainWindow,id);RECT r{};GetWindowRect(h,&r);passed=passed&&h&&((GetWindowLongPtrW(h,GWL_STYLE)&BS_TYPEMASK)==BS_OWNERDRAW)&&r.right-r.left<=MulDiv(110,dpi,96)&&r.bottom-r.top<=MulDiv(40,dpi,96);}
+    record("system control presence and compact geometry");passed=shell_materials::regressionTest(settingsDir());record("isolated shell material journal regression");
+    passed=full_themes::regressionTest(settingsDir());record("isolated theme recovery regression");
     passed=taskbar_recovery::test(iniPath+L".taskbar-test-"+std::to_wstring(GetCurrentProcessId()))&&passed;
-    record("system controls and isolated theme recovery");
-    // One page per top tab, no sub-tabs: rows expand in place (one System glass row at a time) and every shown control stays between the tabs and the status line.
+    record("isolated taskbar recovery regression");
+    // Effects rows expand in place; Figma's Materials and LGEngine tabs also
+    // expose the same controls without discarding per-surface settings.
     auto shown=[](int id){HWND c=GetDlgItem(mainWindow,id);return c&&(GetWindowLongPtrW(c,GWL_STYLE)&WS_VISIBLE)!=0;};
-    auto clearOfChrome=[](){RECT top{},bottom{};GetWindowRect(tabs,&top);GetWindowRect(status,&bottom);bool ok=true;for(auto&e:controlLayout){HWND c=e.first;if(c==tabs||c==status||c==GetDlgItem(mainWindow,Header)||c==GetDlgItem(mainWindow,Pause)||!(GetWindowLongPtrW(c,GWL_STYLE)&WS_VISIBLE))continue;RECT r{};GetWindowRect(c,&r);ok=ok&&r.top>=top.bottom&&r.bottom<=bottom.top&&r.bottom>r.top;}return ok;};
+    auto clearOfChrome=[](){bool ok=true;for(auto&e:controlLayout){HWND c=e.first;if(c==tabs||c==status||c==GetDlgItem(mainWindow,Header)||c==GetDlgItem(mainWindow,Pause)||(GetDlgCtrlID(c)>=SystemEffectsTab&&GetDlgCtrlID(c)<=SystemSurface)||!(GetWindowLongPtrW(c,GWL_STYLE)&WS_VISIBLE))continue;RECT r{};GetWindowRect(c,&r);MapWindowPoints(nullptr,mainWindow,reinterpret_cast<POINT*>(&r),2);ok=ok&&r.top>=MulDiv(ViewTop,dpi,96)&&r.bottom<=MulDiv(ViewBottom,dpi,96)&&r.left>=MulDiv(248,dpi,96)&&r.right<=MulDiv(1248,dpi,96)&&r.bottom>r.top;}return ok;};
     selectPage(2);passed=passed&&shown(SettingsNote)&&shown(Language)&&shown(BatteryFriendly)&&shown(AboutText)&&shown(ExitApp)&&GetDlgItem(mainWindow,OpticalPreview)&&!GetDlgItem(mainWindow,AppPages)&&!GetDlgItem(mainWindow,SettingsPages)&&!GetDlgItem(mainWindow,SettingsPages+1000)&&clearOfChrome();
     selectPage(1);passed=passed&&shown(KeyboardToggle)&&shown(RestoreOriginal)&&!shown(LookOpacity)&&!shown(OptArrival)&&!shown(PageScroll)&&clearOfChrome();
-    expandSystemRow(2);passed=passed&&systemOpen==2&&shown(LookOpacity)&&shown(LookTint)&&!shown(Language)&&SendMessageW(GetDlgItem(mainWindow,LookTint),CB_GETCOUNT,0,0)==4&&!shown(DockScale)&&!shown(OptArrival)&&GetPropW(GetDlgItem(mainWindow,ExpandTaskbar),L"LG.Open")&&clearOfChrome();
+    expandSystemRow(2);passed=passed&&systemOpen==2&&shown(LookOpacity)&&shown(LookTint)&&!shown(Language)&&SendMessageW(GetDlgItem(mainWindow,LookTint),CB_GETCOUNT,0,0)==5&&!shown(DockScale)&&!shown(OptArrival)&&GetPropW(GetDlgItem(mainWindow,ExpandTaskbar),L"LG.Open")&&clearOfChrome();
     expandSystemRow(7);passed=passed&&shown(DockScale)&&shown(DockBounce)&&!shown(LookOpacity)&&!GetPropW(GetDlgItem(mainWindow,ExpandTaskbar),L"LG.Open")&&clearOfChrome();
     SendMessageW(mainWindow,WM_COMMAND,ExpandDock,0);passed=passed&&systemOpen==-1&&!shown(DockScale);
     expandSystemRow(0);passed=passed&&indicatorOpen()&&shown(OptArrival)&&shown(OptNote)&&shown(OpticalPreview)&&pageMaxScroll[1]>0&&shown(PageScroll)&&clearOfChrome();
@@ -660,8 +693,17 @@ int selfTest(){
     expandSystemRow(1);passed=passed&&shown(OptArrival)&&shown(BrightnessOn)&&clearOfChrome();expandSystemRow(-1);passed=passed&&pageScroll[1]==0&&!shown(PageScroll);
     selectPage(0);passed=passed&&shown(TitleOn)&&!shown(TitleInset)&&!shown(TitleNote);expandTitleRow(true);passed=passed&&titleOpen&&shown(TitleNote)&&shown(TitleLook8)&&clearOfChrome();expandTitleRow(false);passed=passed&&!shown(TitleInset)&&shown(List);
     selectPage(2);passed=passed&&!shown(LookOpacity)&&!shown(DockScale)&&!shown(TitleOn);
-    {RECT client{},last{};GetClientRect(tabs,&client);TabCtrl_GetItemRect(tabs,TabCtrl_GetItemCount(tabs)-1,&last);passed=passed&&last.right<=client.right;}
+    {RECT client{},last=navigationRect(2);GetClientRect(tabs,&client);passed=passed&&last.right<=client.right&&last.bottom<=client.bottom&&navigationHit(MAKELPARAM(MulDiv(20,dpi,96),MulDiv(120,dpi,96)))==2;}
     selectPage(0);
+    record("page navigation, scrolling and content bounds");
+    selectPage(1);SendMessageW(mainWindow,WM_COMMAND,SystemMaterialTab,0);
+    passed=systemView==1&&shown(LookOpacity)&&shown(SystemSurface)&&!shown(OptArrival)&&clearOfChrome();
+    SendDlgItemMessageW(mainWindow,SystemSurface,CB_SETCURSEL,4,0);SendMessageW(mainWindow,WM_COMMAND,MAKEWPARAM(SystemSurface,CBN_SELCHANGE),0);
+    passed=passed&&systemOpen==7&&shown(DockScale)&&!shown(LookOpacity);
+    SendMessageW(mainWindow,WM_COMMAND,SystemEngineTab,0);passed=passed&&indicatorOpen()&&shown(VolumeOn)&&shown(BrightnessOn)&&shown(OptArrival)&&shown(OptLook8)&&!shown(SystemSurface)&&clearOfChrome();
+    SendMessageW(mainWindow,WM_COMMAND,SystemEffectsTab,0);passed=passed&&systemView==0&&systemOpen==-1&&shown(KeyboardToggle)&&!shown(OptArrival);
+    selectPage(2);passed=passed&&!shown(SystemEffectsTab)&&!shown(SystemMaterialTab)&&!shown(SystemEngineTab)&&!shown(SystemSurface);selectPage(0);
+    record("Figma secondary navigation preserves material families and indicator controls");
     WNDCLASSW shellFixtureClass{};shellFixtureClass.lpfnWndProc=DefWindowProcW;shellFixtureClass.hInstance=GetModuleHandleW(nullptr);shellFixtureClass.lpszClassName=L"Shell_SecondaryTrayWnd";
     bool registered=RegisterClassW(&shellFixtureClass)!=0;
     HWND shellFixture=registered?CreateWindowW(shellFixtureClass.lpszClassName,L"Boundary fixture",WS_POPUP,0,0,20,20,nullptr,nullptr,shellFixtureClass.hInstance,nullptr):nullptr;
@@ -676,7 +718,7 @@ int selfTest(){
     GetWindowTextW(GetDlgItem(mainWindow,VolumeOn),text,256);passed=passed&&wcscmp(text,L"Volume glass")==0;
     GetWindowTextW(GetDlgItem(mainWindow,NotificationHeading),text,256);passed=passed&&wcsncmp(text,L"Notification center",wcslen(L"Notification center"))==0;GetWindowTextW(GetDlgItem(mainWindow,CalendarHeading),text,256);passed=passed&&wcsncmp(text,L"Calendar",wcslen(L"Calendar"))==0;
     GetWindowTextW(GetDlgItem(mainWindow,ExpandDock),text,256);passed=passed&&wcscmp(text,L"Show Dock hover animation settings")==0;GetWindowTextW(GetDlgItem(mainWindow,RestoreOriginal),text,256);passed=passed&&wcscmp(text,L"Reset all looks")==0;
-    passed=passed&&SendMessageW(scope,CB_GETCOUNT,0,0)==3&&SendMessageW(material,CB_GETCOUNT,0,0)==4;
+    passed=passed&&SendMessageW(scope,CB_GETCOUNT,0,0)==2&&SendMessageW(material,CB_GETCOUNT,0,0)==4;
     l10n::current=l10n::Simplified;localize();GetWindowTextW(GetDlgItem(mainWindow,Apply),text,256);passed=passed&&wcscmp(text,L"应用")==0;
     GetWindowTextW(GetDlgItem(mainWindow,Restore),text,256);passed=passed&&wcscmp(text,L"还原")==0;
     GetWindowTextW(GetDlgItem(mainWindow,VolumeOn),text,256);passed=passed&&wcscmp(text,L"音量玻璃")==0;
@@ -690,7 +732,7 @@ int selfTest(){
     record("five-language controls, icons and legacy compatibility");
     // Exercise control geometry and font recreation at common monitor DPIs,
     // including a round trip. This does not change the user's display settings.
-    {UINT savedDpi=dpi;selectPage(1);expandSystemRow(0);for(UINT testDpi:{96u,144u,192u,96u}){dpi=testDpi;resizeControls();for(int languageIndex=0;languageIndex<l10n::Count;++languageIndex){l10n::current=(l10n::Language)languageIndex;localize();{RECT client{},last{};GetClientRect(tabs,&client);TabCtrl_GetItemRect(tabs,TabCtrl_GetItemCount(tabs)-1,&last);passed=passed&&last.right<=client.right;}for(int id:{(int)LookOpacity,(int)DockScale,(int)TaskbarToggle,(int)RestoreOriginal,(int)KeyboardToggle,(int)ExpandDock}){RECT r{};GetWindowRect(GetDlgItem(mainWindow,id),&r);passed=passed&&r.right>r.left&&r.bottom>r.top;}RECT footer{};GetWindowRect(status,&footer);passed=passed&&clearOfChrome()&&shown(OptNote);{RECT optNote{},replay{},rowLeft{},rowAbove{};GetWindowRect(GetDlgItem(mainWindow,OptNote),&optNote);GetWindowRect(GetDlgItem(mainWindow,OptReplay),&replay);passed=passed&&optNote.bottom<=footer.top;for(int i=0;i<8;++i){RECT slider{},caption{};GetWindowRect(GetDlgItem(mainWindow,OptLook1+i),&slider);GetWindowRect(GetDlgItem(mainWindow,OptLookLabel1+i),&caption);passed=passed&&slider.right>slider.left&&caption.right<=slider.left&&slider.top>=replay.bottom&&slider.bottom<=optNote.top&&(i<2||slider.top>=rowAbove.bottom)&&(i%2==0||rowLeft.right<=caption.left);if(i%2==0)rowLeft=slider;else rowAbove=rowLeft.bottom>slider.bottom?rowLeft:slider;}}}LOGFONTW lf{};GetObjectW(font,sizeof(lf),&lf);passed=passed&&lf.lfHeight==-MulDiv(15,dpi,96);}dpi=savedDpi;l10n::current=userLanguage;resizeControls();localize();expandSystemRow(-1);selectPage(0);}
+    {UINT savedDpi=dpi;selectPage(1);expandSystemRow(0);for(UINT testDpi:{96u,144u,192u,96u}){dpi=testDpi;resizeControls();for(int languageIndex=0;languageIndex<l10n::Count;++languageIndex){l10n::current=(l10n::Language)languageIndex;localize();{RECT client{},last=navigationRect(2);GetClientRect(tabs,&client);passed=passed&&last.right<=client.right&&last.bottom<=client.bottom;}for(int id:{(int)LookOpacity,(int)DockScale,(int)TaskbarToggle,(int)RestoreOriginal,(int)KeyboardToggle,(int)ExpandDock}){RECT r{};GetWindowRect(GetDlgItem(mainWindow,id),&r);passed=passed&&r.right>r.left&&r.bottom>r.top;}RECT footer{};GetWindowRect(status,&footer);passed=passed&&clearOfChrome()&&shown(OptNote);{RECT optNote{},replay{},rowLeft{},rowAbove{};GetWindowRect(GetDlgItem(mainWindow,OptNote),&optNote);GetWindowRect(GetDlgItem(mainWindow,OptReplay),&replay);passed=passed&&optNote.bottom<=footer.top;for(int i=0;i<8;++i){RECT slider{},caption{};GetWindowRect(GetDlgItem(mainWindow,OptLook1+i),&slider);GetWindowRect(GetDlgItem(mainWindow,OptLookLabel1+i),&caption);passed=passed&&slider.right>slider.left&&caption.right<=slider.left&&slider.top>=replay.bottom&&slider.bottom<=optNote.top&&(i<2||slider.top>=rowAbove.bottom)&&(i%2==0||rowLeft.right<=caption.left);if(i%2==0)rowLeft=slider;else rowAbove=rowLeft.bottom>slider.bottom?rowLeft:slider;}}}LOGFONTW lf{};GetObjectW(font,sizeof(lf),&lf);passed=passed&&lf.lfHeight==-MulDiv(13,dpi,96);}dpi=savedDpi;l10n::current=userLanguage;resizeControls();localize();expandSystemRow(-1);selectPage(0);}
     record("96/144/192 DPI geometry, indicator panel layout and fonts");
     // Check both persisted backup formats without touching registry settings.
     std::wstring testBackup=iniPath.substr(0,iniPath.find_last_of(L"\\")+1)+L"native-backup-test-"+std::to_wstring(GetCurrentProcessId())+L".bin";
@@ -720,6 +762,41 @@ int selfTest(){
         l10n::current=l10n::Simplified;localize();RemovePropW(tabs,L"LG.Sel");passed=saveUiProof(mainWindow,settingsDir()+L"ui-system-material-zh.bmp")&&passed;
         expandSystemRow(0);passed=shown(OptArrival)&&!shown(LookOpacity)&&saveUiProof(mainWindow,settingsDir()+L"ui-lgengine-zh.bmp")&&passed;selectPage(2);passed=!shown(OptArrival)&&passed; // by style: the test window is never shown, so IsWindowVisible is always false
         l10n::current=savedLanguage;localize();expandSystemRow(-1);selectPage(0);record("system glass pages render using native controls without a host overlay");}
+    {int savedTheme=colorTheme;auto savedLanguage=l10n::current;appReviewMode=true;appui::sample=true;l10n::current=l10n::Simplified;selectPage(0);
+        auto&drawing=appui::renderer();BOOL exists=FALSE;UINT32 index=0;
+        passed=SUCCEEDED(drawing.status)&&drawing.fonts&&SUCCEEDED(drawing.fonts->FindFamilyName(L"Inter",&index,&exists))&&exists;
+        exists=FALSE;passed=passed&&SUCCEEDED(drawing.fonts->FindFamilyName(L"Noto Sans SC",&index,&exists))&&exists;
+        record("application page privately loads Inter and Noto Sans SC");
+        for(int theme:{0,7}){applyColorTheme(theme,false);passed=saveUiProof(mainWindow,settingsDir()+(theme==7?L"app-dark-render-test.bmp":L"app-white-render-test.bmp"))&&SUCCEEDED(drawing.lastDraw);record(theme==7?"Direct2D Dark application page renders successfully":"Direct2D White application page renders successfully");}
+        for(int renderDpi:{96,144,192}){UINT savedRenderDpi=dpi;dpi=renderDpi;int width=MulDiv(1280,renderDpi,96),height=MulDiv(848,renderDpi,96);HDC buffer=CreateCompatibleDC(nullptr);BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=width;info.bmiHeader.biHeight=-height;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;void*pixels=nullptr;HBITMAP bitmap=CreateDIBSection(buffer,&info,DIB_RGB_COLORS,&pixels,nullptr,0);passed=passed&&buffer&&bitmap;if(buffer&&bitmap){auto old=SelectObject(buffer,bitmap);drawing.draw(buffer,RECT{0,0,width,height});passed=passed&&SUCCEEDED(drawing.lastDraw)&&appui::hit(MAKELPARAM(MulDiv(768,renderDpi,96),MulDiv(594,renderDpi,96)))==appui::ApplyButton&&appui::hit(MAKELPARAM(MulDiv(548,renderDpi,96),MulDiv(233,renderDpi,96)))==appui::Row0;SelectObject(buffer,old);}if(bitmap)DeleteObject(bitmap);if(buffer)DeleteDC(buffer);dpi=savedRenderDpi;}
+        record("Direct2D application page render and pointer coordinates at 96/144/192 DPI");
+        auto writes=attributeWrites;auto snapshotCount=originals.size();appui::invoke(appui::ApplyButton);appui::invoke(appui::RestoreButton);passed=attributeWrites==writes&&originals.size()==snapshotCount;
+        appui::focus=appui::Row0;appui::key(VK_RETURN);passed=passed&&appui::sampleSelection==0;appui::key(VK_DOWN);passed=passed&&appui::sampleSelection==1;appui::focus=appui::TrayButton;appui::key(VK_TAB);passed=passed&&appui::focus==appui::NavApp;
+        record("application review keyboard navigation and demo actions never alter window materials");
+        appui::invoke(appui::NavSystem);passed=currentPage==1;record("app sidebar opens system page");
+        SendMessageW(GetDlgItem(mainWindow,SystemMaterialTab),BM_CLICK,0,0);passed=passed&&systemView==1;
+        SendMessageW(GetDlgItem(mainWindow,SystemEngineTab),BM_CLICK,0,0);passed=passed&&systemView==2;record("system subpage buttons accept clicks");
+        LPARAM settingsPoint=MAKELPARAM(MulDiv(40,dpi,96),MulDiv(130,dpi,96));
+        passed=passed&&SendMessageW(tabs,WM_NCHITTEST,0,0)==HTCLIENT;
+        SendMessageW(tabs,WM_LBUTTONDOWN,MK_LBUTTON,settingsPoint);SendMessageW(tabs,WM_LBUTTONUP,0,settingsPoint);passed=passed&&currentPage==2;record("native sidebar mouse opens settings");
+        SendMessageW(tabs,WM_KEYDOWN,VK_HOME,0);passed=passed&&currentPage==0;record("native sidebar keyboard returns home");
+        appui::invoke(appui::NavSettings);passed=passed&&currentPage==2;
+        record("sidebar mouse hit testing, keyboard navigation and system subpage button dispatch");
+        localize();for(int page:{0,1,2,0}){selectPage(page);passed=passed&&l10n::current==l10n::Simplified&&selection(language)==int(l10n::Simplified);}
+        wchar_t translated[128]{};GetWindowTextW(GetDlgItem(mainWindow,SystemMaterialTab),translated,128);passed=passed&&wcscmp(translated,L"材质调节")==0;
+        record("Chinese language and translated controls remain stable across page changes");
+        for(int page:{0,1,2}){selectPage(page);passed=saveUiProof(mainWindow,settingsDir()+L"shared-shell-page-"+std::to_wstring(page)+L".bmp")&&SUCCEEDED(drawing.lastDraw)&&passed;}record("shared Direct2D shell renders on all three navigation pages");
+        entries.push_back({mainWindow,GetCurrentProcessId(),L"test",L"test",L"test",nullptr});SendMessageW(list,LB_ADDSTRING,0,(LPARAM)L"test");SendMessageW(list,LB_SETCURSEL,0,0);for(int page:{0,1,2,0})selectPage(page);passed=entries.size()==1&&SendMessageW(list,LB_GETCURSEL,0,0)==0;releaseAppList();record("page switching retains cached windows and selection without rescanning");
+        {bool oldUnified=unifiedSystemGlass;int oldPage=currentPage,oldView=systemView;unifiedSystemGlass=true;currentPage=1;systemView=0;passed=true;for(int id:{appui::Command+SystemMaster,appui::Command+VolumeOn,appui::Command+BrightnessOn,appui::Command+TaskbarToggle,appui::Command+StartToggle,appui::CombinedNotification,appui::Command+DockToggle,appui::Command+KeyboardToggle}){bool present=false;for(auto const& hit:appui::hits())present|=hit.id==id;passed=passed&&present;}record("unified system page retains master and all seven independent switch hit targets");unifiedSystemGlass=oldUnified;currentPage=oldPage;systemView=oldView;}
+        std::vector<appui::MenuRow>popupRows={{L"Acrylic",true},{L"Mica",false}};appui::PopupState popupState{};popupState.rows=&popupRows;CREATESTRUCTW popupCreate{};popupCreate.lpCreateParams=&popupState;HWND popupTest=CreateWindowExW(0,L"STATIC",L"",WS_POPUP,0,0,240,100,mainWindow,nullptr,GetModuleHandleW(nullptr),nullptr);appui::popupProc(popupTest,WM_NCCREATE,0,(LPARAM)&popupCreate);appui::popupProc(popupTest,WM_KEYDOWN,VK_DOWN,0);appui::popupProc(popupTest,WM_KEYDOWN,VK_RETURN,0);passed=popupState.done&&popupState.result==101;DestroyWindow(popupTest);record("rounded popup keyboard selection returns the original combo index");
+        {std::vector<appui::MenuRow> tintRows={{L"system",false},{L"light",false},{L"dark",false},{L"adaptive",false},{L"Windhawk",true}};int row=MulDiv(36,dpi,96),pad=MulDiv(6,dpi,96);for(int index=0;index<5;++index){appui::PopupState state{};state.rows=&tintRows;state.hot=4;HWND popup=CreateWindowExW(0,L"STATIC",L"",WS_POPUP,0,0,300,pad*2+row*5,mainWindow,nullptr,GetModuleHandleW(nullptr),nullptr);SetWindowLongPtrW(popup,GWLP_USERDATA,(LONG_PTR)&state);appui::popupProc(popup,WM_LBUTTONUP,0,MAKELPARAM(20,pad+index*row+row/2));passed=passed&&state.done&&state.result==100+index;DestroyWindow(popup);}record("five tint rows select the clicked row even when hover remains on Windhawk");}
+        {selectPage(0);appui::PopupState state{};state.rows=&popupRows;state.width=MulDiv(272,dpi,96);state.height=MulDiv(144,dpi,96);POINT at{MulDiv(268,dpi,96),MulDiv(561,dpi,96)};ClientToScreen(mainWindow,&at);HWND popup=CreateWindowExW(0,L"STATIC",L"optical regression",WS_POPUP,at.x,at.y,state.width,state.height,mainWindow,nullptr,GetModuleHandleW(nullptr),nullptr);SetWindowLongPtrW(popup,GWLP_USERDATA,(LONG_PTR)&state);SetWindowLongPtrW(popup,GWLP_WNDPROC,(LONG_PTR)appui::popupProc);passed=popup&&appui::capturePopupBackdrop(popup,state)&&state.optical.size()==size_t(state.width)*state.height&&saveUiProof(popup,settingsDir()+L"liquid-popup-render.bmp");DestroyWindow(popup);record("liquid popup samples this application's real background and renders through the live paint path");}
+        for(int theme:{0,7}){applyColorTheme(theme,false);selectPage(1);for(int view=0;view<3;++view){appui::invoke(appui::Command+SystemEffectsTab+view);passed=passed&&systemView==view&&saveUiProof(mainWindow,settingsDir()+L"workspace-test-"+std::to_wstring(theme)+L"-"+std::to_wstring(view)+L".bmp")&&SUCCEEDED(drawing.lastDraw);}selectPage(2);appui::invoke(appui::GeneralTab);passed=passed&&saveUiProof(mainWindow,settingsDir()+L"workspace-settings-test-"+std::to_wstring(theme)+L".bmp");appui::invoke(appui::AboutTab);passed=passed&&appui::settingsAbout;appui::invoke(appui::GeneralTab);passed=passed&&!appui::settingsAbout;}record("all four workspace pages render in White and Dark with working segment navigation");
+        selectPage(1);appui::invoke(appui::Command+SystemMaterialTab);saveUiProof(mainWindow,settingsDir()+L"workspace-slider-test.bmp");int savedPosition=(int)SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETPOS,0,0);auto at=[&](int x,int y){return MAKELPARAM((int)(appui::originX+x*appui::scale),(int)(appui::originY+y*appui::scale));};appui::dragSlider(appui::Slider+LookOpacity,at(268,276),true);passed=SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETPOS,0,0)==SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETRANGEMIN,0,0);appui::dragSlider(appui::Slider+LookOpacity,at(828,276),true);passed=passed&&SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETPOS,0,0)==SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETRANGEMAX,0,0);SendDlgItemMessageW(mainWindow,LookOpacity,TBM_SETPOS,TRUE,savedPosition);record("custom material slider maps pointer endpoints to existing native ranges");
+        {bool savedVolume=volumeOn,savedBrightness=brightnessOn;appReviewMode=false;volumeOn=brightnessOn=false;appui::invoke(appui::CombinedIndicator);passed=volumeOn&&brightnessOn;appui::invoke(appui::CombinedIndicator);passed=passed&&!volumeOn&&!brightnessOn;volumeOn=savedVolume;brightnessOn=savedBrightness;appReviewMode=true;record("combined indicator switch dispatches both existing backend switches");}
+        {auto previousPath=iniPath;auto previousConfig=glassConfig;bool linked[glass::FamilyCount];std::copy(std::begin(glassLookLinked),std::end(glassLookLinked),linked);iniPath=settingsDir()+L"workspace-slider-save-test.ini";appReviewMode=false;selectPage(1);SendMessageW(mainWindow,WM_COMMAND,SystemMaterialTab,0);SendDlgItemMessageW(mainWindow,SystemSurface,CB_SETCURSEL,0,0);SendMessageW(mainWindow,WM_COMMAND,MAKEWPARAM(SystemSurface,CBN_SELCHANGE),0);appui::dragSlider(appui::Slider+LookOpacity,at(828,276),true);passed=GetPrivateProfileIntW(L"Glass.Taskbar",L"Opacity",0,iniPath.c_str())==(UINT)SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETRANGEMAX,0,0);DeleteFileW(iniPath.c_str());iniPath=previousPath;glassConfig=previousConfig;std::copy(std::begin(linked),std::end(linked),glassLookLinked);loadLookPanel();appReviewMode=true;record("custom slider release saves through the existing per-surface config handler");}
+        appReviewMode=false;appui::sample=false;appui::keyboard=false;appui::actionResult=false;l10n::current=savedLanguage;applyColorTheme(savedTheme,false);localize();selectPage(0);
+    }
     passed=allPassed;
     std::wstring report=iniPath.substr(0,iniPath.find_last_of(L"\\")+1)+L"self-test.txt";
     const char* result=passed?(supported?"PASS: embedded standalone engine, COM factory and GPU blur graph; legacy taskbar recovery; isolated feature masks; bounded material controls; five-language compact switches; legacy-theme restore/conflicts; isolated shell apply/restore/conflicts; native motion rule; v1/v2 backup compatibility; zero duplicate DWM writes; restore.\r\n":"PASS: embedded standalone engine, COM factory and GPU blur graph; legacy taskbar recovery; isolated feature masks; bounded material controls; five-language compact switches; legacy-theme restore/conflicts; isolated shell apply/restore/conflicts; native motion rule; v1/v2 backup compatibility. SKIP: DWM backdrop unavailable.\r\n"):"FAIL: UI, caching, backup compatibility, or restoration check.\r\n";
@@ -739,22 +816,34 @@ LRESULT CALLBACK proc(HWND h,UINT msg,WPARAM w,LPARAM l){
     DWORD flags=(DWORD)w&glassConfig.features&~pausedFeatures;if(!flags)return 0;bool unchanged=FAILED((HRESULT)l)?(failedMaterials&flags)==flags:((confirmedMaterials&flags)==flags&&!(failedMaterials&flags)&&((fallbackMaterials&flags)==((HRESULT)l==S_FALSE?flags:0)));if(unchanged)return 0;if(FAILED((HRESULT)l)){failedMaterials|=flags;confirmedMaterials&=~flags;message(tr(L"部分系统材质未生效，请查看各项连接状态。",L"Some shell materials were not applied. Check each connection status."),1);}else{confirmedMaterials|=flags;failedMaterials&=~flags;if((HRESULT)l==S_FALSE)fallbackMaterials|=flags;else fallbackMaterials&=~flags;message((HRESULT)l==S_FALSE?tr(L"系统材质已改用亚克力后备（模糊固定）。",L"Shell materials applied with the acrylic fallback (fixed blur)."):tr(L"系统材质属性已写入，请查看对应区域的外观。",L"Shell material properties written. Check the selected surface appearance."),1);}updateNativeInfo();return 0;}
     static UINT restart=RegisterWindowMessageW(L"TaskbarCreated");if(msg==restart){Shell_NotifyIconW(NIM_ADD,&tray);Shell_NotifyIconW(NIM_SETVERSION,&tray);if(glassConfig.features)engine.discover();return 0;}
     switch(msg){
+    case WM_APP+50:selectPage((int)w);return 0;
+    case WM_LBUTTONDOWN:case WM_LBUTTONUP:case WM_MOUSEMOVE:case WM_MOUSELEAVE:case WM_CAPTURECHANGED:case WM_CANCELMODE:
+        if(appui::mouse(msg,w,l))return 0;break;
+    case WM_SYSCOMMAND:
+        if((w&0xfff0)==0x1f10||(w&0xfff0)==0x1f20){applyColorTheme((w&0xfff0)==0x1f20?7:0,!appReviewMode);appui::invalidate();return 0;}
+        if((w&0xfff0)==0x1f30&&!appReviewMode){appui::legacy=!appui::legacy;selectPage(0);return 0;}break;
     case WM_PRINTCLIENT:printControlClient(h,reinterpret_cast<HDC>(w));return 0;
     case WM_SHOWWINDOW:if(!w&&list)releaseAppList();break;
     case WM_SIZE:if(w==SIZE_MINIMIZED){SetPropW(h,L"LG.Minimized",(HANDLE)1);if(list)releaseAppList();}else if(RemovePropW(h,L"LG.Minimized")&&list&&currentPage==0)refresh(true);break;
-    case WM_DPICHANGED:{finishPageMotion();dpi=HIWORD(w);auto suggested=reinterpret_cast<RECT*>(l);SetWindowPos(h,nullptr,suggested->left,suggested->top,suggested->right-suggested->left,suggested->bottom-suggested->top,SWP_NOZORDER|SWP_NOACTIVATE);resizeControls();return 0;}
+    case WM_DPICHANGED:{finishPageMotion();dpi=workspaceDpi(HIWORD(w),h);auto suggested=reinterpret_cast<RECT*>(l);RECT fit{0,0,MulDiv(1280,dpi,96),MulDiv(848,dpi,96)};AdjustWindowRectExForDpi(&fit,(DWORD)GetWindowLongPtrW(h,GWL_STYLE),FALSE,0,HIWORD(w));SetWindowPos(h,nullptr,suggested->left,suggested->top,fit.right-fit.left,fit.bottom-fit.top,SWP_NOZORDER|SWP_NOACTIVATE);sizeDesignWindow();resizeControls();return 0;}
     case WM_PAINT:paintChrome(h);return 0;
     case WM_ERASEBKGND:return 1;
-    case WM_DRAWITEM:if(drawModernControl(reinterpret_cast<DRAWITEMSTRUCT*>(l)))return TRUE;break;
-    case WM_MEASUREITEM:{auto item=reinterpret_cast<MEASUREITEMSTRUCT*>(l);if(item->CtlType==ODT_COMBOBOX){item->itemHeight=MulDiv(26,dpi,96);return TRUE;}if(item->CtlID==List){item->itemHeight=MulDiv(48,dpi,96);return TRUE;}}break;
+    case WM_DRAWITEM:if(appui::drawMenu(reinterpret_cast<DRAWITEMSTRUCT*>(l)))return TRUE;if(drawModernControl(reinterpret_cast<DRAWITEMSTRUCT*>(l)))return TRUE;break;
+    case WM_MEASUREITEM:{if(appui::measureMenu(reinterpret_cast<MEASUREITEMSTRUCT*>(l)))return TRUE;auto item=reinterpret_cast<MEASUREITEMSTRUCT*>(l);if(item->CtlType==ODT_COMBOBOX){item->itemHeight=MulDiv(26,dpi,96);return TRUE;}if(item->CtlID==List){item->itemHeight=MulDiv(48,dpi,96);return TRUE;}}break;
     case WM_NOTIFY:if(reinterpret_cast<NMHDR*>(l)->code==TCN_SELCHANGE){if(reinterpret_cast<NMHDR*>(l)->idFrom==Pages)selectPage(TabCtrl_GetCurSel(tabs));}return 0;
-    case WM_MOUSEWHEEL:{int delta=GET_WHEEL_DELTA_WPARAM(w);if(pageMaxScroll[currentPage]>0&&delta){scrollPage(pageScroll[currentPage]-delta*48/WHEEL_DELTA);return 0;}}break;
+    case WM_MOUSEWHEEL:if(appui::mouse(msg,w,l))return 0;{int delta=GET_WHEEL_DELTA_WPARAM(w);if(pageMaxScroll[currentPage]>0&&delta){scrollPage(pageScroll[currentPage]-delta*48/WHEEL_DELTA);return 0;}}break;
     case WM_VSCROLL:if((HWND)l==pageScrollBar&&pageScrollBar){int v=pageScroll[currentPage];switch(LOWORD(w)){case SB_LINEUP:v-=36;break;case SB_LINEDOWN:v+=36;break;case SB_PAGEUP:v-=404;break;case SB_PAGEDOWN:v+=404;break;case SB_TOP:v=0;break;case SB_BOTTOM:v=pageMaxScroll[currentPage];break;case SB_THUMBTRACK:case SB_THUMBPOSITION:{SCROLLINFO si{};si.cbSize=sizeof(si);si.fMask=SIF_TRACKPOS;GetScrollInfo(pageScrollBar,SB_CTL,&si);v=si.nTrackPos;break;}default:return 0;}scrollPage(v);return 0;}break;
-    case WM_COMMAND:if(engineAttempted&&!engineReady&&HIWORD(w)==BN_CLICKED&&engineToggleOn(LOWORD(w)))engineAttempted=false;switch(LOWORD(w)){
-        case Language:if(HIWORD(w)==CBN_SELCHANGE){int selected=selection(language);if(selected>=0&&selected<l10n::Count){l10n::current=(l10n::Language)selected;saveLanguage();localize();}}break;
-        case ColorTheme:if(HIWORD(w)==CBN_SELCHANGE)applyColorTheme(selection(GetDlgItem(h,ColorTheme)),true);break;
+    case WM_COMMAND:
+        if(appReviewMode){int id=LOWORD(w);bool navigation=(id>=SystemEffectsTab&&id<=SystemSurface)||(id>=ExpandVolume&&id<=ExpandTitle)||id==Language||id==ColorTheme||id==List||id==Scope||(id>=OptArrival&&id<=OptKnob)||id==OptShape;
+            if(!navigation){message(L"这是只读界面评审。请通过桌面正常入口使用实际效果、重播和托盘功能。");return 0;}}
+        if(engineAttempted&&!engineReady&&HIWORD(w)==BN_CLICKED&&engineToggleOn(LOWORD(w)))engineAttempted=false;switch(LOWORD(w)){
+        case Language:if(HIWORD(w)==CBN_SELCHANGE){int selected=selection(language);if(selected>=0&&selected<l10n::Count){l10n::current=(l10n::Language)selected;if(!appReviewMode)saveLanguage();localize();}}break;
+        case SystemEffectsTab:case SystemMaterialTab:case SystemEngineTab:{appui::startSegment(false,systemView,LOWORD(w)-SystemEffectsTab);systemView=LOWORD(w)-SystemEffectsTab;pageScroll[1]=0;if(systemView==1){systemOpen=(selection(GetDlgItem(h,SystemSurface))==4?7:std::clamp(selection(GetDlgItem(h,SystemSurface)),0,3)+2);loadLookPanel();}else systemOpen=systemView==2?0:-1;revealBlock=nullptr;relayout();break;}
+        case SystemSurface:if(HIWORD(w)==CBN_SELCHANGE){systemOpen=(selection(GetDlgItem(h,SystemSurface))==4?7:std::clamp(selection(GetDlgItem(h,SystemSurface)),0,3)+2);loadLookPanel();relayout();}break;
+        case ColorTheme:if(HIWORD(w)==CBN_SELCHANGE)applyColorTheme(selection(GetDlgItem(h,ColorTheme)),!appReviewMode);break;
         case List:if(HIWORD(w)==LBN_SELCHANGE)updateCompatibility();break;
         case Scope:if(HIWORD(w)==CBN_SELCHANGE)updateCompatibility();break;
+        case SystemMaster:toggleUnifiedSystemGlass();break;
         case LookTint:if(HIWORD(w)==CBN_SELCHANGE)savePanel(false);break;
         case ExpandVolume:case ExpandBrightness:case ExpandTaskbar:case ExpandStart:case ExpandNotification:case ExpandCalendar:case ExpandExplorer:case ExpandDock:{int row=LOWORD(w)-ExpandVolume;expandSystemRow(systemOpen==row?-1:row);break;}
         case ExpandTitle:expandTitleRow(!titleOpen);break;
@@ -770,20 +859,20 @@ LRESULT CALLBACK proc(HWND h,UINT msg,WPARAM w,LPARAM l){
         case KeyboardToggle:keyboardOn=!keyboardOn;queueGlass();break;
         case DockToggle:dockOn=!dockOn;queueGlass();break;
 
-        case ExplorerToggle:explorerOn=!explorerOn;explorerByApp=false;queueGlass();break;
+        case ExplorerToggle:explorerOn=explorerByApp=false;queueGlass();break;
         case TaskbarToggle:case StartToggle:case NotificationToggle:{int kind=LOWORD(w)-TaskbarToggle;shellOn[kind]=!shellOn[kind];queueGlass();break;}
         case ExitApp:restoreAll(true);break;
         case Refresh:refresh();break;case Apply:if(!nativeProbeMode)apply();break;
         case Restore:restoreApps();break;
         case Pause:ShowWindow(h,SW_HIDE);break;
         }return 0;
-    case WM_HSCROLL:{int titleId=l?GetDlgCtrlID((HWND)l):0;if(titleId==TitleInset||(titleId>=TitleLook1&&titleId<=TitleLook8)){updateTitleLabels();syncTitleGlass();if(LOWORD(w)!=TB_THUMBTRACK)saveTitleSlider(titleId);return 0;}}
+    case WM_HSCROLL:if(appReviewMode){updateLookLabels();updateTitleLabels();updatePanelLabels();return 0;}{int titleId=l?GetDlgCtrlID((HWND)l):0;if(titleId==TitleInset||(titleId>=TitleLook1&&titleId<=TitleLook8)){updateTitleLabels();syncTitleGlass();if(LOWORD(w)!=TB_THUMBTRACK)saveTitleSlider(titleId);return 0;}}
     {int look=l?GetDlgCtrlID((HWND)l)-OptLook1:-1;if(look>=0&&look<8){updateLookLabels();syncOpticalControls();if(LOWORD(w)!=TB_THUMBTRACK)saveLookSlider(OptLook1+look);return 0;}}
     {int id=l?GetDlgCtrlID((HWND)l):0;bool dock=id==DockScale||id==DockSpread||id==DockSpeed||id==DockBounce;if(dock||id==LookOpacity||id==LookBlur||id==LookRadius){updatePanelLabels();if(LOWORD(w)==TB_THUMBTRACK)previewPanel(dock);else if(LOWORD(w)!=TB_THUMBPOSITION)savePanel(dock);}}return 0; // a release sends THUMBPOSITION then ENDTRACK: save once
     case WM_POWERBROADCAST:if(w==PBT_POWERSETTINGCHANGE||w==PBT_APMPOWERSTATUSCHANGE){refreshUiPreferences();applyGlass(false);}return TRUE;
     case WM_SETTINGCHANGE:case WM_THEMECHANGED:case WM_SYSCOLORCHANGE:syncOpticalPreview();refreshUiPreferences();applyColorTheme(colorTheme,false);if(engineReady)applyGlass(false);break;
     case glass::HostExitedMessage:if(engine.hostExited((DWORD)w)){confirmedMaterials&=~(glass::Start|glass::Notifications);fallbackMaterials&=~(glass::Start|glass::Notifications);updateNativeInfo();SetTimer(h,18,250,nullptr);SetTimer(h,6,3500,nullptr);}return 0;
-    case WM_TIMER:if(w==kMotionTimer){tickControlMotion();return 0;}if(w==31){KillTimer(h,31);panelApplyTime=GetTickCount64();glassPreviewOnly=true;applyGlass(false);glassPreviewOnly=false;return 0;}if(w==21){KillTimer(h,21);engine.retryPackages();return 0;}if(w==20){engine.tick();updateDiagnostics();return 0;}if(w==23){reassertApps();return 0;}if(w==18){KillTimer(h,18);if(UINT next=engine.recoverHosts())SetTimer(h,18,next,nullptr);return 0;}if(w==22){KillTimer(h,22);syncOpticalPreview();return 0;}if(w==16){if(opticalPreview.connected()&&!opticalPreview.synchronized())syncOpticalPreview();if(opticalPreview.synchronized()){KillTimer(h,16);opticalConnectedMessage();updateOpticalButtons();}else if(!opticalStartup)KillTimer(h,16);else if(!opticalPreview.running()||GetTickCount64()-opticalStartup>15000)opticalFailed(tr(L"LGEngine 预览未能连接，请检查适配器及 Windows 应用控制状态。",L"LGEngine preview did not connect. Check the adapter and Windows application control."));return 0;}
+    case WM_TIMER:if(w==76){appui::tickSwitches();return 0;}if(w==73){appui::tickSegments();return 0;}if(w==61&&appReviewMode){KillTimer(h,61);saveUiProof(h,settingsDir()+(darkUi()?L"app-dark-running.bmp":L"app-white-running.bmp"));saveAppWindowProof(h,settingsDir()+(darkUi()?L"app-dark-window.bmp":L"app-white-window.bmp"));std::wstring proofTheme=darkUi()?L"dark":L"white";selectPage(1);for(int view=0;view<3;++view){SendMessageW(h,WM_COMMAND,SystemEffectsTab+view,0);finishPageMotion();RedrawWindow(h,nullptr,nullptr,RDW_INVALIDATE|RDW_UPDATENOW);saveAppWindowProof(h,settingsDir()+L"workspace-"+proofTheme+L"-"+std::to_wstring(view)+L".bmp");}selectPage(2);appui::settingsAbout=false;finishPageMotion();RedrawWindow(h,nullptr,nullptr,RDW_INVALIDATE|RDW_UPDATENOW);saveAppWindowProof(h,settingsDir()+L"workspace-"+proofTheme+L"-settings.bmp");selectPage(0);return 0;}if(w==kMotionTimer){tickControlMotion();return 0;}if(w==31){KillTimer(h,31);panelApplyTime=GetTickCount64();glassPreviewOnly=true;applyGlass(false);glassPreviewOnly=false;return 0;}if(w==21){KillTimer(h,21);engine.retryPackages();return 0;}if(w==20){engine.tick();updateDiagnostics();return 0;}if(w==23){reassertApps();return 0;}if(w==18){KillTimer(h,18);if(UINT next=engine.recoverHosts())SetTimer(h,18,next,nullptr);return 0;}if(w==22){KillTimer(h,22);syncOpticalPreview();return 0;}if(w==16){if(opticalPreview.connected()&&!opticalPreview.synchronized())syncOpticalPreview();if(opticalPreview.synchronized()){KillTimer(h,16);opticalConnectedMessage();updateOpticalButtons();}else if(!opticalStartup)KillTimer(h,16);else if(!opticalPreview.running()||GetTickCount64()-opticalStartup>15000)opticalFailed(tr(L"LGEngine 预览未能连接，请检查适配器及 Windows 应用控制状态。",L"LGEngine preview did not connect. Check the adapter and Windows application control."));return 0;}
         if(w==14){bool discover=glassPendingDiscover;applyGlass(discover);}else if(w==12){tickColorTheme();}else if(w==13){tickPageMotion();}else if(w==4){float t=std::min(1.f,(GetTickCount64()-startupTime)/220.f),ease=1-powf(1-t,4);SetLayeredWindowAttributes(h,0,(BYTE)(255*ease),LWA_ALPHA);if(t>=1){KillTimer(h,4);SetWindowLongPtrW(h,GWL_EXSTYLE,GetWindowLongPtrW(h,GWL_EXSTYLE)&~WS_EX_LAYERED);RedrawWindow(h,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);}}else if(w==3){KillTimer(h,3);windowScanPending=false;auto windows=std::move(pendingWindows);pendingWindows.clear();syncPending(windows);if(glassConfig.features)for(auto window:windows)if(IsWindow(window))engine.discoverWindow(window);}else if(w==2)pollMigration();else if(w==5){KillTimer(h,5);engine.expireHooks(true);}else if(w==6){KillTimer(h,6);failedMaterials|=glassConfig.features&~pausedFeatures&~confirmedMaterials&~(glass::Volume|glass::Brightness);updateNativeInfo();if(failedMaterials)message(tr(L"部分区域尚未连接，已标记为未生效；打开对应区域后可重试。",L"Some surfaces are not connected and are marked Not applied; open them and retry."),1);}return 0;
     case lgpreview::HostState:
         if(w==1&&opticalPreview.owns(reinterpret_cast<HWND>(l))){opticalHostSeen=true;opticalHostError=0;opticalFailures=0;opticalFailureText.clear();KillTimer(h,22);opticalConnectedMessage();updateOpticalButtons();updateNativeInfo();}
@@ -796,13 +885,13 @@ return 0;
     case WM_APP+2:show();return 0;
     case WM_APP+3:if(migrationJob)return 0;setRulesActive(false);restoreWindows();if(!originals.empty()){show();return 0;}if(!taskbar_recovery::restore(iniPath)){show();return 0;}WritePrivateProfileStringW(L"Taskbar",L"AutoHide",L"0",iniPath.c_str());engine.shutdown();DestroyWindow(h);return 0;
     case WM_APP+5:migrateLegacy();return 0;
-    case WM_CLOSE:ShowWindow(h,SW_HIDE);return 0;
+    case WM_CLOSE:if(appReviewMode)DestroyWindow(h);else ShowWindow(h,SW_HIDE);return 0;
     case WM_QUERYENDSESSION:return TRUE; // another app may still cancel the shutdown: tear down only once it is certain
     case WM_ENDSESSION:if(w){taskbar_recovery::restore(iniPath);setRulesActive(false);restoreWindows();engine.shutdown();}return 0;
     case WM_CTLCOLORLISTBOX:{SetBkColor(reinterpret_cast<HDC>(w),cardColor());SetTextColor(reinterpret_cast<HDC>(w),textColor());return reinterpret_cast<LRESULT>(cardBrush);}
-    case WM_CTLCOLORSTATIC:case WM_CTLCOLORBTN:{int id=GetDlgCtrlID(reinterpret_cast<HWND>(l));bool common=id==Header||id==Status;SetBkMode(reinterpret_cast<HDC>(w),TRANSPARENT);SetTextColor(reinterpret_cast<HDC>(w),highContrast()?textColor():id==Header?textColor():palette().pressed);return reinterpret_cast<LRESULT>(common?background:cardBrush);}
+    case WM_CTLCOLORSTATIC:case WM_CTLCOLORBTN:{int id=GetDlgCtrlID(reinterpret_cast<HWND>(l));bool common=id==Header||id==Status;SetBkMode(reinterpret_cast<HDC>(w),TRANSPARENT);SetTextColor(reinterpret_cast<HDC>(w),highContrast()?textColor():id==Header?textColor():mutedColor());return reinterpret_cast<LRESULT>(common?background:cardBrush);}
     case WM_DESTROY:
-        opticalPreview.stop();lgpreview::restoreFlyouts();finishPageMotion();KillTimer(h,12);KillTimer(h,23);KillTimer(h,5);KillTimer(h,6);KillTimer(h,1);KillTimer(h,2);KillTimer(h,3);KillTimer(h,4);Shell_NotifyIconW(NIM_DELETE,&tray);PostQuitMessage(0);return 0;
+        if(!selfTestMode){opticalPreview.stop();lgpreview::restoreFlyouts();}finishPageMotion();KillTimer(h,12);KillTimer(h,23);KillTimer(h,5);KillTimer(h,6);KillTimer(h,1);KillTimer(h,2);KillTimer(h,3);KillTimer(h,4);Shell_NotifyIconW(NIM_DELETE,&tray);PostQuitMessage(0);return 0;
     }return DefWindowProcW(h,msg,w,l);
 }
 }
@@ -815,12 +904,16 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR commandLine,int){
 #else
     bool testing=false;
 #endif
-    selfTestMode=testing;nativeProbeMode=wcscmp(commandLine,L"--probe-native-content")==0;if(nativeProbeMode){ClassName=ProbeClassName;InstanceName=L"Local\\LiquidGlass.Control.NativeProbe.SingleInstance";}
+    bool uiPreview=wcscmp(commandLine,L"--ui-preview")==0;
+    appReviewMode=wcscmp(commandLine,L"--review-app-white")==0||wcscmp(commandLine,L"--review-app-dark")==0;
+    selfTestMode=testing||uiPreview||appReviewMode;nativeProbeMode=wcscmp(commandLine,L"--probe-native-content")==0;if(nativeProbeMode){ClassName=ProbeClassName;InstanceName=L"Local\\LiquidGlass.Control.NativeProbe.SingleInstance";}
+    if(appReviewMode){ClassName=L"LiquidGlass.Control.AppPageReview";InstanceName=wcscmp(commandLine,L"--review-app-dark")==0?L"Local\\LiquidGlass.AppReview.Dark":L"Local\\LiquidGlass.AppReview.White";}
+    if(uiPreview){ClassName=L"LiquidGlass.Control.UiPreview";InstanceName=L"Local\\LiquidGlass.Control.UiPreview";}
     bool backgroundStart=wcscmp(commandLine,L"--background")==0;
-    if(*commandLine&&!testing&&!backgroundStart&&!nativeProbeMode)return 10;
+    if(*commandLine&&!testing&&!backgroundStart&&!nativeProbeMode&&!uiPreview&&!appReviewMode)return 10;
     HANDLE mutex=CreateMutexW(nullptr,FALSE,testing?L"Local\\LiquidGlass.Control.SelfTest":InstanceName);if(!mutex)return 1;
     if(GetLastError()==ERROR_ALREADY_EXISTS){auto old=FindWindowW(ClassName,nullptr);if(old)PostMessageW(old,WM_APP+2,0,0);CloseHandle(mutex);return 0;}
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);dpi=GetDpiForSystem();
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);dpi=uiPreview?96:workspaceDpi(GetDpiForSystem());
     CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     INITCOMMONCONTROLSEX common{};common.dwSize=sizeof(common);common.dwICC=ICC_TAB_CLASSES|ICC_BAR_CLASSES;InitCommonControlsEx(&common);
     wchar_t path[32768]{};GetModuleFileNameW(nullptr,path,32768);iniPath=path;iniPath=iniPath.substr(0,iniPath.find_last_of(L"\\")+1)+L"settings.ini";
@@ -831,19 +924,39 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR commandLine,int){
     if(!nativeProbeMode&&migrationNeeded())glassConfig.features=0;
     keyboardOn=(glassConfig.features&glass::Keyboard)!=0;dockOn=(glassConfig.features&glass::Dock)!=0;
     if(nativeProbeMode){volumeOn=(glassConfig.features&glass::Volume)!=0;brightnessOn=(glassConfig.features&glass::Brightness)!=0;}else loadOsdSettings(); // the probe still inspects the XAML indicator; otherwise the switches belong to the LGEngine indicator
-    explorerOn=(glassConfig.features&glass::Explorer)!=0;for(int i=0;i<3;++i)shellOn[i]=(glassConfig.features&(glass::Taskbar<<i))!=0;
+    explorerOn=false;glassConfig.features&=~DWORD(glass::Explorer);for(int i=0;i<3;++i)shellOn[i]=(glassConfig.features&(glass::Taskbar<<i))!=0;
     batteryFriendly=GetPrivateProfileIntW(L"Glass",L"BatteryFriendly",1,iniPath.c_str())!=0;startupAnimation=GetPrivateProfileIntW(L"UI",L"StartupAnimation",1,iniPath.c_str())!=0;
     applyColorTheme(GetPrivateProfileIntW(L"UI",L"ColorTheme",0,iniPath.c_str()),false);WNDCLASSEXW c{};c.cbSize=sizeof(c);c.lpfnWndProc=proc;c.hInstance=instance;c.lpszClassName=ClassName;c.hCursor=LoadCursorW(nullptr,IDC_ARROW);c.hIcon=(HICON)LoadImageW(instance,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetrics(SM_CXICON),GetSystemMetrics(SM_CYICON),LR_SHARED);c.hIconSm=(HICON)LoadImageW(instance,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetrics(SM_CXSMICON),GetSystemMetrics(SM_CYSMICON),LR_SHARED);c.hbrBackground=background;
     if(!RegisterClassExW(&c)){DeleteObject(background);CloseHandle(mutex);return 1;}
-    RECT size={0,0,MulDiv(790,dpi,96),MulDiv(630,dpi,96)};AdjustWindowRectEx(&size,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,FALSE,0);
-    lgpreview::restoreFlyouts();
+    RECT size={0,0,MulDiv(1280,dpi,96),MulDiv(848,dpi,96)};AdjustWindowRectEx(&size,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,FALSE,0);
+    if(!selfTestMode)lgpreview::restoreFlyouts();
     mainWindow=CreateWindowExW(0,ClassName,L"Liquid Glass",WS_CLIPCHILDREN|WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,CW_USEDEFAULT,CW_USEDEFAULT,size.right-size.left,size.bottom-size.top,nullptr,nullptr,instance,nullptr);
     if(!mainWindow){DeleteObject(background);CloseHandle(mutex);return 1;}
     // The system DPI is the sign-in one: on a monitor rescaled since then, or a different one, size for the window's own DPI as WM_DPICHANGED does.
-    if(UINT actual=GetDpiForWindow(mainWindow);actual&&actual!=dpi){dpi=actual;RECT fit={0,0,MulDiv(790,dpi,96),MulDiv(630,dpi,96)};AdjustWindowRectExForDpi(&fit,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,FALSE,0,dpi);SetWindowPos(mainWindow,nullptr,0,0,fit.right-fit.left,fit.bottom-fit.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);resizeControls();}
+    if(UINT actual=GetDpiForWindow(mainWindow);actual&&!uiPreview&&workspaceDpi(actual,mainWindow)!=dpi){dpi=workspaceDpi(actual,mainWindow);RECT fit={0,0,MulDiv(1280,dpi,96),MulDiv(848,dpi,96)};AdjustWindowRectExForDpi(&fit,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,FALSE,0,dpi);SetWindowPos(mainWindow,nullptr,0,0,fit.right-fit.left,fit.bottom-fit.top,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);resizeControls();}
+    sizeDesignWindow();
     // Keep the window inside the monitor work area. Default placement could put its bottom under the taskbar, hiding the lower controls; only the position changes, never the size or the taskbar layout.
     {MONITORINFO mi{};mi.cbSize=sizeof(mi);RECT w{};GetWindowRect(mainWindow,&w);if(GetMonitorInfoW(MonitorFromWindow(mainWindow,MONITOR_DEFAULTTONEAREST),&mi)){int width=w.right-w.left,height=w.bottom-w.top,x=w.left,y=w.top;if(y+height>mi.rcWork.bottom)y=mi.rcWork.bottom-height;if(y<mi.rcWork.top)y=mi.rcWork.top;if(x+width>mi.rcWork.right)x=mi.rcWork.right-width;if(x<mi.rcWork.left)x=mi.rcWork.left;SetWindowPos(mainWindow,nullptr,x,y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);}}
-    buildUI();themeWindow(mainWindow);if(nativeProbeMode){SetWindowTextW(mainWindow,L"Liquid Glass — native content probe (no material overrides)");selectPage(1);}
+    buildUI();SetWindowTextW(mainWindow,L"Liquid Glass · v" LG_VERSION_W);themeWindow(mainWindow);{HMENU system=GetSystemMenu(mainWindow,FALSE);AppendMenuW(system,MF_SEPARATOR,0,nullptr);AppendMenuW(system,MF_STRING,0x1f10,L"White · 冰蓝界面");AppendMenuW(system,MF_STRING,0x1f20,L"Dark · 深色界面");AppendMenuW(system,MF_STRING,0x1f30,L"切换原有高级外观设置");}if(nativeProbeMode){SetWindowTextW(mainWindow,L"Liquid Glass — native content probe (no material overrides)");selectPage(1);}
+    if(appReviewMode){
+        l10n::current=l10n::Simplified;localize();appui::sample=true;applyColorTheme(wcscmp(commandLine,L"--review-app-dark")==0?7:0,false);
+        SendMessageW(material,CB_SETCURSEL,0,0);SendMessageW(corners,CB_SETCURSEL,0,0);appui::sync();
+        SetWindowTextW(mainWindow,L"Liquid Glass · v" LG_VERSION_W L" · UI review (sample data, no effects)");
+        ShowWindow(mainWindow,SW_SHOWNORMAL);UpdateWindow(mainWindow);SetTimer(mainWindow,61,750,nullptr);
+        MSG reviewMessage{};while(GetMessageW(&reviewMessage,nullptr,0,0)>0){if(reviewMessage.message==WM_KEYDOWN&&appui::key(reviewMessage.wParam))continue;if(!IsDialogMessageW(mainWindow,&reviewMessage)){TranslateMessage(&reviewMessage);DispatchMessageW(&reviewMessage);}}
+        destroyFonts();DeleteObject(background);CloseHandle(mutex);CoUninitialize();
+        // Review never starts a backend. Do not run production global-controller
+        // teardown, which also restores shared shell flyouts owned by that app.
+        ExitProcess(0);
+    }
+    if(uiPreview){
+        l10n::current=l10n::Simplified;localize();bool ok=true;
+        for(int theme:{0,7,8}){applyColorTheme(theme,false);selectPage(0);expandTitleRow(false);pageScroll[0]=0;relayout();
+            auto proof=[&](const wchar_t*name){ok=saveUiProof(mainWindow,settingsDir()+L"figma-"+std::to_wstring(theme)+L"-"+name+L".bmp")&&ok;};
+            proof(L"app");selectPage(1);SendMessageW(mainWindow,WM_COMMAND,SystemEffectsTab,0);proof(L"system");SendMessageW(mainWindow,WM_COMMAND,SystemMaterialTab,0);proof(L"material");SendMessageW(mainWindow,WM_COMMAND,SystemEngineTab,0);proof(L"lgengine");SendMessageW(mainWindow,WM_COMMAND,SystemEffectsTab,0);selectPage(2);proof(L"settings");
+        }
+        DestroyWindow(mainWindow);for(auto&icon:appIcons)if(icon.second)DestroyIcon(icon.second);destroyFonts();DeleteObject(background);CloseHandle(mutex);CoUninitialize();return ok?0:1;
+    }
 #ifdef LG_ENABLE_SELF_TEST
     if(testing){int result=selfTest();DestroyWindow(mainWindow);for(auto&icon:appIcons)if(icon.second)DestroyIcon(icon.second);destroyFonts();DeleteObject(background);CloseHandle(mutex);CoUninitialize();return result;}
 #endif
@@ -852,7 +965,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR commandLine,int){
     powerNotification=RegisterPowerSettingNotification(mainWindow,&PowerSavingStatus,DEVICE_NOTIFY_WINDOW_HANDLE);acNotification=RegisterPowerSettingNotification(mainWindow,&GUID_ACDC_POWER_SOURCE,DEVICE_NOTIFY_WINDOW_HANDLE);
     tray.cbSize=sizeof(tray);tray.hWnd=mainWindow;tray.uID=1;tray.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;tray.uCallbackMessage=WM_APP+1;tray.hIcon=c.hIconSm?c.hIconSm:c.hIcon;tray.uVersion=NOTIFYICON_VERSION_4;
     if(!Shell_NotifyIconW(NIM_ADD,&tray)){MessageBoxW(mainWindow,tr(L"无法创建托盘图标，程序将退出。",L"Cannot create tray icon; exiting."),L"Liquid Glass",MB_ICONERROR);DestroyWindow(mainWindow);}else{Shell_NotifyIconW(NIM_SETVERSION,&tray);if(!backgroundStart)show();if(migrationNeeded())PostMessageW(mainWindow,WM_APP+5,0,0);else if(glassConfig.features)applyGlass();}
-    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN&&msg.wParam==VK_TAB&&(msg.hwnd==mainWindow||IsChild(mainWindow,msg.hwnd)))revealTabTarget(GetKeyState(VK_SHIFT)<0); // scroll the next tab stop into view before the dialog manager moves focus to it
+    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(msg.message==WM_KEYDOWN&&appui::active()&&appui::key(msg.wParam))continue;if(msg.message==WM_KEYDOWN&&msg.wParam==VK_TAB&&(msg.hwnd==mainWindow||IsChild(mainWindow,msg.hwnd)))revealTabTarget(GetKeyState(VK_SHIFT)<0); // scroll the next tab stop into view before the dialog manager moves focus to it
         if(msg.message==WM_MOUSEWHEEL&&msg.hwnd!=mainWindow&&IsChild(mainWindow,msg.hwnd)){ // with "Scroll inactive windows" the wheel goes to the control under the cursor: unfocused sliders and combos must not change, and the app list hands the wheel back at its ends
             wchar_t cls[32]{};GetClassNameW(msg.hwnd,cls,32);bool combo=!_wcsicmp(cls,WC_COMBOBOXW);int delta=GET_WHEEL_DELTA_WPARAM(msg.wParam);
             if((combo||!_wcsicmp(cls,TRACKBAR_CLASSW))&&GetFocus()!=msg.hwnd&&!(combo&&SendMessageW(msg.hwnd,CB_GETDROPPEDSTATE,0,0)))msg.hwnd=mainWindow;

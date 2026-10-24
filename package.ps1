@@ -19,6 +19,9 @@ New-Item -ItemType Directory -Path $stage -Force | Out-Null
 New-Item -ItemType Directory -Path $dist -Force | Out-Null
 $exe = Join-Path $stage 'LiquidGlassControl.exe'
 Copy-Item -LiteralPath $source -Destination $exe
+foreach ($assetDirectory in @('art','fonts')) {
+    Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $source) $assetDirectory) -Destination $stage -Recurse
+}
 # Use a clean folder: the test must not consume the developer's settings or backups.
 $testSource = if ($TestExecutablePath) { $TestExecutablePath } else { Join-Path (Split-Path -Parent $source) 'LiquidGlassTests.exe' }
 if (-not (Test-Path -LiteralPath $testSource)) { throw 'Build LiquidGlassTests.exe before packaging.' }
@@ -39,14 +42,13 @@ foreach ($notice in @('LICENSING.md', 'CODE-SIGNING.md')) {
 }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'LICENSE') -Destination $stage
 # Corresponding source accompanies the GPL engine, with no local settings/logs.
-$sourceFiles = @('CMakeLists.txt','build.ps1','prepare-winrt.ps1','package.ps1','verify-localization.ps1','update-desktop.ps1','compact-workspace.py','README.md','CONTRIBUTING.md') | ForEach-Object { Join-Path $PSScriptRoot $_ }
-$sourceFiles += @('src','docs','assets','third_party','release','tests','integrations','.github') | ForEach-Object { Join-Path $PSScriptRoot $_ }
-$sourceFiles += Join-Path $PSScriptRoot 'LICENSE'
 $sourceZip = Join-Path $stage 'LiquidGlass-engine-source.zip'
-Compress-Archive -LiteralPath $sourceFiles -DestinationPath $sourceZip -CompressionLevel Optimal
+& git -C $PSScriptRoot archive --format=zip --output=$sourceZip HEAD
+if ($LASTEXITCODE -ne 0) { throw 'Corresponding source archive failed.' }
 # Explicit file list prevents shipping settings, test reports, personal data or recovery journals.
 $files = @($exe, (Join-Path $stage 'Quick Start.txt'), (Join-Path $stage 'Create Desktop Shortcut.cmd'), (Join-Path $stage 'Third Party Notices.txt'), $sourceZip)
 $files += @('LICENSE', 'LICENSING.md', 'CODE-SIGNING.md') | ForEach-Object { Join-Path $stage $_ }
+$files += @('art','fonts') | ForEach-Object { Join-Path $stage $_ }
 $extraAssets = @()
 if ($IncludeLGEngine) {
     $runtime = Join-Path (Split-Path -Parent $source) 'lgengine'
