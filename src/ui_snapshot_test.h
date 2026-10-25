@@ -16,7 +16,8 @@ inline bool saveUiProof(HWND root,const std::wstring&path){
     BITMAPFILEHEADER header{};header.bfType=0x4d42;header.bfOffBits=sizeof(header)+sizeof(BITMAPINFOHEADER);DWORD bytes=DWORD(size_t(r.right)*r.bottom*4);header.bfSize=header.bfOffBits+bytes;
     HANDLE file=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);bool ok=false;DWORD written=0;
     if(file!=INVALID_HANDLE_VALUE){ok=WriteFile(file,&header,sizeof(header),&written,nullptr)&&written==sizeof(header)&&WriteFile(file,&info.bmiHeader,sizeof(BITMAPINFOHEADER),&written,nullptr)&&written==sizeof(BITMAPINFOHEADER)&&WriteFile(file,pixels,bytes,&written,nullptr)&&written==bytes;CloseHandle(file);}
-    SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);return ok;
+    bool painted=false;for(size_t i=0;i<size_t(r.right)*r.bottom;++i)if(pixels[i]&0x00ffffff){painted=true;break;}
+    SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);return ok&&painted;
 }
 // Full-frame proof of this process's own visible window. Native caption pixels
 // come from WM_PRINT; the client uses exactly the running Direct2D renderer.

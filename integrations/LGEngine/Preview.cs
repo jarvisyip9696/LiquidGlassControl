@@ -293,7 +293,7 @@ namespace LiquidGlassOptical
             {
                 surface.SetLook(settings.Look(refraction.Value, rim.Value, elevation.Value), Profiles[Math.Max(0, profile.SelectedIndex)]);
                 surface.SetAppearance(settings.Appearance);
-                surface.SetUpdates(SystemInformation.HighContrast ? 0 : 15, settings.AdaptToBackground, settings.SavePower);
+                surface.SetUpdates(SystemInformation.HighContrast ? 0 : 60, settings.AdaptToBackground, false);
                 surface.SetMotion(Quiet() ? 0 : 4, 380, 230);
                 surface.SetInteraction(!Quiet());
                 DrawContents(); Place();
@@ -309,7 +309,7 @@ namespace LiquidGlassOptical
             {
                 if (service == null) service = GlassService.Connect(new GlassConnectOptions { Mode = GlassMode.UiThread });
                 GlassSpec spec = new GlassSpec { Label = "LiquidGlassControl.LGEngine.Preview", Size = CardSize,
-                    Place = CardPlace(), Scale = uiScale, Adapt = settings.AdaptToBackground, InShots = false, SavePower = settings.SavePower,
+                    Place = CardPlace(), Scale = uiScale, Adapt = settings.AdaptToBackground, InShots = false, Fps = 60, SavePower = false,
                     AnimStyle = Quiet() ? 0 : 4, Hover = !Quiet(), Look = settings.Look(refraction.Value, rim.Value, elevation.Value) };
                 surface = service.Create(spec);
                 // UiThread creates its GlassLayer synchronously. Make it an

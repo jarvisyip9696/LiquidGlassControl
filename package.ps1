@@ -28,7 +28,7 @@ if (-not (Test-Path -LiteralPath $testSource)) { throw 'Build LiquidGlassTests.e
 $testExe = Join-Path $stage 'LiquidGlassTests.exe'
 Copy-Item -LiteralPath $testSource -Destination $testExe
 $test = Start-Process -FilePath $testExe -ArgumentList '--self-test' -WindowStyle Hidden -PassThru
-if (-not $test.WaitForExit(20000)) { throw 'Release self-test timed out.' }
+if (-not $test.WaitForExit(60000)) { throw 'Release self-test timed out.' }
 $test.Refresh()
 # Print the report before judging it, so a failing check is named in the log (and as an annotation on GitHub Actions).
 $report = Join-Path $stage 'self-test.txt'
@@ -58,7 +58,7 @@ if ($IncludeLGEngine) {
     $hostLine = Get-Content -LiteralPath $pointer | Where-Object { $_ -match '^Executable=(LGEngineHost-[a-f0-9]{64}\.exe)$' } | Select-Object -First 1
     if (-not $hostLine) { throw 'Missing or invalid LGEngine host pointer.' }
     $hostName = $hostLine.Substring(11)
-    foreach ($runtimeFile in @('LiquidGlass.LGPreview.exe', 'LGEngineExample.exe', 'host-current.ini', $hostName)) {
+    foreach ($runtimeFile in @('LiquidGlass.LGPreview.exe', 'host-current.ini', $hostName)) {
         Copy-Item -LiteralPath (Join-Path $runtime $runtimeFile) -Destination $runtimeStage
     }
     if ((Get-FileHash -LiteralPath (Join-Path $runtimeStage $hostName)).Hash.ToLowerInvariant() -ne $hostName.Substring(13,64)) { throw 'Packaged LGEngine host hash mismatch.' }

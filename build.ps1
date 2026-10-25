@@ -38,14 +38,12 @@ $noticeBytes = [IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'release\Third P
 $writer = [IO.BinaryWriter]::new([IO.File]::Create((Join-Path $outputDir 'engine.res')))
 try {
     # Standard Win32 .res null record followed by RCDATA resource 201.
-    $figmaAssets = @('app-study','system-study','identity-study','nav-app','nav-system','nav-settings')
-    foreach ($record in @(0,1,2,3,4,5,6,7,8)) {
+    foreach ($record in @(0,1,2)) {
         $payload = [byte[]]@()
         if ($record -eq 1) { $payload = $engineBytes } elseif ($record -eq 2) { $payload = $noticeBytes }
-        elseif ($record -ge 3) { $payload = [IO.File]::ReadAllBytes((Join-Path $PSScriptRoot ('assets/figma/' + $figmaAssets[$record - 3] + '.png'))) }
         $writer.Write([uint32]$payload.Length)
         $writer.Write([uint32]32); $writer.Write([uint16]65535); $writer.Write([uint16]$(if ($record) { 10 } else { 0 }))
-        $writer.Write([uint16]65535); $writer.Write([uint16]$(if ($record -ge 3) { 207 + $record } elseif ($record -eq 1) { 201 } elseif ($record -eq 2) { 202 } else { 0 }))
+        $writer.Write([uint16]65535); $writer.Write([uint16]$(if ($record -eq 1) { 201 } elseif ($record -eq 2) { 202 } else { 0 }))
         $writer.Write([uint32]0); $writer.Write([uint16]0); $writer.Write([uint16]0); $writer.Write([uint32]0); $writer.Write([uint32]0)
         if ($record) { $writer.Write([byte[]]$payload); while ($writer.BaseStream.Position % 4) { $writer.Write([byte]0) } }
     }

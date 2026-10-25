@@ -8,6 +8,7 @@ import json
 import shutil
 import stat
 import zlib
+from datetime import datetime, timezone
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -34,7 +35,7 @@ def main():
         return path
 
     report = {"applied": args.apply, "proofs": 0, "proofBytesSaved": 0, "headerBytesSaved": 0}
-    for bmp in sorted((build / "candidates").glob("*/ui-*.bmp")):
+    for bmp in sorted((build / "candidates").glob("*/*.bmp")):
         safe(bmp)
         png = safe(bmp.with_suffix(".png"))
         with Image.open(bmp) as original:
@@ -81,7 +82,8 @@ def main():
     report["bytesSaved"] = report["proofBytesSaved"] + report["headerBytesSaved"]
     print(json.dumps(report, indent=2))
     if args.apply:
-        (build / "workspace-compaction.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+        (build / f"workspace-compaction-{stamp}.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

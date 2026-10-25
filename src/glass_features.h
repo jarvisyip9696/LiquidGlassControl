@@ -27,7 +27,7 @@ void pollMigration(){
     if(exitAfterRestore){DestroyWindow(mainWindow);return;}
     // Startup cleared the switches while the old theme was present: the saved ones come back now, and their glass starts without a restart.
     DWORD saved=glass::unifiedTaskbar((DWORD)GetPrivateProfileIntW(L"Glass",L"Features",0,iniPath.c_str()));
-    keyboardOn=(saved&glass::Keyboard)!=0;dockOn=(saved&glass::Dock)!=0;explorerOn=false;for(int i=0;i<3;++i)shellOn[i]=(saved&(glass::Taskbar<<i))!=0;
+    keyboardOn=false;dockOn=(saved&glass::Dock)!=0;explorerOn=false;for(int i=0;i<3;++i)shellOn[i]=(saved&(glass::Taskbar<<i))!=0;
     updateNativeInfo();if(glassExtraFeatures||keyboardOn||dockOn||explorerOn||shellOn[0]||shellOn[1]||shellOn[2])applyGlass(true);
 }
 // Calendar has its own switch; Toasts has none yet. Both bits are carried from the ini so saving the other switches keeps them.
@@ -37,7 +37,7 @@ bool glassLookLinked[glass::FamilyCount]={true,true,true,true,true};
 unsigned dockMotionOffCount=0;
 const wchar_t*const glassLookSections[glass::FamilyCount]={L"Glass.Taskbar",L"Glass.Start",L"Glass.Notifications",L"Glass.Calendar",L"Glass.Explorer"};
 // Volume and Brightness drive the LGEngine indicator (Controls.osd); only the native probe still asks the XAML engine for them.
-inline DWORD desiredGlassFeatures(){return glassExtraFeatures|((nativeProbeMode&&volumeOn)?glass::Volume:0)|((nativeProbeMode&&brightnessOn)?glass::Brightness:0)|(shellOn[0]?(glass::Taskbar|glass::Capsule):0)|(shellOn[1]?glass::Start:0)|(shellOn[2]?glass::Notifications:0)|(dockOn?glass::Dock:0)|(keyboardOn?glass::Keyboard:0);}
+inline DWORD desiredGlassFeatures(){return glassExtraFeatures|((nativeProbeMode&&volumeOn)?glass::Volume:0)|((nativeProbeMode&&brightnessOn)?glass::Brightness:0)|(shellOn[0]?(glass::Taskbar|glass::Capsule):0)|(shellOn[1]?glass::Start:0)|(shellOn[2]?glass::Notifications:0)|(dockOn?glass::Dock:0);}
 void queueGlass(bool discover){
     glassConfig.features=desiredGlassFeatures();confirmedMaterials&=glassConfig.features;failedMaterials&=glassConfig.features;fallbackMaterials&=glassConfig.features;
     glassPendingDiscover=glassPendingDiscover||discover;updateNativeInfo();
@@ -133,6 +133,6 @@ void resetGlassDefaults(){
     applyGlass(false);updateEffectLabels();RedrawWindow(mainWindow,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
 }
 
-bool allSystemGlassOn(){return volumeOn&&brightnessOn&&shellOn[0]&&shellOn[1]&&shellOn[2]&&dockOn&&keyboardOn&&(glassExtraFeatures&glass::Calendar);}
+bool allSystemGlassOn(){return volumeOn&&brightnessOn&&shellOn[0]&&shellOn[1]&&shellOn[2]&&dockOn&&(glassExtraFeatures&glass::Calendar);}
 void saveUnifiedLook(const glass::Look& value){auto look=glass::normalize(value);glassConfig.opacity=look.opacity;glassConfig.blur=look.blur;glassConfig.radius=look.radius;glassConfig.tint=look.tint;for(int f=0;f<glass::FamilyCount;++f){saveGlassLook((glass::Family)f,look);glassLookLinked[f]=true;}WritePrivateProfileStringW(L"Glass",L"Unified",L"1",iniPath.c_str());saveGlassSettings();}
-void toggleUnifiedSystemGlass(){bool on=!allSystemGlassOn();for(bool& state:shellOn)state=on;explorerOn=false;dockOn=keyboardOn=on;explorerByApp=false;if(on)glassExtraFeatures|=glass::Calendar;else glassExtraFeatures&=~(DWORD)(glass::Calendar|glass::Toasts);volumeOn=brightnessOn=on;osdSwitched(on);queueGlass(true);updateNativeInfo();}
+void toggleUnifiedSystemGlass(){bool on=!allSystemGlassOn();for(bool& state:shellOn)state=on;explorerOn=false;dockOn=on;keyboardOn=false;explorerByApp=false;if(on)glassExtraFeatures|=glass::Calendar;else glassExtraFeatures&=~(DWORD)(glass::Calendar|glass::Toasts);volumeOn=brightnessOn=on;osdSwitched(on);queueGlass(true);updateNativeInfo();}

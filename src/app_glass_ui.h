@@ -36,23 +36,46 @@ inline const std::vector<Hit>&appHits(){static const std::vector<Hit> list={
 int hot=0,pressed=0,focus=RefreshButton,firstRow=0;bool keyboard=false,legacy=false,sample=false;int sampleSelection=1;
 float scale=1,originX=0,originY=0;bool actionResult=false;
 bool active(){return !legacy&&(!selfTestMode||appReviewMode);}
-struct Renderer;void drawWorkspace(Renderer&);const std::vector<Hit>&hits();
+struct Renderer;void drawWorkspace(Renderer&);const std::vector<Hit>&hits();float dropdownRotation(int id);int snapshotOwner=0;
 struct Renderer {
     ID2D1Factory*factory=nullptr;IDWriteFactory*write=nullptr;IWICImagingFactory*wic=nullptr;
-    ID2D1DCRenderTarget*target=nullptr;ID2D1SolidColorBrush*brush=nullptr;
+    ID2D1RenderTarget*target=nullptr;ID2D1DCRenderTarget*dcTarget=nullptr;ID2D1HwndRenderTarget*windowTarget=nullptr;unsigned targetGeneration=0;ID2D1SolidColorBrush*brush=nullptr;ID2D1LinearGradientBrush*canvasGradient=nullptr;bool gradientDark=false;
     IDWriteFontCollection*fonts=nullptr;FontLoader*loader=nullptr;
     std::map<std::wstring,ID2D1Bitmap*> images;
     std::map<std::wstring,IDWriteTextFormat*> formats;
+    using LayoutKey=std::tuple<std::wstring,float,float,float,bool,bool,bool,float,bool>;
+    struct Layout {IDWriteTextLayout*text=nullptr;float x=0,y=0;};
+    std::map<LayoutKey,Layout> layouts;size_t layoutCreations=0;
+    void clearLayouts(){for(auto&entry:layouts)drop(entry.second.text);layouts.clear();}
+    void trim(){clearLayouts();for(auto&entry:images)drop(entry.second);images.clear();for(auto&entry:formats)drop(entry.second);formats.clear();drop(canvasGradient);drop(brush);target=nullptr;drop(dcTarget);drop(windowTarget);drop(fonts);if(loader&&write)write->UnregisterFontCollectionLoader(loader);drop(loader);drop(write);drop(factory);drop(wic);}
     HRESULT status=E_PENDING,lastDraw=E_PENDING;
-    Renderer(){
-        status=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(status))return;
-        status=DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED,__uuidof(IDWriteFactory),reinterpret_cast<IUnknown**>(&write));if(FAILED(status))return;
-        loader=new FontLoader();write->RegisterFontCollectionLoader(loader);int key=1;write->CreateCustomFontCollection(loader,&key,sizeof(key),&fonts);
-        CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_IWICImagingFactory,reinterpret_cast<void**>(&wic));
-        createTarget();
+    Renderer()=default;
+    HRESULT createTextFactory(){
+        HRESULT hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED,__uuidof(IDWriteFactory),reinterpret_cast<IUnknown**>(&write));if(FAILED(hr))return hr;
+        loader=new FontLoader();hr=write->RegisterFontCollectionLoader(loader);if(SUCCEEDED(hr)){int key=1;hr=write->CreateCustomFontCollection(loader,&key,sizeof(key),&fonts);if(FAILED(hr))write->UnregisterFontCollectionLoader(loader);}
+        if(FAILED(hr)){drop(loader);drop(write);drop(factory);}return hr;
     }
-    void createTarget(){if(!factory)return;auto properties=D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_IGNORE),96,96);status=factory->CreateDCRenderTarget(&properties,&target);if(SUCCEEDED(status))status=target->CreateSolidColorBrush(D2D1::ColorF(0),&brush);}
-    ~Renderer(){for(auto&v:images)drop(v.second);for(auto&v:formats)drop(v.second);drop(brush);drop(target);drop(wic);drop(fonts);if(loader&&write)write->UnregisterFontCollectionLoader(loader);drop(loader);drop(write);drop(factory);}
+    void selectTarget(ID2D1RenderTarget*next){
+        if(target==next&&brush)return;
+        for(auto&entry:images)drop(entry.second);images.clear();drop(canvasGradient);drop(brush);target=next;++targetGeneration;
+        if(target)status=target->CreateSolidColorBrush(D2D1::ColorF(0),&brush);
+    }
+    bool ensureFactory(){if(!write&&FAILED(status=createTextFactory()))return false;if(!factory&&FAILED(status=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory)))return false;if(!wic)CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_IWICImagingFactory,reinterpret_cast<void**>(&wic));return true;}
+    bool bindDc(HDC dc,RECT physical){
+        if(!ensureFactory())return false;
+        // Software snapshots avoid a GPU-to-CPU readback while a game is using the GPU.
+        if(!dcTarget){auto properties=D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE,D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_IGNORE),96,96);status=factory->CreateDCRenderTarget(&properties,&dcTarget);if(FAILED(status))return false;}
+        selectTarget(dcTarget);return SUCCEEDED(status)&&SUCCEEDED(dcTarget->BindDC(dc,&physical));
+    }
+    bool bindWindow(HWND window){
+        if(!ensureFactory())return false;RECT client{};GetClientRect(window,&client);auto size=D2D1::SizeU(std::max(1L,client.right),std::max(1L,client.bottom));
+        if(!windowTarget){auto properties=D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,D2D1::PixelFormat(DXGI_FORMAT_UNKNOWN,D2D1_ALPHA_MODE_IGNORE),96,96);status=factory->CreateHwndRenderTarget(properties,D2D1::HwndRenderTargetProperties(window,size,D2D1_PRESENT_OPTIONS_IMMEDIATELY),&windowTarget);if(FAILED(status))return false;}
+        auto current=windowTarget->GetPixelSize();if((current.width!=size.width||current.height!=size.height)&&FAILED(status=windowTarget->Resize(size)))return false;
+        selectTarget(windowTarget);drop(dcTarget);return SUCCEEDED(status);
+    }
+    void draw(HDC dc,RECT physical){if(bindDc(dc,physical))render();}
+    bool drawWindow(HWND window){if(!bindWindow(window))return false;render();return SUCCEEDED(lastDraw);}
+    ~Renderer(){trim();drop(wic);drop(factory);}
     void color(UINT32 hex,float alpha=1){brush->SetColor(D2D1::ColorF(hex,alpha));}
     void box(D2D1_RECT_F r,float radius,UINT32 fill,float alpha=1,UINT32 edge=0,float edgeAlpha=0){color(fill,alpha);target->FillRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush);if(edgeAlpha>0){color(edge,edgeAlpha);target->DrawRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush,1);}}
     void line(float x,float y,float xx,float yy,UINT32 colorValue,float alpha=1){color(colorValue,alpha);target->DrawLine({x,y},{xx,yy},brush,1);}
@@ -61,14 +84,20 @@ struct Renderer {
         box(rect,9,fill,std::min(1.f,alpha+.1f*hover),mix(edge,0x2876db,hover),std::max(edgeAlpha,hover));
         if(pressed==id){color(0x2876db);target->DrawRoundedRectangle(D2D1::RoundedRect(rect,9,9),brush,1.5f);}
     }
-    void label(const std::wstring&s,float x,float y,float width,float height,float size,UINT32 value,bool bold=false,bool latin=false,bool centered=false,float lineHeight=0){
-        std::wstring key=std::to_wstring(size)+(bold?L"b":L"r")+(latin?L"i":L"n");auto&format=formats[key];
-        if(!format){write->CreateTextFormat(latin?L"Inter":L"Noto Sans SC",fonts,bold?DWRITE_FONT_WEIGHT_BOLD:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"zh-CN",&format);if(!format)return;format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);}
-        IDWriteTextLayout*layout=nullptr;if(FAILED(write->CreateTextLayout(s.c_str(),(UINT32)s.size(),format,width,height,&layout)))return;
-        if(!latin){for(UINT32 at=0;at<s.size();){if(s[at]<0x21||s[at]>0x7e){++at;continue;}UINT32 start=at;while(at<s.size()&&s[at]>=0x21&&s[at]<=0x7e)++at;layout->SetFontFamilyName(L"Inter",DWRITE_TEXT_RANGE{start,at-start});}}
-        if(centered){layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);}
-        if(lineHeight>0)layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM,lineHeight,size*.88f);
-        color(value);target->DrawTextLayout({x,y},layout,brush,D2D1_DRAW_TEXT_OPTIONS_CLIP);layout->Release();
+    void label(const std::wstring&s,float x,float y,float width,float height,float size,UINT32 value,bool bold=false,bool latin=false,bool centered=false,float lineHeight=0,bool opticalCenter=false){
+        LayoutKey key{s,width,height,size,bold,latin,centered,lineHeight,opticalCenter};auto found=layouts.find(key);
+        if(found==layouts.end()){
+            if(layouts.size()>=64)clearLayouts();
+            std::wstring formatKey=std::to_wstring(size)+(bold?L"b":L"r")+(latin?L"i":L"n");auto&format=formats[formatKey];
+            if(!format){write->CreateTextFormat(latin?L"Inter":L"Noto Sans SC",fonts,bold?DWRITE_FONT_WEIGHT_BOLD:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"zh-CN",&format);if(!format)return;format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);}
+            Layout cached;if(FAILED(write->CreateTextLayout(s.c_str(),(UINT32)s.size(),format,width,height,&cached.text)))return;++layoutCreations;auto layout=cached.text;
+            if(!latin){for(UINT32 at=0;at<s.size();){if(s[at]<0x21||s[at]>0x7e){++at;continue;}UINT32 start=at;while(at<s.size()&&s[at]>=0x21&&s[at]<=0x7e)++at;layout->SetFontFamilyName(L"Inter",DWRITE_TEXT_RANGE{start,at-start});}}
+            if(centered){layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);}
+            if(lineHeight>0)layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM,lineHeight,size*.88f);
+            if(opticalCenter){layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);cached.x=-6;DWRITE_OVERHANG_METRICS ink{};if(SUCCEEDED(layout->GetOverhangMetrics(&ink))){cached.x+=(ink.left-ink.right)/2;cached.y+=(ink.top-ink.bottom)/2;}}
+            found=layouts.emplace(std::move(key),cached).first;
+        }
+        color(value);target->DrawTextLayout({x+found->second.x,y+found->second.y},found->second.text,brush,D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
     ID2D1Bitmap* image(const std::wstring&name){auto found=images.find(name);if(found!=images.end())return found->second;if(!wic)return nullptr;
         IWICBitmapDecoder*decoder=nullptr;IWICBitmapFrameDecode*frame=nullptr;IWICFormatConverter*converter=nullptr;ID2D1Bitmap*bitmap=nullptr;
@@ -77,6 +106,7 @@ struct Renderer {
         drop(converter);drop(frame);drop(decoder);images[name]=bitmap;return bitmap;
     }
     void art(const wchar_t*name,float x,float y,float width,float height,bool themed=true){auto bitmap=image((themed?(darkUi()?L"dark-":L"white-"):L"")+std::wstring(name));if(bitmap)target->DrawBitmap(bitmap,{x,y,x+width,y+height});}
+    void chevron(int id,float x,float y){if(id==snapshotOwner)return;D2D1_MATRIX_3X2_F previous;target->GetTransform(&previous);target->SetTransform(D2D1::Matrix3x2F::Rotation(dropdownRotation(id),{x+7,y+7})*previous);art(L"chevron",x,y,14,14);target->SetTransform(previous);}
     void appIcon(HICON icon,const std::wstring&key,float x,float y){
         auto name=L"app-icon:"+key;auto found=images.find(name);ID2D1Bitmap*bitmap=found==images.end()?nullptr:found->second;
         if(found==images.end()&&wic&&icon){IWICBitmap*source=nullptr;IWICFormatConverter*converter=nullptr;
@@ -96,13 +126,12 @@ struct Renderer {
         box(r,9,fill,primary?1.f:darkUi()?(over?.13f:16.f/255):over?1.f:.80f,primary?0x3b84e5:t.edge,darkUi()&&!primary?26.f/255:1.f);
         float iconX=r.left+16;art(icon,iconX,r.top+11.5f,15,15);label(text,iconX+23,r.top, r.right-iconX-31,r.bottom-r.top,13,primary?0xffffff:t.primary,false,false,true);
     }
-    void draw(HDC dc,RECT physical){
-        if(!target)createTarget();if(FAILED(status)||!target||FAILED(target->BindDC(dc,&physical)))return;
+    void render(){
         scale=dpi/96.f;originX=0;originY=0;if(IsWindowVisible(mainWindow)){RECT frame{};GetWindowRect(mainWindow,&frame);DwmGetWindowAttribute(mainWindow,9,&frame,sizeof(frame));POINT client{};ClientToScreen(mainWindow,&client);originX=(float)(frame.left-client.x);originY=52*scale+frame.top-client.y;}
         target->BeginDraw();target->SetTransform(D2D1::Matrix3x2F::Identity());target->Clear(D2D1::ColorF(theme().top));target->SetTransform(D2D1::Matrix3x2F::Scale(scale,scale)*D2D1::Matrix3x2F::Translation(originX,originY));target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
         auto t=theme();D2D1_GRADIENT_STOP stops[]={{0,D2D1::ColorF(t.top)},{.55f,D2D1::ColorF(t.middle)},{1,D2D1::ColorF(t.bottom)}};
-        ID2D1GradientStopCollection*collection=nullptr;ID2D1LinearGradientBrush*gradient=nullptr;
-        if(SUCCEEDED(target->CreateGradientStopCollection(stops,3,&collection))&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0,0},{0,848}),collection,&gradient)))target->FillRectangle({0,0,1280,848},gradient);drop(gradient);drop(collection);
+        if(!canvasGradient||gradientDark!=darkUi()){drop(canvasGradient);ID2D1GradientStopCollection*collection=nullptr;if(SUCCEEDED(target->CreateGradientStopCollection(stops,3,&collection)))target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0,0},{0,848}),collection,&canvasGradient);drop(collection);gradientDark=darkUi();}
+        if(canvasGradient)target->FillRectangle({0,0,1280,848},canvasGradient);
         box({0,0,216,804},0,0xffffff,darkUi()?.015f:.19f);line(216,0,216,804,0xffffff,darkUi()?.06f:.7f);
         label(tr(L"工作空间",L"Workspace"),16,32,184,14,10,t.tertiary);
         const wchar_t*nav[]={tr(L"应用玻璃",L"App glass"),tr(L"系统玻璃",L"System glass"),tr(L"设置",L"Settings")};const wchar_t*icons[]={L"nav-app",L"nav-system",L"nav-settings"};
@@ -130,7 +159,7 @@ struct Renderer {
         std::wstring process=sample?(selected==0?L"TextInputHost.exe":L"chrome.exe"):selected>=0&&selected<(int)entries.size()?entries[selected].exe:tr(L"未选择窗口",L"No window selected");
         art(L"pointer",268,381,13,13);label(selected>=0?tr(L"已选择 ",L"Selected: ")+process+tr(L"，应用后可随时还原。",L". You can restore it after applying."):tr(L"选择窗口后可应用材质。",L"Select a window to apply a material."),288,379,535,20,11,t.secondary);
         label(tr(L"窗口材质",L"Window material"),268,472,560,25,15,t.primary,true);label(tr(L"材质类型",L"Material type"),268,504,272,18,11,t.secondary);label(tr(L"窗口边角",L"Window corners"),556,504,272,18,11,t.secondary);
-        auto combo=[&](int id,D2D1_RECT_F r,HWND source){comboFrame(id,r,0xffffff,darkUi()?16.f/255:217.f/255,t.edge,darkUi()?26.f/255:1);const wchar_t*materialNames[]={L"Acrylic",L"Mica",L"Mica Alt",tr(L"关闭背景材质",L"No backdrop")};const wchar_t*cornerNames[]={tr(L"圆角",L"Rounded"),tr(L"小圆角",L"Small rounded"),tr(L"直角",L"Square")};int index=std::max(0,(int)SendMessageW(source,CB_GETCURSEL,0,0));label(id==MaterialBox?materialNames[std::min(index,3)]:cornerNames[std::min(index,2)],r.left+12,r.top+9,r.right-r.left-40,24,13,t.primary,false,id==MaterialBox);art(L"chevron",r.right-27,r.top+12,14,14);};
+        auto combo=[&](int id,D2D1_RECT_F r,HWND source){comboFrame(id,r,0xffffff,darkUi()?16.f/255:217.f/255,t.edge,darkUi()?26.f/255:1);const wchar_t*materialNames[]={L"Acrylic",L"Mica",L"Mica Alt",tr(L"关闭背景材质",L"No backdrop")};const wchar_t*cornerNames[]={tr(L"圆角",L"Rounded"),tr(L"小圆角",L"Small rounded"),tr(L"直角",L"Square")};int index=std::max(0,(int)SendMessageW(source,CB_GETCURSEL,0,0));label(id==MaterialBox?materialNames[std::min(index,3)]:cornerNames[std::min(index,2)],r.left+30,r.top,r.right-r.left-60,r.bottom-r.top,13,t.primary,false,id==MaterialBox,false,0,true);chevron(id,r.right-27,r.top+(r.bottom-r.top-14)/2);};
         combo(MaterialBox,{268,523,540,561},material);combo(CornerBox,{556,523,828,561},corners);
         label(process,268,588,325,20,11,t.tertiary,false,true);button(RestoreButton,{632,575,713,613},tr(L"还原",L"Restore"),L"restore");button(ApplyButton,{721,575,828,613},tr(L"应用材质",L"Apply material"),L"check",true);
         box({248,664,848,772},16,darkUi()?0x1e3a8a:0xe8f1fb,darkUi()?.65f:.6f,darkUi()?0x3b82f6:0xd1e3f6,darkUi()?.45f:1);art(L"info",266,682,17,17);label(tr(L"关于应用兼容性",L"App compatibility"),295,681,535,22,12,t.primary,true);
@@ -145,12 +174,20 @@ struct Renderer {
         label(connected?tr(L"LGEngine 预览已连接",L"LGEngine preview connected"):tr(L"LGEngine 预览未连接",L"LGEngine preview disconnected"),39,817,160,22,11,t.secondary);line(208,820,208,832,darkUi()?0xffffff:0xd7e4f0,darkUi()?.10f:1);label(actionResult?statusText:tr(L"光学参数仅影响预览",L"Optical settings affect preview only"),222,817,890,22,11,t.tertiary);
         art(L"tray",1144,819,14,14);label(tr(L"隐藏至托盘",L"Hide to tray"),1165,816,91,24,11,t.secondary);
         if(keyboard&&GetFocus()==mainWindow)for(auto&hit:hits())if(hit.id==focus){auto r=hit.r;r.left-=3;r.top-=3;r.right+=3;r.bottom+=3;color(0x2876db);target->DrawRoundedRectangle(D2D1::RoundedRect(r,11,11),brush,2);}
-        HRESULT result=target->EndDraw();lastDraw=result;if(result==D2DERR_RECREATE_TARGET){for(auto&v:images)drop(v.second);images.clear();drop(brush);drop(target);status=result;}
+        HRESULT result=target->EndDraw();lastDraw=result;if(result==D2DERR_RECREATE_TARGET){for(auto&v:images)drop(v.second);images.clear();drop(canvasGradient);drop(brush);target=nullptr;drop(dcTarget);drop(windowTarget);status=result;}
     }
 };
 #include "workspace_pages.h"
 inline Renderer&renderer(){static Renderer r;return r;}
-void paint(HWND h,HDC supplied=nullptr){if(supplied){RECT r{};GetClientRect(h,&r);renderer().draw(supplied,r);}else{ControlPaint frame(h);RECT r{};GetClientRect(h,&r);renderer().draw(frame.dc,r);}}
+void clearTextLayouts(){renderer().clearLayouts();}
+void trimIdleUi(){
+    if(uiAnimationTimers.count({mainWindow,4})){SetLayeredWindowAttributes(mainWindow,0,255,LWA_ALPHA);SetWindowLongPtrW(mainWindow,GWL_EXSTYLE,GetWindowLongPtrW(mainWindow,GWL_EXSTYLE)&~WS_EX_LAYERED);}
+    finishPageMotion();themeMoving=false;stopUiAnimationTimer(mainWindow,12);stopUiAnimationTimer(mainWindow,4);stopUiAnimationTimer(mainWindow,73);stopUiAnimationTimer(mainWindow,76);
+    for(auto&segment:segmentMotions)segment.moving=false;switchesMoving=false;switchMotions.clear();
+    EnumChildWindows(mainWindow,[](HWND child,LPARAM)->BOOL{motionFinish(child);return TRUE;},0);renderer().trim();
+}
+bool paintPopupOwner(HDC dc,RECT physical);bool paintPopupOwnerWindow(HWND window);
+void paint(HWND h,HDC supplied=nullptr){if(!supplied)supplied=static_cast<HDC>(GetPropW(h,L"LG.PrintDC"));if(supplied){RECT r{};GetClientRect(h,&r);if(!paintPopupOwner(supplied,r))renderer().draw(supplied,r);}else{PAINTSTRUCT paint{};HDC dc=BeginPaint(h,&paint);if(!paintPopupOwnerWindow(h)&&!renderer().drawWindow(h)){RECT r{};GetClientRect(h,&r);renderer().draw(dc,r);}EndPaint(h,&paint);}}
 inline int hit(LPARAM l){float x=(static_cast<short>(LOWORD(l))-originX)/scale,y=(static_cast<short>(HIWORD(l))-originY)/scale;for(auto&item:hits()){float localY=y;if(currentPage!=0&&item.r.top>=180&&item.r.left<848)localY-=segmentContentOffset(currentPage==2);if(x>=item.r.left&&x<item.r.right&&localY>=item.r.top&&localY<item.r.bottom)return item.id;}return 0;}
 inline void invalidate(){if(mainWindow)InvalidateRect(mainWindow,nullptr,FALSE);}
 void sync(){
@@ -160,90 +197,118 @@ void sync(){
     invalidate();
 }
 struct MenuRow {std::wstring text;bool checked;};
-struct PopupState {std::vector<MenuRow>*rows;int hot=0,result=0;bool done=false;ULONGLONG opened=0;int finalY=0;float highlightFrom=0;ULONGLONG highlightStarted=0;int width=0,height=0,visibleHeight=0;bool opensAbove=false,originalOpening=false;std::vector<uint32_t>optical;};
-inline float popupOpeningProgress(PopupState const&s,ULONGLONG now){float t=std::min(1.f,(now-s.opened)/200.f);return 1-std::pow(1-t,3);}
-inline RECT popupRevealRect(PopupState const&s,float progress){int height=std::clamp((int)std::lround(s.height*progress),1,std::max(1,s.height));int top=s.opensAbove?s.height-height:0;return {0,top,s.width,top+height};}
-bool revealPopup(HWND window,PopupState&s,float progress){
-    auto rect=popupRevealRect(s,progress);auto region=CreateRoundRectRgn(rect.left,rect.top,rect.right+1,rect.bottom+1,MulDiv(20,dpi,96),MulDiv(20,dpi,96));
+using PopupClock=UiFrameClock;
+inline double popupNow(){return uiNow();}
+struct PopupState {std::vector<MenuRow>*rows;int hot=0,result=0,ownerId=0;bool done=false,closing=false,closed=false;double opened=0,closeStarted=0;int finalY=0;float closeFrom=1,highlightFrom=0,lastProgress=0;double highlightStarted=0;int width=0,height=0,openingFrames=0,closingFrames=0;double firstFrameDelay=0;int minAlpha=255,maxAlpha=0,minY=MAXLONG,maxY=MINLONG,presentationErrors=0;std::vector<uint32_t>optical,framePixels;UINT frameWidth=0,frameHeight=0;unsigned frameGeneration=0;ID2D1Bitmap*frame=nullptr;D2D1_MATRIX_3X2_F frameTransform{};float arrowX=0,arrowY=0;~PopupState(){drop(frame);}};
+PopupState*activePopup=nullptr;
+bool renderPopupOwner(RECT physical){
+    auto&s=*activePopup;auto&r=renderer();
+    if(s.frameWidth!=UINT(physical.right-physical.left)||s.frameHeight!=UINT(physical.bottom-physical.top))return false;
+    if(s.frameGeneration!=r.targetGeneration){drop(s.frame);s.frameGeneration=r.targetGeneration;}
+    if(!s.frame&&!s.framePixels.empty())r.target->CreateBitmap(D2D1::SizeU(s.frameWidth,s.frameHeight),s.framePixels.data(),s.frameWidth*4,D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_IGNORE)),&s.frame);
+    if(!s.frame)return false;
+    r.target->BeginDraw();r.target->SetTransform(D2D1::Matrix3x2F::Identity());r.target->DrawBitmap(s.frame,{0,0,float(s.frameWidth),float(s.frameHeight)});
+    r.target->SetTransform(s.frameTransform);r.chevron(s.ownerId,s.arrowX,s.arrowY);r.lastDraw=r.target->EndDraw();if(FAILED(r.lastDraw)){drop(s.frame);return false;}return true;
+}
+bool paintPopupOwner(HDC dc,RECT physical){return active()&&activePopup&&renderer().bindDc(dc,physical)&&renderPopupOwner(physical);}
+bool paintPopupOwnerWindow(HWND window){RECT physical{};GetClientRect(window,&physical);return active()&&activePopup&&renderer().bindWindow(window)&&renderPopupOwner(physical);}inline float popupOpeningProgress(PopupState const&s,double now){if(!s.opened)return 0;float t=std::min(1.f,float((now-s.opened)/180));return 1-std::pow(1-t,3);}
+inline float popupProgress(PopupState const&s,double now){if(!s.closing)return popupOpeningProgress(s,now);float t=std::min(1.f,float((now-s.closeStarted)/120));return s.closeFrom*std::pow(1-t,3);}
+float dropdownRotation(int id){return activePopup&&activePopup->ownerId==id?180*(reducedMotion()?1.f:popupProgress(*activePopup,popupNow())):0;}
+bool roundPopup(HWND window,PopupState const&s){
+    auto region=CreateRoundRectRgn(0,0,s.width+1,s.height+1,MulDiv(20,dpi,96),MulDiv(20,dpi,96));
     if(!region)return false;
     if(!SetWindowRgn(window,region,TRUE)){DeleteObject(region);return false;}
-    s.visibleHeight=rect.bottom-rect.top;InvalidateRect(window,nullptr,FALSE);return true;
+    return true;
 }
 float popupHighlight(PopupState const&s){
     if(!s.highlightStarted||reducedMotion())return float(s.hot);
-    float t=std::min(1.f,(GetTickCount64()-s.highlightStarted)/160.f);
+    float t=std::min(1.f,float((popupNow()-s.highlightStarted)/160));
     float ease=1-std::pow(1-t,3);
     return s.highlightFrom+(s.hot-s.highlightFrom)*ease;
 }
 void movePopupHighlight(HWND h,PopupState&s,int next){
     if(next==s.hot)return;
-    s.highlightFrom=popupHighlight(s);s.hot=next;s.highlightStarted=GetTickCount64();
-    if(!reducedMotion()&&!SetTimer(h,75,16,nullptr))s.highlightStarted=0;
+    s.highlightFrom=popupHighlight(s);s.hot=next;s.highlightStarted=popupNow();
+    if(!reducedMotion()&&!startUiAnimationTimer(h,75))s.highlightStarted=0;
     InvalidateRect(h,nullptr,FALSE);
 }
 bool capturePopupBackdrop(HWND popup,PopupState&s){
     RECT root{},window{};GetClientRect(mainWindow,&root);GetWindowRect(popup,&window);POINT origin{};ClientToScreen(mainWindow,&origin);int w=root.right,h=root.bottom;
     if(w<=0||h<=0||w>4096||h>4096||s.width<=0||s.height<=0||s.width>2048||s.height>2048)return false;
     HDC dc=CreateCompatibleDC(nullptr);BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=w;info.bmiHeader.biHeight=-h;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;uint32_t*pixels=nullptr;HBITMAP bitmap=dc?CreateDIBSection(dc,&info,DIB_RGB_COLORS,(void**)&pixels,nullptr,0):nullptr;if(!bitmap){if(dc)DeleteDC(dc);return false;}
-    auto old=SelectObject(dc,bitmap);memset(pixels,0,size_t(w)*h*4);renderer().lastDraw=E_FAIL;renderer().draw(dc,root);GdiFlush();if(FAILED(renderer().lastDraw)){SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);return false;}std::vector<uint32_t> source(size_t(s.width)*s.height);int left=window.left-origin.x,top=s.finalY-origin.y;for(int y=0;y<s.height;++y)for(int x=0;x<s.width;++x)source[y*s.width+x]=pixels[std::clamp(top+y,0,h-1)*w+std::clamp(left+x,0,w-1)]|0xff000000;SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);
+    auto old=SelectObject(dc,bitmap);memset(pixels,0,size_t(w)*h*4);renderer().lastDraw=E_FAIL;int previousOwner=snapshotOwner;snapshotOwner=s.ownerId;renderer().draw(dc,root);snapshotOwner=previousOwner;GdiFlush();if(FAILED(renderer().lastDraw)){SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);return false;}s.framePixels.assign(pixels,pixels+size_t(w)*h);s.frameWidth=w;s.frameHeight=h;s.frameGeneration=renderer().targetGeneration;drop(s.frame);renderer().target->CreateBitmap(D2D1::SizeU(w,h),pixels,w*4,D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_IGNORE)),&s.frame);s.frameTransform=D2D1::Matrix3x2F::Scale(scale,scale)*D2D1::Matrix3x2F::Translation(originX,originY);for(auto const& hit:hits())if(hit.id==s.ownerId){s.arrowX=hit.r.right-27;s.arrowY=hit.r.top+(hit.r.bottom-hit.r.top-14)/2;if(currentPage!=0&&hit.r.top>=180&&hit.r.left<848)s.arrowY+=segmentContentOffset(currentPage==2);break;}std::vector<uint32_t> source(size_t(s.width)*s.height);int left=window.left-origin.x,top=s.finalY-origin.y;for(int y=0;y<s.height;++y)for(int x=0;x<s.width;++x)source[y*s.width+x]=pixels[std::clamp(top+y,0,h-1)*w+std::clamp(left+x,0,w-1)]|0xff000000;SelectObject(dc,old);DeleteObject(bitmap);DeleteDC(dc);
     liquidfx::Profile profile;profile.radius=10*dpi/96.f;profile.blur=4*dpi/96.f;profile.bend=7*dpi/96.f;profile.edge=18*dpi/96.f;profile.tint=darkUi()?.2f:.12f;profile.dark=darkUi();return liquidfx::render(source,s.width,s.height,profile,s.optical);
 }
 LRESULT CALLBACK popupProc(HWND h,UINT m,WPARAM w,LPARAM l){auto*s=(PopupState*)GetWindowLongPtrW(h,GWLP_USERDATA);if(m==WM_NCCREATE){s=(PopupState*)((CREATESTRUCTW*)l)->lpCreateParams;SetWindowLongPtrW(h,GWLP_USERDATA,(LONG_PTR)s);}if(!s)return DefWindowProcW(h,m,w,l);int pad=MulDiv(6,dpi,96),row=MulDiv(36,dpi,96);
-    if(m==WM_TIMER&&w==75){InvalidateRect(h,nullptr,FALSE);if(reducedMotion()||GetTickCount64()-s->highlightStarted>=160){s->highlightStarted=0;KillTimer(h,75);}return 0;}if(m==WM_ERASEBKGND)return 1;if(m==WM_TIMER&&w==74){if(s->highlightStarted)return 0;if(capturePopupBackdrop(h,*s))InvalidateRect(h,nullptr,FALSE);return 0;}if(m==WM_TIMER&&w==71){float ease=reducedMotion()?1.f:popupOpeningProgress(*s,GetTickCount64());if(s->originalOpening){SetLayeredWindowAttributes(h,0,(BYTE)(255*ease),LWA_ALPHA);RECT rect{};GetWindowRect(h,&rect);SetWindowPos(h,nullptr,rect.left,s->finalY-(int)(MulDiv(8,dpi,96)*(1-ease)),0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);}else if(!revealPopup(h,*s,ease)){SetWindowRgn(h,nullptr,TRUE);s->visibleHeight=s->height;ease=1;}if(ease>=1){KillTimer(h,71);SetTimer(h,74,66,nullptr);}return 0;}
+    if(m==WM_NCDESTROY){stopUiAnimationTimer(h,75);stopUiAnimationTimer(h,71);}
+    if(m==WM_TIMER&&w==75){InvalidateRect(h,nullptr,FALSE);if(reducedMotion()||popupNow()-s->highlightStarted>=160){s->highlightStarted=0;stopUiAnimationTimer(h,75);}return 0;}if(m==WM_ERASEBKGND)return 1;if(m==WM_TIMER&&w==71){if(s->closing)++s->closingFrames;else if(++s->openingFrames==1)s->firstFrameDelay=popupNow()-s->opened;float progress=reducedMotion()?(s->closing?0.f:1.f):popupProgress(*s,popupNow());s->lastProgress=progress;if(!SetLayeredWindowAttributes(h,0,(BYTE)std::lround(255*progress),LWA_ALPHA))++s->presentationErrors;RECT rect{};GetWindowRect(h,&rect);SetWindowPos(h,nullptr,rect.left,s->finalY-(int)std::lround(MulDiv(8,dpi,96)*(1-progress)),0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);BYTE alpha=255;DWORD flags=0;RECT actual{};if(GetLayeredWindowAttributes(h,nullptr,&alpha,&flags)&&GetWindowRect(h,&actual)){s->minAlpha=std::min(s->minAlpha,int(alpha));s->maxAlpha=std::max(s->maxAlpha,int(alpha));s->minY=std::min(s->minY,int(actual.top));s->maxY=std::max(s->maxY,int(actual.top));}else ++s->presentationErrors;invalidate();if(s->ownerId>=Combo)if(auto source=GetDlgItem(mainWindow,s->ownerId-Combo))InvalidateRect(source,nullptr,FALSE);if(s->closing?progress<=0:progress>=1){stopUiAnimationTimer(h,71);if(s->closing)s->closed=true;}return 0;}
     if(m==WM_PRINTCLIENT){printControlClient(h,(HDC)w);return 0;}if(m==WM_PAINT){ControlPaint frame(h);HDC dc=frame.dc;RECT r{};GetClientRect(h,&r);COLORREF bg=darkUi()?RGB(24,35,53):RGB(248,251,255);HBRUSH b=CreateSolidBrush(bg);FillRect(dc,&r,b);DeleteObject(b);if(s->optical.size()==size_t(s->width)*s->height&&!s->optical.empty()){BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=s->width;info.bmiHeader.biHeight=-s->height;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;SetDIBitsToDevice(dc,0,0,s->width,s->height,0,0,0,s->height,s->optical.data(),&info,DIB_RGB_COLORS);}float highlight=popupHighlight(*s);RECT highlightRect{pad,pad+(int)std::lround(highlight*row),r.right-pad,pad+(int)std::lround(highlight*row)+row};roundFill(dc,highlightRect,darkUi()?RGB(36,58,91):RGB(229,240,255),darkUi()?RGB(36,58,91):RGB(229,240,255),MulDiv(8,dpi,96));for(int i=0;i<(int)s->rows->size();++i){RECT item{pad,pad+i*row,r.right-pad,pad+(i+1)*row};SetBkMode(dc,TRANSPARENT);SetTextColor(dc,i==s->hot?palette().accent:textColor());SelectObject(dc,font);RECT text=item;text.left+=MulDiv(14,dpi,96);text.right-=MulDiv(32,dpi,96);DrawTextW(dc,(*s->rows)[i].text.c_str(),-1,&text,DT_SINGLELINE|DT_VCENTER|DT_NOPREFIX);if((*s->rows)[i].checked){Gdiplus::Graphics g(dc);g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);COLORREF accent=palette().accent;Gdiplus::SolidBrush dot(Gdiplus::Color(255,GetRValue(accent),GetGValue(accent),GetBValue(accent)));float radius=3.f*dpi/96.f;g.FillEllipse(&dot,item.right-MulDiv(20,dpi,96)-radius,(item.top+item.bottom)/2.f-radius,2*radius,2*radius);} }{Gdiplus::Graphics g(dc);g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);float inset=2.f*dpi/96.f,diameter=20.f*dpi/96.f;float right=r.right-2*inset,bottom=r.bottom-2*inset;Gdiplus::GraphicsPath path;path.AddArc(inset,inset,diameter,diameter,180,90);path.AddArc(right-diameter,inset,diameter,diameter,270,90);path.AddArc(right-diameter,bottom-diameter,diameter,diameter,0,90);path.AddArc(inset,bottom-diameter,diameter,diameter,90,90);path.CloseFigure();Gdiplus::Pen border(darkUi()?Gdiplus::Color(255,91,124,168):Gdiplus::Color(255,133,170,211),std::max(1.5f,1.5f*dpi/96.f));g.DrawPath(&border,&path);}return 0;}
+    if(s->closing&&((m>=WM_MOUSEFIRST&&m<=WM_MOUSELAST)||(m>=WM_KEYFIRST&&m<=WM_KEYLAST)))return 0;
     if(m==WM_MOUSEMOVE){int y=(short)HIWORD(l);int next=std::clamp((y-pad)/row,0,(int)s->rows->size()-1);movePopupHighlight(h,*s,next);return 0;}
-    if(m==WM_LBUTTONUP){POINT p{(short)LOWORD(l),(short)HIWORD(l)};RECT r{};GetClientRect(h,&r);if(s->visibleHeight>0&&s->height>0){r.top=s->opensAbove?s->height-s->visibleHeight:0;r.bottom=r.top+s->visibleHeight;}if(PtInRect(&r,p)&&p.y>=pad&&p.y<pad+row*(int)s->rows->size()){int picked=(p.y-pad)/row;s->hot=picked;s->result=100+picked;s->done=true;}return 0;}
+    if(m==WM_LBUTTONUP){POINT p{(short)LOWORD(l),(short)HIWORD(l)};RECT r{};GetClientRect(h,&r);if(PtInRect(&r,p)&&p.y>=pad&&p.y<pad+row*(int)s->rows->size()){int picked=(p.y-pad)/row;s->hot=picked;s->result=100+picked;s->done=true;}return 0;}
     if(m==WM_LBUTTONDOWN){POINT p{(short)LOWORD(l),(short)HIWORD(l)};RECT r{};GetClientRect(h,&r);if(!PtInRect(&r,p))s->done=true;return 0;}
     if(m==WM_KEYDOWN){if(w==VK_ESCAPE)s->done=true;else if(w==VK_RETURN||w==VK_SPACE){s->result=100+s->hot;s->done=true;}else if(w==VK_UP||w==VK_DOWN){movePopupHighlight(h,*s,(s->hot+(w==VK_UP?-1:1)+(int)s->rows->size())%(int)s->rows->size());}return 0;}
     if(m==WM_KILLFOCUS||m==WM_CANCELMODE||m==WM_CAPTURECHANGED)s->done=true;return DefWindowProcW(h,m,w,l);
 }
-int showPopup(std::vector<MenuRow>&rows,POINT at,int width,bool originalOpening=false){
+int showPopup(std::vector<MenuRow>&rows,POINT at,int width,int ownerId=0){
+    if(rows.empty()||width<=0)return 0;
+    bool testPopup=selfTestMode&&!IsWindowVisible(mainWindow);
     static bool registered=false;
     if(!registered){WNDCLASSW wc{};wc.lpfnWndProc=popupProc;wc.hInstance=GetModuleHandleW(nullptr);wc.lpszClassName=L"LiquidGlass.ThemePopup";wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);registered=RegisterClassW(&wc)!=0;}
-    PopupState state{};state.rows=&rows;state.originalOpening=originalOpening;
+    PopupState state{};state.rows=&rows;state.ownerId=ownerId;
     for(int i=0;i<(int)rows.size();++i)if(rows[i].checked)state.hot=i;
     int height=MulDiv(12+36*(int)rows.size(),dpi,96);
     MONITORINFO mi{};mi.cbSize=sizeof(mi);GetMonitorInfoW(MonitorFromPoint(at,MONITOR_DEFAULTTONEAREST),&mi);
     at.x=std::clamp(at.x,mi.rcWork.left,std::max(mi.rcWork.left,mi.rcWork.right-width));
-    state.opensAbove=at.y+height>mi.rcWork.bottom;if(state.opensAbove)at.y=mi.rcWork.bottom-height;
+    if(at.y+height>mi.rcWork.bottom)at.y=std::max(mi.rcWork.top,mi.rcWork.bottom-height);
+    if(testPopup)at={-32000,-32000};
     HWND popup=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_TOPMOST|WS_EX_LAYERED,L"LiquidGlass.ThemePopup",L"",WS_POPUP,at.x,at.y,width,height,mainWindow,nullptr,GetModuleHandleW(nullptr),&state);
     if(!popup)return 0;
     state.width=width;state.height=height;state.finalY=at.y;
-    capturePopupBackdrop(popup,state);
+    capturePopupBackdrop(popup,state);roundPopup(popup,state);
     bool animate=!reducedMotion();
-    SetLayeredWindowAttributes(popup,0,originalOpening&&animate?0:255,LWA_ALPHA);
-    if(!revealPopup(popup,state,originalOpening||!animate?1.f:0.f))animate=false;
-    if(originalOpening&&animate)SetWindowPos(popup,nullptr,at.x,at.y-MulDiv(8,dpi,96),0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
-    HWND previous=GetFocus();ShowWindow(popup,SW_SHOWNORMAL);UpdateWindow(popup);
-    state.opened=GetTickCount64();
-    if(!animate||!SetTimer(popup,71,16,nullptr)){
+    activePopup=&state;
+    SetLayeredWindowAttributes(popup,0,animate?0:255,LWA_ALPHA);
+    if(animate)SetWindowPos(popup,nullptr,at.x,at.y-MulDiv(8,dpi,96),0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+    HWND previous=GetFocus();ShowWindow(popup,testPopup?SW_SHOWNOACTIVATE:SW_SHOWNORMAL);UpdateWindow(popup);
+    // Start after the first paint so font and bitmap work cannot consume the entrance.
+    state.opened=popupNow();invalidate();
+    bool scheduled=animate&&startUiAnimationTimer(popup,71);bool useClock=uiAnimationTimers.count({popup,71})!=0;
+    if(!scheduled){
+        animate=false;state.opened=popupNow()-180;state.lastProgress=1;
         SetLayeredWindowAttributes(popup,0,255,LWA_ALPHA);
         SetWindowPos(popup,nullptr,at.x,at.y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
-        if(!revealPopup(popup,state,1))SetWindowRgn(popup,nullptr,TRUE);
-        SetTimer(popup,74,66,nullptr);
     }
-    SetFocus(popup);SetCapture(popup);MSG msg{};
-    while(!state.done){BOOL result=GetMessageW(&msg,nullptr,0,0);if(result<=0){if(!result)PostQuitMessage((int)msg.wParam);break;}TranslateMessage(&msg);DispatchMessageW(&msg);}
-    if(GetCapture()==popup)ReleaseCapture();DestroyWindow(popup);
-    if(IsWindow(previous))SetFocus(previous);return state.result;
+    if(!testPopup){SetFocus(popup);SetCapture(popup);}MSG msg{};
+    while(!state.closed){
+        if(state.done&&!state.closing){
+            state.closeStarted=popupNow();state.closeFrom=state.lastProgress;state.closing=true;
+            stopUiAnimationTimer(popup,71);stopUiAnimationTimer(popup,75);
+            if(!animate)break;
+            if(!startUiAnimationTimer(popup,71))break;
+        }
+        BOOL result=nextUiMessage(&msg);if(result<=0){if(!result)PostQuitMessage((int)msg.wParam);break;}
+        TranslateMessage(&msg);DispatchMessageW(&msg);
+    }
+    if(GetCapture()==popup)ReleaseCapture();activePopup=nullptr;DestroyWindow(popup);if(!selfTestMode&&(!IsWindowVisible(mainWindow)||IsIconic(mainWindow)))trimIdleUi();invalidate();
+    auto log=directory()+L"dropdown-motion.log";HANDLE file=CreateFileW(log.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,0,nullptr);
+    if(file!=INVALID_HANDLE_VALUE){char line[360]{};int length=snprintf(line,sizeof(line),"control=%d animated=%d openFrames=%d closeFrames=%d firstFrameMs=%.1f alpha=%d..%d slidePx=%d errors=%d clock=%s result=%d\r\n",ownerId,animate?1:0,state.openingFrames,state.closingFrames,state.firstFrameDelay,state.minAlpha,state.maxAlpha,state.maxY>=state.minY?state.maxY-state.minY:0,state.presentationErrors,useClock?"shared":"window",state.result);DWORD written=0;WriteFile(file,line,length,&written,nullptr);CloseHandle(file);}
+    if(IsWindow(previous)&&GetForegroundWindow()==mainWindow)SetFocus(previous);return state.result;
 }
-bool measureMenu(MEASUREITEMSTRUCT*item){if(item->CtlType!=ODT_MENU)return false;item->itemWidth=MulDiv(250,dpi,96);item->itemHeight=MulDiv(40,dpi,96);return true;}
-bool drawMenu(DRAWITEMSTRUCT*item){if(item->CtlType!=ODT_MENU||!item->itemData)return false;auto*row=reinterpret_cast<MenuRow*>(item->itemData);auto t=theme();HDC dc=item->hDC;RECT r=item->rcItem;bool hot=(item->itemState&ODS_SELECTED)!=0;auto rgb=[](UINT32 c){return RGB((c>>16)&255,(c>>8)&255,c&255);};HBRUSH fill=CreateSolidBrush(rgb(hot?t.selected:darkUi()?0x1f2937:0xf7fbff));FillRect(dc,&r,fill);DeleteObject(fill);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,rgb(t.primary));auto old=SelectObject(dc,font);RECT check=r;check.right=check.left+MulDiv(32,dpi,96);if(row->checked)DrawTextW(dc,L"✓",-1,&check,DT_CENTER|DT_VCENTER|DT_SINGLELINE);r.left+=MulDiv(38,dpi,96);r.right-=MulDiv(12,dpi,96);DrawTextW(dc,row->text.c_str(),-1,&r,DT_LEFT|DT_VCENTER|DT_SINGLELINE);SelectObject(dc,old);return true;}
 void showCombo(HWND source){
     int count=(int)SendMessageW(source,CB_GETCOUNT,0,0),selected=(int)SendMessageW(source,CB_GETCURSEL,0,0);if(count<=0)return;bool themeChoice=GetDlgCtrlID(source)==ColorTheme;if(themeChoice)count=2;if(GetDlgCtrlID(source)==SystemSurface)count=std::min(count,5);
-    std::vector<MenuRow> rows;rows.reserve(count);HMENU menu=CreatePopupMenu();
-    for(int i=0;i<count;++i){int sourceIndex=themeChoice?(i==0?0:7):i;int length=(int)SendMessageW(source,CB_GETLBTEXTLEN,sourceIndex,0);std::wstring text(std::max(0,length)+1,L'\0');SendMessageW(source,CB_GETLBTEXT,sourceIndex,(LPARAM)text.data());text.resize(std::max(0,length));if(themeChoice)text=i==0?tr(L"冰蓝",L"Ice blue"):tr(L"深色",L"Dark");rows.push_back({text,sourceIndex==selected});AppendMenuW(menu,MF_OWNERDRAW,100+i,reinterpret_cast<LPCWSTR>(&rows.back()));}
-    HBRUSH brush=CreateSolidBrush(darkUi()?RGB(31,41,55):RGB(247,251,255));MENUINFO info{};info.cbSize=sizeof(info);info.fMask=MIM_BACKGROUND;info.hbrBack=brush;SetMenuInfo(menu,&info);RECT r{};GetWindowRect(source,&r);if(active()){for(auto&item:hits())if(item.id==Combo+GetDlgCtrlID(source)){POINT at{(LONG)(originX+item.r.left*scale),(LONG)(originY+item.r.top*scale)};ClientToScreen(mainWindow,&at);r={at.x,at.y,at.x+(LONG)((item.r.right-item.r.left)*scale),at.y+(LONG)((item.r.bottom-item.r.top)*scale)};break;}}
-    int picked=showPopup(rows,POINT{r.left,r.bottom},std::max((int)(r.right-r.left),MulDiv(220,dpi,96)),GetDlgCtrlID(source)==OptArrival||GetDlgCtrlID(source)==OptIndicator);DestroyMenu(menu);DeleteObject(brush);
+    std::vector<MenuRow> rows;rows.reserve(count);
+    for(int i=0;i<count;++i){int sourceIndex=themeChoice?(i==0?0:7):i;int length=(int)SendMessageW(source,CB_GETLBTEXTLEN,sourceIndex,0);std::wstring text(std::max(0,length)+1,L'\0');SendMessageW(source,CB_GETLBTEXT,sourceIndex,(LPARAM)text.data());text.resize(std::max(0,length));if(themeChoice)text=i==0?tr(L"冰蓝",L"Ice blue"):tr(L"深色",L"Dark");rows.push_back({text,sourceIndex==selected});}
+    RECT r{};GetWindowRect(source,&r);if(active()){for(auto&item:hits())if(item.id==Combo+GetDlgCtrlID(source)){POINT at{(LONG)(originX+item.r.left*scale),(LONG)(originY+item.r.top*scale)};ClientToScreen(mainWindow,&at);r={at.x,at.y,at.x+(LONG)((item.r.right-item.r.left)*scale),at.y+(LONG)((item.r.bottom-item.r.top)*scale)};break;}}
+    int picked=showPopup(rows,POINT{r.left,r.bottom},std::max((int)(r.right-r.left),MulDiv(220,dpi,96)),Combo+GetDlgCtrlID(source));
     if(picked>=100){SendMessageW(source,CB_SETCURSEL,themeChoice?(picked==100?0:7):picked-100,0);SendMessageW(mainWindow,WM_COMMAND,MAKEWPARAM(GetDlgCtrlID(source),CBN_SELCHANGE),(LPARAM)source);}InvalidateRect(source,nullptr,FALSE);
 }
 void choose(HWND source,int controlId,int hitId){
-    HMENU menu=CreatePopupMenu();int count=(int)SendMessageW(source,CB_GETCOUNT,0,0),selected=(int)SendMessageW(source,CB_GETCURSEL,0,0);
+    int count=(int)SendMessageW(source,CB_GETCOUNT,0,0),selected=(int)SendMessageW(source,CB_GETCURSEL,0,0);
     const wchar_t*materialNames[]={L"Acrylic",L"Mica",L"Mica Alt",tr(L"关闭背景材质",L"No backdrop")};const wchar_t*cornerNames[]={tr(L"圆角",L"Rounded"),tr(L"小圆角",L"Small rounded"),tr(L"直角",L"Square")};
-    std::vector<MenuRow>rows;rows.reserve(count);for(int i=0;i<count;++i){const wchar_t*text=hitId==MaterialBox?materialNames[std::min(i,3)]:cornerNames[std::min(i,2)];rows.push_back({text,selected==i});AppendMenuW(menu,MF_OWNERDRAW,100+i,reinterpret_cast<LPCWSTR>(&rows.back()));}
-    HBRUSH menuBrush=CreateSolidBrush(darkUi()?RGB(31,41,55):RGB(247,251,255));MENUINFO info{};info.cbSize=sizeof(info);info.fMask=MIM_BACKGROUND;info.hbrBack=menuBrush;SetMenuInfo(menu,&info);
+    std::vector<MenuRow>rows;rows.reserve(count);for(int i=0;i<count;++i){const wchar_t*text=hitId==MaterialBox?materialNames[std::min(i,3)]:cornerNames[std::min(i,2)];rows.push_back({text,selected==i});}
     auto rect=hits()[hitId==MaterialBox?6:7].r;POINT at{LONG(originX+rect.left*scale),LONG(originY+rect.bottom*scale)};ClientToScreen(mainWindow,&at);
-    int picked=showPopup(rows,at,(int)((rect.right-rect.left)*scale));DestroyMenu(menu);DeleteObject(menuBrush);
+    int picked=showPopup(rows,at,(int)((rect.right-rect.left)*scale),hitId);
     if(picked>=100){SendMessageW(source,CB_SETCURSEL,picked-100,0);if(!appReviewMode)SendMessageW(mainWindow,WM_COMMAND,MAKEWPARAM(controlId,CBN_SELCHANGE),(LPARAM)source);}invalidate();
 }
 void invoke(int id){

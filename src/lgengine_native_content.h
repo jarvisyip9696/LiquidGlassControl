@@ -63,7 +63,7 @@ class NativeContentSurface:public std::enable_shared_from_this<NativeContentSurf
     void restoreVisual()noexcept{if(hidden){try{if(visual&&visual.Opacity()==0)visual.Opacity(originalOpacity);}catch(...){}hidden=false;}try{if(hooks.restore)hooks.restore();}catch(...){}}
     void request(){if(!stopped&&!suspended&&window&&!queued){queued=true;PostMessageW(window,Refresh,0,0);}}
     void schedule(){queued=false;if(stopped||suspended)return;if(busy){queued=true;return;}
-        auto now=GetTickCount64();unsigned interval=lastCaptureFailed?500:33;if(now-lastFrame<interval){SetTimer(window,1,UINT(interval-(now-lastFrame)),nullptr);return;}
+        auto now=GetTickCount64();unsigned interval=lastCaptureFailed?500:16;if(now-lastFrame<interval){SetTimer(window,1,UINT(interval-(now-lastFrame)),nullptr);return;}
         render(shared_from_this());
     }
     static winrt::fire_and_forget render(std::shared_ptr<NativeContentSurface> self){
@@ -177,7 +177,7 @@ public:
         nativeWindow=target;nativeEvents=SetWinEventHook(EVENT_OBJECT_SHOW,EVENT_OBJECT_LOCATIONCHANGE,nullptr,nativeChanged,pid,thread,WINEVENT_OUTOFCONTEXT);
         if(!nativeEvents)winrt::throw_last_error();windowWatches[nativeEvents]=shared_from_this();
         if(!foregroundEvents){foregroundEvents=SetWinEventHook(EVENT_SYSTEM_FOREGROUND,EVENT_SYSTEM_FOREGROUND,nullptr,nativeChanged,0,0,WINEVENT_OUTOFCONTEXT);if(foregroundEvents)windowWatches[foregroundEvents]=shared_from_this();}
-        if(!SetTimer(window,3,16,nullptr))winrt::throw_last_error();
+        if(!SetCoalescableTimer(window,3,USER_TIMER_MINIMUM,nullptr,TIMERV_NO_COALESCING))winrt::throw_last_error();
     }
     void retainNativeMotion(std::shared_ptr<void> value){nativeMotion=std::move(value);}
     unsigned hostProcessId()const{return client?client->hostProcessId():0;}

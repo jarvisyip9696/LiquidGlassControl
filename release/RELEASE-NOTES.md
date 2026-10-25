@@ -1,27 +1,21 @@
-## Motion Refresh
+# Liquid Glass Control 0.14.0-beta.2 — Performance Refresh
 
-A redesigned native workspace with smoother controls and improved localization.
+Windows 11 x64 prerelease. Download the complete portable ZIP and extract it before launching `LiquidGlassControl.exe`. Keep `art/`, `fonts/` and `lgengine/` beside the controller. The separate EXE alone does not include these companions.
 
-### Changes
+## Changes
+- Shared high-resolution animation clock targets 60 Hz and stops when idle.
+- Direct GPU window drawing avoids the previous per-frame GPU-to-GDI readback.
+- All dropdowns use a 180 ms fade/8 DIP slide to open and a 120 ms continuous close, with a rotating arrow. Optical centering applies across all five languages.
+- Bounded text-layout caching avoids rebuilding layouts on warm frames. Hidden/minimized UI releases drawing resources; graphics and custom fonts initialize on first drawing.
+- Shell material attachment responds earlier to surface creation. Keyboard layout switcher glass is disabled, including legacy saved flags.
+- Remove duplicate embedded images and unused menu construction; retain complete language fonts, required artwork and engine licenses.
 
-- Redesigned App glass, System glass, LGEngine, and Settings pages.
-- Smooth switch motion targeting 60 fps while active, with continuous reversal and reduced-motion support.
-- Refined dropdown interactions. Arrival and Indicator entrance retain their original menu presentation.
-- Custom-rendered interface text now follows the selected interface language.
-- Improved keyboard-layout panel contrast over light backgrounds.
-- Removed File Explorer styling, including its controls and legacy activation paths.
-- Portable downloads now include the interface artwork, private fonts and font licenses required by the redesigned UI.
+## Verification and limits
+The isolated controller regression suite, multi-DPI/five-language rendering and native adapter self-tests pass. Local measurements found a 59.9 Hz animation clock and approximately 16 MiB tray working set with 2.6 MiB private committed memory, with effects disabled. Working set, private commit and total system/graphics cost are different measures. Frame rate and memory vary with Windows, GPU load, enabled effects and the active page; 60 fps is a target, not a guarantee.
 
-### Download
+Live taskbar/Start/notification appearance and restoration have not been exhaustively verified on every Windows build. This remains a prerelease. Binaries are unsigned and may be blocked by Windows application-control policy. Do not disable protections to run them.
 
-Use the complete **Windows 11 x64 portable ZIP**. Extract everything and keep `art/`, `fonts/`, and `lgengine/` beside `LiquidGlassControl.exe`. The controller EXE alone does not include all companion files.
+## Upgrade safely
+Restore managed effects and exit the previous version before upgrading. Keep existing settings and recovery records until restoration succeeds. Extract the new portable package into a separate writable folder. No personal settings, recovery journals, test logs or test executable are included.
 
-The package includes LGEngine 2.7.16.0, licenses, corresponding controller source, and the pinned LGEngine source archive. SHA-256 checksums accompany the downloads. Personal settings, recovery journals, local logs, and test images are excluded.
-
-### Validation and limitations
-
-This is a beta release. Build checks and isolated self-tests cover configuration, restoration fixtures, UI rendering, language selection, menus, and motion calculations. They do not certify every live shell surface or a measured 60 fps presentation rate.
-
-The application and embedded engine are unsigned. Windows application-control policy may block them. Use a trusted, approved build; do not disable security protections. Shell effects vary by Windows version and other styling tools. Brightness integration depends on hardware support. Arbitrary application content is not guaranteed to become transparent.
-
-Before upgrading, restore managed effects and retain settings and recovery records until restoration succeeds.
+GPL-3.0-only controller/engine corresponding source and the pinned MIT LGEngine 2.7.16.0 source accompany this release. Font licenses and third-party notices are included.

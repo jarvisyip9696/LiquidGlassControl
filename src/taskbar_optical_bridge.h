@@ -42,7 +42,7 @@ inline std::shared_ptr<lghost::NativeContentSurface> taskbarOpticalBridge(
     BOOL animate=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&animate,0);
     spec.motion=animate?1:0;spec.inMs=220;spec.outMs=180;
     spec.label="LiquidGlassControl.Taskbar";
-    spec.savePower=false;spec.fps=30;spec.look.dark=int(config.opacity);
+    spec.savePower=false;spec.fps=60;spec.look.dark=int(config.opacity);
     spec.look.blur=int(config.blur)*100/40;spec.look.round=int(config.radius);
     spec.look.refraction=80;spec.look.rim=60;
     if(!lghost::nativePlace(element,island,spec))return {};

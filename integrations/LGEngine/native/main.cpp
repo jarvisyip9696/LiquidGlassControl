@@ -243,7 +243,7 @@ struct App {
         if(!client)return;
         relabel();bool rm=reduced();for(int id:{IdArrival,IdIndicator,IdSlosh})EnableWindow(GetDlgItem(window,id),!rm);
         spec.look.dark=settings.opacity;spec.look.blur=(settings.blur*100+20)/40;spec.look.round=settings.radius;
-        spec.savePower=settings.savePower!=0;spec.hover=!rm;spec.zoom=10;spec.liquid=60;spec.bounce=45;spec.travel=-1;
+        spec.fps=60;spec.savePower=false;spec.hover=!rm;spec.zoom=10;spec.liquid=60;spec.bounce=45;spec.travel=-1;
         int arrival=sel(IdArrival),indicator=sel(IdIndicator)-1;spec.motion=rm?0:arrival;spec.indicator=rm?0:indicator;
         // Protocol v1 has background adaptation but no explicit light override.
         spec.adapt=true;spec.inShots=true;client->setSpec(spec); // inShots: the card and the lens show in screenshots
@@ -360,7 +360,7 @@ struct App {
         if(aside)for(const RECT& r:titleSpans){RECT x{};if(IntersectRect(&x,&r,&lg)){titleHide();return;}}
         lghost::Spec base;base.kind=0;base.scale=d/96.f;
         base.look=lghost::Look{glass.dark,glass.blur,glass.refraction,glass.rim,glass.shadow,glass.round,glass.intensity,glass.elevation};
-        base.hover=false;base.inShots=false;base.adapt=true;base.savePower=true;base.label="LiquidGlassControl.TitleBar";base.motion=0;base.inMs=160;base.outMs=120; // motion 0: the plainest fade
+        base.hover=false;base.inShots=false;base.adapt=true;base.savePower=false;base.label="LiquidGlassControl.TitleBar";base.motion=0;base.inMs=160;base.outMs=120; // motion 0: the plainest fade
         try{
             for(size_t i=0;i<TitleSlots;++i){
                 if(i>=titleSpans.size()){titleHideSlot(i);continue;}
@@ -467,6 +467,7 @@ LRESULT CALLBACK proc(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
 }
 int selfTest(){lghost::Spec spec;auto frame=lghost::wire::frame(3,42,lghost::wire::create(1,spec));int bad=0;
     auto check=[&](bool ok,const char*label){printf("%s %s\n",ok?"PASS":"FAIL",label);if(!ok)++bad;};
+    check(spec.fps==60&&!spec.savePower,"60 FPS without battery throttling");
     check(lghost::wire::valid(spec),"default spec valid");check(lghost::wire::frame(frame),"frame validates");frame[8]++;check(!lghost::wire::frame(frame),"bad length rejected");spec.width=0;check(!lghost::wire::valid(spec),"zero size rejected");
     spec.width=420;spec.scale=std::numeric_limits<float>::quiet_NaN();check(!lghost::wire::valid(spec),"nonfinite scale rejected");
     // OSD: springs

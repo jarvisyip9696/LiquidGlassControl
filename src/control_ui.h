@@ -81,7 +81,7 @@ std::vector<std::pair<const Block*,int>> pageSequence(int page){
         y=228;
         if(systemView==1){int row=systemOpen>=2&&systemOpen<=7?systemOpen:2;add(systemRows[row]);add(row==7?dockPanel:lookPanel);add(systemFooter);}
         else if(systemView==2){add(systemRows[0]);add(systemRows[1]);add(indicatorPanel);}
-        else {for(int i=0;i<9;++i){if(i==6)continue;add(systemRows[i]);if(systemOpen==i)add(i<2?indicatorPanel:i==7?dockPanel:lookPanel);}add(systemFooter);}
+        else {for(int i=0;i<9;++i){if(i==6||i==8)continue;add(systemRows[i]);if(systemOpen==i)add(i<2?indicatorPanel:i==7?dockPanel:lookPanel);}add(systemFooter);}
     }
     else if(page==2)add(settingsBlock);
     return s;
@@ -148,11 +148,11 @@ void buildUI(){
     control(L"STATIC",L"",0,TitleInsetLabel,40,4,132,28);{HWND inset=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,TitleInset,174,0,186,30);SendMessageW(inset,TBM_SETRANGE,TRUE,MAKELPARAM(0,16));SendMessageW(inset,TBM_SETPOS,TRUE,std::clamp((int)GetPrivateProfileIntW(L"AppGlass",L"TitleInset",0,iniPath.c_str()),0,16));}
     for(int i=0;i<8;++i){int x=i%2?392:40,y=36+(i/2)*36;control(L"STATIC",L"",0,TitleLabel1+i,x,y+2,132,28);HWND titleSlider=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,TitleLook1+i,x+134,y,186,30);SendMessageW(titleSlider,TBM_SETRANGE,TRUE,MAKELPARAM(0,lookMax[i]));SendMessageW(titleSlider,TBM_SETPOS,TRUE,std::clamp((int)GetPrivateProfileIntW(L"AppGlass",titleKey(i).c_str(),titleDefault[i],iniPath.c_str()),0,lookMax[i]));}
     control(L"STATIC",L"",SS_NOPREFIX,TitleNote,40,180,696,96);
-    // System glass: nine rows (switch + expander; Keyboard has no panel). Volume and Brightness share the LGEngine indicator panel, Taskbar..Explorer share one look panel
+    // System glass: native rows retain their IDs; Explorer and keyboard glass are removed. Volume and Brightness share the LGEngine indicator panel, Taskbar..Explorer share one look panel
     // (loaded for the open row's family), Dock has its own; the footer holds the status text and Reset all looks.
     buildingPage=1;
     int headings[]={VolumeHeading,BrightnessHeading,TaskbarHeading,StartHeading,NotificationHeading,CalendarHeading,ExplorerHeading,DockHeading,KeyboardHeading};int switches[]={VolumeOn,BrightnessOn,TaskbarToggle,StartToggle,NotificationToggle,CalendarToggle,ExplorerToggle,DockToggle,KeyboardToggle};
-    for(int i=0;i<9;++i){if(i==6)continue;buildingBlock=&systemRows[i];systemRows[i].height=36;control(L"STATIC",L"",0,headings[i],40,4,556,28);HWND toggle=control(L"BUTTON",L"",BS_OWNERDRAW|WS_TABSTOP,switches[i],604,0,100,32);RemoveWindowSubclass(toggle,buttonHover,1);SetPropW(toggle,L"LG.IsSwitch",(HANDLE)1);SetWindowSubclass(toggle,compactSwitch,3,0);if(i<8)expander(ExpandVolume+i,710,0);}
+    for(int i=0;i<9;++i){if(i==6||i==8)continue;buildingBlock=&systemRows[i];systemRows[i].height=36;control(L"STATIC",L"",0,headings[i],40,4,556,28);HWND toggle=control(L"BUTTON",L"",BS_OWNERDRAW|WS_TABSTOP,switches[i],604,0,100,32);RemoveWindowSubclass(toggle,buttonHover,1);SetPropW(toggle,L"LG.IsSwitch",(HANDLE)1);SetWindowSubclass(toggle,compactSwitch,3,0);if(i<8)expander(ExpandVolume+i,710,0);}
     buildingBlock=&lookPanel;lookPanel.height=74;
     {int ids[]={LookOpacity,LookBlur,LookRadius},low[]={5,0,0},high[]={90,40,28};for(int i=0;i<4;++i){int x=i%2?392:40,y=2+(i/2)*36;if(i<3){control(L"STATIC",L"",0,ids[i]-1,x,y+2,140,28);HWND s=control(TRACKBAR_CLASSW,L"",TBS_HORZ|TBS_NOTICKS|WS_TABSTOP,ids[i],x+142,y,178,30);SendMessageW(s,TBM_SETRANGE,TRUE,MAKELPARAM(low[i],high[i]));}else{control(L"STATIC",L"",0,LookTintLabel,x,y+2,140,28);control(L"COMBOBOX",L"",CBS_DROPDOWNLIST|WS_TABSTOP,LookTint,x+142,y,178,150);}}}
     buildingBlock=&dockPanel;dockPanel.height=74;

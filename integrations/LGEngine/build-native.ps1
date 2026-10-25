@@ -28,7 +28,7 @@ New-Item -ItemType Directory -Force -Path $taskTemp | Out-Null
 try {
     $env:TMP = $taskTemp
     $env:TEMP = $taskTemp
-    & $Compiler --target=x86_64-w64-mingw32 -std=c++17 -O2 -Wall -Wextra -municode -mwindows -static (Join-Path $PSScriptRoot 'native/main.cpp') -o $exe -luser32 -lgdi32 -lshell32 -ladvapi32 -lbcrypt -lole32
+    & $Compiler --target=x86_64-w64-mingw32 -std=c++17 -O2 -Wall -Wextra -municode -mwindows -static (Join-Path $PSScriptRoot 'native/main.cpp') -o $exe -luser32 -lgdi32 -lgdiplus -ldwmapi -lshell32 -ladvapi32 -lbcrypt -lole32
     if ($LASTEXITCODE -ne 0) { throw 'Native LGEngine port compilation failed.' }
 } finally { $env:TMP = $taskPreviousTmp; $env:TEMP = $taskPreviousTemp }
 Write-Output "Built C++ optical adapter: $exe"

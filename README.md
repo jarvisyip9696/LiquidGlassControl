@@ -1,14 +1,14 @@
 # Liquid Glass Control
 
-**Motion Refresh · v0.14.0-beta.1 · Windows 11 x64**
+**Performance Refresh · v0.14.0-beta.2 · Windows 11 x64**
 
 A native desktop utility for system glass materials, animated controls, and LGEngine volume and brightness indicators. No Windhawk installation or runtime is required.
 
-[Download the complete portable ZIP](https://github.com/jarvisyip9696/LiquidGlassControl/releases/download/v0.14.0-beta.1/LiquidGlassControl-0.14.0-beta.1-win11-x64.zip) · [Release notes](https://github.com/jarvisyip9696/LiquidGlassControl/releases/tag/v0.14.0-beta.1) · [All releases](https://github.com/jarvisyip9696/LiquidGlassControl/releases)
+[Download the complete portable ZIP](https://github.com/jarvisyip9696/LiquidGlassControl/releases/download/v0.14.0-beta.2/LiquidGlassControl-0.14.0-beta.2-win11-x64.zip) · [Release notes](https://github.com/jarvisyip9696/LiquidGlassControl/releases/tag/v0.14.0-beta.2) · [All releases](https://github.com/jarvisyip9696/LiquidGlassControl/releases)
 
 ## Features
 
-- System materials for the taskbar, Start menu, notification center, calendar, and keyboard layout switcher.
+- System materials for the taskbar, Start menu, notification center, and calendar.
 - Adjustable blur, tint, corner radius, and power-saving fallback.
 - Dock hover animation and a capsule-style taskbar appearance.
 - Smooth switch motion and dropdown interaction, targeting 60 fps while animations are active. Idle controls stop requesting frames.
@@ -28,9 +28,9 @@ A native desktop utility for system glass materials, animated controls, and LGEn
 
 The full ZIP includes the required LGEngine 2.7.16.0 companions, licenses, and corresponding source archives. Moving only the controller EXE is insufficient for the complete interface and indicator features.
 
-## Motion Refresh
+## Performance Refresh
 
-This prerelease introduces the redesigned workspace, animated switches, localized custom-rendered pages, refined dropdown controls, and improved keyboard-panel contrast. It removes the File Explorer option and prevents legacy settings or the master switch from enabling it again.
+This prerelease adds a shared high-resolution animation clock, direct GPU window drawing, bounded text caches, lazy graphics initialization, unified dropdown opening/closing motion, and improved keyboard-panel contrast. The keyboard layout switcher glass effect is disabled in beta.2. It removes the File Explorer option and prevents legacy settings or the master switch from enabling it again.
 
 Switch animation uses elapsed time and respects Windows reduced-motion preferences. Frame pacing targets 60 fps; actual presentation depends on the display, system scheduling, and load.
 

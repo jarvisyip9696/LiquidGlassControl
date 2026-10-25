@@ -31,8 +31,8 @@ struct Look {int dark=35,blur=30,refraction=80,rim=60,shadow=28,round=12,intensi
 inline bool operator==(const Look&a,const Look&b){return a.dark==b.dark&&a.blur==b.blur&&a.refraction==b.refraction&&a.rim==b.rim&&a.shadow==b.shadow&&a.round==b.round&&a.intensity==b.intensity&&a.elevation==b.elevation;}
 struct Spec {
     int width=420,height=200,x=100,y=100,kind=0;float scale=1;
-    bool adapt=true,hover=true,savePower=true,inShots=false;
-    int fps=15,motion=4,inMs=380,outMs=230;int zoom=10,liquid=60,bounce=45,travel=-1,indicator=-1;Look look;
+    bool adapt=true,hover=true,savePower=false,inShots=false;
+    int fps=60,motion=4,inMs=380,outMs=230;int zoom=10,liquid=60,bounce=45,travel=-1,indicator=-1;Look look;
     std::string label="LiquidGlassControl.Host",profile;
 };
 // A glass button for SetButtons: hit box, glow centre/half sizes/radius, style and mark, and an optional alpha mask

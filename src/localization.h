@@ -154,7 +154,7 @@ inline const Text catalog[]={
 {L"Materials",L"Materiały",L"Chất liệu"},
 {L"System glass master switch",L"Główny przełącznik szkła",L"Công tắc kính hệ thống"},
 {L"System effects",L"Efekty systemowe",L"Hiệu ứng hệ thống"},
-{L"7 independent controls",L"7 niezależnych przełączników",L"7 điều khiển độc lập"},
+{L"6 independent controls",L"6 niezależnych przełączników",L"6 điều khiển độc lập"},
 {L"Independent materials · No Windhawk required\nUse the master switch or adjust each effect.",L"Niezależne materiały · Bez Windhawk\nUżyj głównego przełącznika lub dostosuj efekty.",L"Chất liệu độc lập · Không cần Windhawk\nDùng công tắc chính hoặc chỉnh từng hiệu ứng."},
 {L"All system surfaces",L"Wszystkie obszary systemu",L"Mọi khu vực hệ thống"},
 {L"Tint strength (opacity)",L"Siła zabarwienia (krycie)",L"Cường độ màu (độ đục)"},

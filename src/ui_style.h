@@ -24,7 +24,7 @@ int colorTheme=0;
 struct UiPalette { COLORREF accent,hover,pressed,selection,canvas,surface,edge; };
 COLORREF mix(COLORREF a,COLORREF b,float t);
 inline bool reducedMotion();
-UiPalette previousPalette{};ULONGLONG themeStart=0;bool themeMoving=false;
+UiPalette previousPalette{};double themeStart=0;bool themeMoving=false;
 const UiPalette palettes[]={
     {RGB(40,118,219),RGB(31,99,194),RGB(24,79,157),RGB(233,242,255),RGB(244,249,255),RGB(247,251,255),RGB(215,228,240)},
     {RGB(112,73,218),RGB(94,56,194),RGB(76,42,166),RGB(239,232,255),RGB(249,247,254),RGB(243,239,251),RGB(229,220,244)},
@@ -40,9 +40,47 @@ struct UiPreferences {bool contrast=false,animations=true,economical=false;};
 UiPreferences readUiPreferences(){UiPreferences result;HIGHCONTRASTW contrast{};contrast.cbSize=sizeof(contrast);result.contrast=SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(contrast),&contrast,0)&&(contrast.dwFlags&HCF_HIGHCONTRASTON);BOOL animations=TRUE;SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION,0,&animations,0);result.animations=animations!=FALSE;SYSTEM_POWER_STATUS power{};if(GetSystemPowerStatus(&power))result.economical=power.ACLineStatus==0||power.SystemStatusFlag==1;return result;}
 UiPreferences&uiPreferences(){static UiPreferences cached=readUiPreferences();return cached;}
 void refreshUiPreferences(){uiPreferences()=readUiPreferences();}
-UINT uiFrameInterval(){return uiPreferences().economical?32u:16u;}
+constexpr UINT uiFrameInterval(){return 16u;}
+inline LONGLONG motionNow(){LARGE_INTEGER now{};QueryPerformanceCounter(&now);return now.QuadPart;}
+inline double motionFrequency(){static const double frequency=[] {LARGE_INTEGER freq{};QueryPerformanceFrequency(&freq);return (double)freq.QuadPart;}();return frequency;}
+class UiFrameClock {
+    double next=0;
+public:
+    // Flag 0x2 requests the Windows high-resolution waitable timer.
+    HANDLE handle=nullptr;
+    explicit UiFrameClock(bool enabled=true){if(enabled){handle=CreateWaitableTimerExW(nullptr,nullptr,0x2,TIMER_MODIFY_STATE|SYNCHRONIZE);if(!handle)handle=CreateWaitableTimerExW(nullptr,nullptr,0,TIMER_MODIFY_STATE|SYNCHRONIZE);}}
+    ~UiFrameClock(){if(handle){CancelWaitableTimer(handle);CloseHandle(handle);}}
+    bool arm(){if(!handle)return false;double now=double(motionNow()),frequency=motionFrequency();next+=frequency/60;if(next<=now)next=now+frequency/60;LARGE_INTEGER due{};due.QuadPart=-std::max<LONGLONG>(1,(LONGLONG)std::llround((next-now)*10000000/frequency));return SetWaitableTimer(handle,&due,0,nullptr,nullptr,FALSE)!=FALSE;}
+    bool start(){next=double(motionNow());return arm();}
+};
+std::set<std::pair<HWND,UINT_PTR>> uiAnimationTimers;
+inline double uiNow(){return double(motionNow())*1000/motionFrequency();}
+UiFrameClock& uiFrameClock(){static UiFrameClock clock;return clock;}
+UINT_PTR startUiAnimationTimer(HWND window,UINT_PTR id){
+    bool idle=uiAnimationTimers.empty();uiAnimationTimers.emplace(window,id);
+    if(!idle||uiFrameClock().start())return id;
+    uiAnimationTimers.erase({window,id});return SetCoalescableTimer(window,id,USER_TIMER_MINIMUM,nullptr,TIMERV_NO_COALESCING);
+}
+void stopUiAnimationTimer(HWND window,UINT_PTR id){
+    if(uiAnimationTimers.erase({window,id})&&uiAnimationTimers.empty())CancelWaitableTimer(uiFrameClock().handle);
+    KillTimer(window,id);
+}
+void dispatchUiAnimationFrame(){
+    auto timers=uiAnimationTimers;std::set<HWND> repaint;
+    for(auto const&timer:timers){if(!IsWindow(timer.first)){uiAnimationTimers.erase(timer);continue;}if(uiAnimationTimers.count(timer)){SendMessageW(timer.first,WM_TIMER,timer.second,0);repaint.insert(timer.first);}}
+    if(!uiAnimationTimers.empty()&&!uiFrameClock().arm()){auto fallback=uiAnimationTimers;uiAnimationTimers.clear();for(auto const&timer:fallback)SetCoalescableTimer(timer.first,timer.second,USER_TIMER_MINIMUM,nullptr,TIMERV_NO_COALESCING);}
+    if(IsWindow(mainWindow)&&IsWindowVisible(mainWindow)&&!IsIconic(mainWindow))UpdateWindow(mainWindow);
+    for(auto window:repaint)if(window!=mainWindow&&IsWindowVisible(window)&&!IsIconic(window))UpdateWindow(window);
+}
+BOOL nextUiMessage(MSG*message){
+    for(;;){if(uiAnimationTimers.empty())return GetMessageW(message,nullptr,0,0);
+        HANDLE timer=uiFrameClock().handle;DWORD ready=MsgWaitForMultipleObjectsEx(1,&timer,INFINITE,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
+        if(ready==WAIT_OBJECT_0){dispatchUiAnimationFrame();*message=MSG{};message->message=WM_NULL;return 1;}if(ready==WAIT_FAILED)return -1;
+        if(PeekMessageW(message,nullptr,0,0,PM_REMOVE))return message->message==WM_QUIT?0:1;
+    }
+}
 bool highContrast(){return uiPreferences().contrast;}
-const UiPalette& palette(){static UiPalette accessible,animated;if(highContrast()){accessible={GetSysColor(COLOR_HIGHLIGHT),GetSysColor(COLOR_HIGHLIGHT),GetSysColor(COLOR_HIGHLIGHT),GetSysColor(COLOR_BTNFACE),GetSysColor(COLOR_WINDOW),GetSysColor(COLOR_BTNFACE),GetSysColor(COLOR_WINDOWTEXT)};return accessible;}if(themeMoving){float t=std::min(1.f,(GetTickCount64()-themeStart)/180.f);t=t*t*(3-2*t);auto&b=palettes[colorTheme];animated={mix(previousPalette.accent,b.accent,t),mix(previousPalette.hover,b.hover,t),mix(previousPalette.pressed,b.pressed,t),mix(previousPalette.selection,b.selection,t),mix(previousPalette.canvas,b.canvas,t),mix(previousPalette.surface,b.surface,t),mix(previousPalette.edge,b.edge,t)};return animated;}return palettes[colorTheme];}
+const UiPalette& palette(){static UiPalette accessible,animated;if(highContrast()){accessible={GetSysColor(COLOR_HIGHLIGHT),GetSysColor(COLOR_HIGHLIGHT),GetSysColor(COLOR_HIGHLIGHT),GetSysColor(COLOR_BTNFACE),GetSysColor(COLOR_WINDOW),GetSysColor(COLOR_BTNFACE),GetSysColor(COLOR_WINDOWTEXT)};return accessible;}if(themeMoving){float t=std::min(1.f,float((uiNow()-themeStart)/180));t=t*t*(3-2*t);auto&b=palettes[colorTheme];animated={mix(previousPalette.accent,b.accent,t),mix(previousPalette.hover,b.hover,t),mix(previousPalette.pressed,b.pressed,t),mix(previousPalette.selection,b.selection,t),mix(previousPalette.canvas,b.canvas,t),mix(previousPalette.surface,b.surface,t),mix(previousPalette.edge,b.edge,t)};return animated;}return palettes[colorTheme];}
 COLORREF tint(COLORREF color,int amount){return RGB((GetRValue(color)*amount+255*(100-amount))/100,(GetGValue(color)*amount+255*(100-amount))/100,(GetBValue(color)*amount+255*(100-amount))/100);}
 bool darkUi(){return colorTheme==7&&!highContrast();}
 COLORREF cardColor(){return highContrast()?GetSysColor(COLOR_BTNFACE):darkUi()?RGB(17,29,46):RGB(250,253,255);}
@@ -55,7 +93,7 @@ void themeWindow(HWND h){
     DwmSetWindowAttribute(h,36,&text,sizeof(text));
 }
 void applyColorTheme(int index,bool save){
-    if(save&&mainWindow&&!reducedMotion()&&IsWindowVisible(mainWindow)){previousPalette=palette();themeStart=GetTickCount64();themeMoving=true;SetTimer(mainWindow,12,uiFrameInterval(),nullptr);}
+    if(save&&mainWindow&&!reducedMotion()&&IsWindowVisible(mainWindow)){previousPalette=palette();themeStart=uiNow();themeMoving=true;startUiAnimationTimer(mainWindow,12);}
     colorTheme=index>=0&&index<9?index:0;
     HBRUSH old=background;background=CreateSolidBrush(palette().canvas);
     HBRUSH oldCard=cardBrush;cardBrush=CreateSolidBrush(cardColor());if(oldCard)DeleteObject(oldCard);
@@ -63,8 +101,8 @@ void applyColorTheme(int index,bool save){
     if(old)DeleteObject(old);
     if(save){auto value=std::to_wstring(colorTheme);WritePrivateProfileStringW(L"UI",L"ColorTheme",value.c_str(),iniPath.c_str());}
 }
-void tickColorTheme(){if(reducedMotion()||GetTickCount64()-themeStart>=180||!IsWindowVisible(mainWindow)){themeMoving=false;KillTimer(mainWindow,12);}applyColorTheme(colorTheme,false);}
-struct PagePosition {HWND h;RECT rect;};std::vector<PagePosition> pagePositions;ULONGLONG pageStart=0;int pageOffset=0;
+void tickColorTheme(){if(reducedMotion()||uiNow()-themeStart>=180||!IsWindowVisible(mainWindow)){themeMoving=false;stopUiAnimationTimer(mainWindow,12);}applyColorTheme(colorTheme,false);}
+struct PagePosition {HWND h;RECT rect;};std::vector<PagePosition> pagePositions;double pageStart=0;int pageOffset=0;
 void movePageControls(int offset){
     if(offset==pageOffset)return;
     auto batch=BeginDeferWindowPos((int)pagePositions.size());
@@ -72,9 +110,9 @@ void movePageControls(int offset){
     if(!batch||!EndDeferWindowPos(batch))for(auto&p:pagePositions)SetWindowPos(p.h,nullptr,p.rect.left,p.rect.top+offset,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
     pageOffset=offset;
 }
-void finishPageMotion(){KillTimer(mainWindow,13);movePageControls(0);pagePositions.clear();if(mainWindow)InvalidateRect(mainWindow,nullptr,FALSE);}
-void beginPageMotion(){finishPageMotion();if(selfTestMode||reducedMotion()||!IsWindowVisible(mainWindow))return;pageStart=GetTickCount64();for(HWND child=GetWindow(mainWindow,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT)){if(!(GetWindowLongPtrW(child,GWL_STYLE)&WS_VISIBLE)||child==tabs||child==status||GetDlgCtrlID(child)==Pause)continue;RECT r{};GetWindowRect(child,&r);MapWindowPoints(nullptr,mainWindow,(POINT*)&r,2);if(r.left>=MulDiv(248,dpi,96)&&r.top<MulDiv(804,dpi,96))pagePositions.push_back({child,r});}movePageControls(MulDiv(8,dpi,96));if(!SetTimer(mainWindow,13,uiFrameInterval(),nullptr))finishPageMotion();InvalidateRect(mainWindow,nullptr,FALSE);}
-void tickPageMotion(){float t=std::min(1.f,(GetTickCount64()-pageStart)/180.f);if(t>=1||reducedMotion()||!IsWindowVisible(mainWindow)){finishPageMotion();return;}movePageControls((int)(MulDiv(8,dpi,96)*std::pow(1-t,3)));InvalidateRect(mainWindow,nullptr,FALSE);}void createFonts(){
+void finishPageMotion(){stopUiAnimationTimer(mainWindow,13);movePageControls(0);pagePositions.clear();if(mainWindow)InvalidateRect(mainWindow,nullptr,FALSE);}
+void beginPageMotion(){finishPageMotion();if(selfTestMode||reducedMotion()||!IsWindowVisible(mainWindow))return;pageStart=uiNow();for(HWND child=GetWindow(mainWindow,GW_CHILD);child;child=GetWindow(child,GW_HWNDNEXT)){if(!(GetWindowLongPtrW(child,GWL_STYLE)&WS_VISIBLE)||child==tabs||child==status||GetDlgCtrlID(child)==Pause)continue;RECT r{};GetWindowRect(child,&r);MapWindowPoints(nullptr,mainWindow,(POINT*)&r,2);if(r.left>=MulDiv(248,dpi,96)&&r.top<MulDiv(804,dpi,96))pagePositions.push_back({child,r});}movePageControls(MulDiv(8,dpi,96));if(!startUiAnimationTimer(mainWindow,13))finishPageMotion();InvalidateRect(mainWindow,nullptr,FALSE);}
+void tickPageMotion(){float t=std::min(1.f,float((uiNow()-pageStart)/180));if(t>=1||reducedMotion()||!IsWindowVisible(mainWindow)){finishPageMotion();return;}movePageControls((int)(MulDiv(8,dpi,96)*std::pow(1-t,3)));InvalidateRect(mainWindow,nullptr,FALSE);}void createFonts(){
     if(fontLanguage==int(l10n::current)&&font)return;
     HFONT old=font,oldHeading=headingFont,oldAction=actionFont;
     const wchar_t*face=l10n::current==l10n::Simplified?L"Microsoft YaHei UI":l10n::current==l10n::Traditional?L"Microsoft JhengHei UI":L"Segoe UI";
@@ -101,15 +139,13 @@ inline Motion* motionOf(HWND h){auto mo=(Motion*)GetPropW(h,L"LG.Motion");if(!mo
 inline bool reducedMotion(){return !uiPreferences().animations||uiPreferences().contrast;}
 inline void motionTick(HWND h);
 inline bool stepMotion(HWND h);
-inline LONGLONG motionNow(){LARGE_INTEGER now{};QueryPerformanceCounter(&now);return now.QuadPart;}
-inline double motionFrequency(){static const double frequency=[] {LARGE_INTEGER freq{};QueryPerformanceFrequency(&freq);return (double)freq.QuadPart;}();return frequency;}
 // A new target starts from the channel's current value, so a reversal mid-motion continues from where the thumb is.
 inline void setMotion(HWND h,int channel,float target){
     auto mo=motionOf(h);if(mo->t[channel]==target)return;
     if(mo->running)stepMotion(h);
     if(reducedMotion()||!mo->painted||!IsWindowVisible(h)||IsIconic(mainWindow)){mo->t[channel]=mo->v[channel]=target;mo->velocity[channel]=0;InvalidateRect(h,nullptr,FALSE);return;}
     mo->t[channel]=target;
-    if(!mo->running){mo->lastTick=motionNow();bool needsTimer=animatedControls.empty();animatedControls.insert(h);mo->running=!needsTimer||SetTimer(mainWindow,kMotionTimer,uiFrameInterval(),nullptr)!=0;if(!mo->running){animatedControls.erase(h);for(int i=0;i<kMotionChannels;++i)mo->v[i]=mo->t[i];InvalidateRect(h,nullptr,FALSE);}}
+    if(!mo->running){mo->lastTick=motionNow();bool needsTimer=animatedControls.empty();animatedControls.insert(h);mo->running=!needsTimer||startUiAnimationTimer(mainWindow,kMotionTimer)!=0;if(!mo->running){animatedControls.erase(h);for(int i=0;i<kMotionChannels;++i)mo->v[i]=mo->t[i];InvalidateRect(h,nullptr,FALSE);}}
 }
 // Returns true while any channel is still moving. Uses real elapsed time, so a slow frame does not slow the animation down.
 inline bool stepMotion(HWND h){
@@ -127,9 +163,9 @@ inline void motionTick(HWND h){
     bool moving=stepMotion(h)&&IsWindowVisible(h);bool changed=false;for(int i=0;i<kMotionChannels;++i)if(int(before[i]*255+.5f)!=int(mo->v[i]*255+.5f))changed=true;if(changed)InvalidateRect(h,nullptr,FALSE);
     if(!moving){animatedControls.erase(h);mo->running=false;}
 }
-inline void tickControlMotion(){for(auto i=animatedControls.begin();i!=animatedControls.end();){HWND h=*i++;if(IsWindow(h))motionTick(h);else animatedControls.erase(h);}if(animatedControls.empty())KillTimer(mainWindow,kMotionTimer);}
-inline void motionRelease(HWND h){animatedControls.erase(h);if(animatedControls.empty())KillTimer(mainWindow,kMotionTimer);if(auto mo=(Motion*)GetPropW(h,L"LG.Motion")){delete mo;RemovePropW(h,L"LG.Motion");}}
-inline void motionFinish(HWND h){animatedControls.erase(h);if(animatedControls.empty())KillTimer(mainWindow,kMotionTimer);if(auto mo=(Motion*)GetPropW(h,L"LG.Motion")){for(int i=0;i<kMotionChannels;++i){mo->v[i]=mo->t[i];mo->velocity[i]=0;}mo->running=false;}}
+inline void tickControlMotion(){for(auto i=animatedControls.begin();i!=animatedControls.end();){HWND h=*i++;if(IsWindow(h))motionTick(h);else animatedControls.erase(h);}if(animatedControls.empty())stopUiAnimationTimer(mainWindow,kMotionTimer);}
+inline void motionRelease(HWND h){animatedControls.erase(h);if(animatedControls.empty())stopUiAnimationTimer(mainWindow,kMotionTimer);if(auto mo=(Motion*)GetPropW(h,L"LG.Motion")){delete mo;RemovePropW(h,L"LG.Motion");}}
+inline void motionFinish(HWND h){animatedControls.erase(h);if(animatedControls.empty())stopUiAnimationTimer(mainWindow,kMotionTimer);if(auto mo=(Motion*)GetPropW(h,L"LG.Motion")){for(int i=0;i<kMotionChannels;++i){mo->v[i]=mo->t[i];mo->velocity[i]=0;}mo->running=false;}}
 inline void resetInteraction(HWND h){RemovePropW(h,L"LG.Hover");TRACKMOUSEEVENT tracking{};tracking.cbSize=sizeof(tracking);tracking.dwFlags=TME_CANCEL|TME_LEAVE;tracking.hwndTrack=h;TrackMouseEvent(&tracking);if(auto mo=(Motion*)GetPropW(h,L"LG.Motion")){mo->hotTab=-1;for(int i=0;i<kMotionChannels;++i)if(i==kHover||i==kPress||i>=kTabHover0){mo->v[i]=mo->t[i]=0;mo->velocity[i]=0;}}InvalidateRect(h,nullptr,FALSE);}
 inline void trackHover(HWND h){if(GetPropW(h,L"LG.Hover"))return;SetPropW(h,L"LG.Hover",(HANDLE)1);TRACKMOUSEEVENT tracking{};tracking.cbSize=sizeof(tracking);tracking.dwFlags=TME_LEAVE;tracking.hwndTrack=h;TrackMouseEvent(&tracking);}
 inline COLORREF mix(COLORREF a,COLORREF b,float t){t=t<0?0:t>1?1:t;auto c=[&](int x,int y){return (int)(x+(y-x)*t+0.5f);};return RGB(c(GetRValue(a),GetRValue(b)),c(GetGValue(a),GetGValue(b)),c(GetBValue(a),GetBValue(b)));}
@@ -162,7 +198,7 @@ void drawFocusRing(HDC dc,RECT r){
     HPEN pen=CreatePen(PS_SOLID,std::max(1,MulDiv(2,dpi,96)),highContrast()?GetSysColor(COLOR_HIGHLIGHT):palette().accent);
     auto oldPen=SelectObject(dc,pen),oldBrush=SelectObject(dc,GetStockObject(HOLLOW_BRUSH));int radius=MulDiv(10,dpi,96);RoundRect(dc,r.left,r.top,r.right,r.bottom,radius,radius);SelectObject(dc,oldBrush);SelectObject(dc,oldPen);DeleteObject(pen);
 }
-void drawChevron(HDC dc,RECT r,COLORREF color,bool open){int cx=(r.left+r.right)/2,cy=(r.top+r.bottom)/2,half=std::max(2,MulDiv(4,dpi,96)),rise=std::max(1,MulDiv(2,dpi,96));HPEN pen=CreatePen(PS_SOLID,std::max(1,MulDiv(2,dpi,96)),color);auto old=SelectObject(dc,pen);MoveToEx(dc,cx-half,cy+(open?rise:-rise),nullptr);LineTo(dc,cx,cy+(open?-rise:rise));LineTo(dc,cx+half,cy+(open?rise:-rise));SelectObject(dc,old);DeleteObject(pen);}
+void drawChevron(HDC dc,RECT r,COLORREF color,bool open,float degrees=-1){int cx=(r.left+r.right)/2,cy=(r.top+r.bottom)/2,half=std::max(2,MulDiv(4,dpi,96)),rise=std::max(1,MulDiv(2,dpi,96));float angle=(degrees>=0?degrees:open?180.f:0.f)*3.14159265f/180;POINT points[3]{{-half,-rise},{0,rise},{half,-rise}};for(auto&p:points){float x=float(p.x),y=float(p.y);p={cx+(LONG)std::lround(x*std::cos(angle)-y*std::sin(angle)),cy+(LONG)std::lround(x*std::sin(angle)+y*std::cos(angle))};}HPEN pen=CreatePen(PS_SOLID,std::max(1,MulDiv(2,dpi,96)),color);auto old=SelectObject(dc,pen);Polyline(dc,points,3);SelectObject(dc,old);DeleteObject(pen);}
 void drawThemeSwatch(HDC dc,RECT&text,int index){if(index<0||index>=7)return;int size=MulDiv(12,dpi,96),cy=(text.top+text.bottom)/2;RECT swatch{text.left,cy-size/2,text.left+size,cy+(size+1)/2};roundFill(dc,swatch,palettes[index].accent,highContrast()?GetSysColor(COLOR_WINDOWTEXT):tint(palettes[index].pressed,70),size);text.left+=MulDiv(24,dpi,96);}
 void paintCompactSwitch(HWND h,HDC dc){RECT r{};GetClientRect(h,&r);FillRect(dc,&r,cardBrush);
         auto px=[](int n){return MulDiv(n,dpi,96);};bool active=IsWindowEnabled(h),focused=showFocus(h);Motion*mo=motionOf(h);mo->painted=true;
@@ -259,7 +295,7 @@ LRESULT CALLBACK themedControl(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
         if(GetDlgCtrlID(h)==ColorTheme)drawThemeSwatch(dc,text,selection(h));
         wchar_t label[256]{};GetWindowTextW(h,label,256);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,IsWindowEnabled(h)?textColor():GetSysColor(COLOR_GRAYTEXT));auto oldFont=SelectObject(dc,font);
         DrawTextW(dc,label,-1,&text,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS|DT_NOPREFIX);
-        RECT arrow=r;arrow.left=arrow.right-MulDiv(24,dpi,96);drawChevron(dc,arrow,IsWindowEnabled(h)?textColor():GetSysColor(COLOR_GRAYTEXT),SendMessageW(h,CB_GETDROPPEDSTATE,0,0)!=0);
+        RECT arrow=r;arrow.left=arrow.right-MulDiv(24,dpi,96);drawChevron(dc,arrow,IsWindowEnabled(h)?textColor():GetSysColor(COLOR_GRAYTEXT),false,themedComboRotation(h));
         if(showFocus(h))drawFocusRing(dc,r);SelectObject(dc,oldFont);return 0;
     }
     auto result=DefSubclassProc(h,m,w,l);
