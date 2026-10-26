@@ -19,7 +19,9 @@ LRESULT CALLBACK expanderKeys(HWND h,UINT m,WPARAM w,LPARAM l,UINT_PTR id,DWORD_
     return DefSubclassProc(h,m,w,l);
 }
 void localizeOptical(){auto lang=int(l10n::current);auto ui=opticalui::kUi[lang];for(int i=0;i<4;++i)SetDlgItemTextW(mainWindow,OptLabel1+i,ui[i]);SetDlgItemTextW(mainWindow,OptReplay,ui[4]);SetDlgItemTextW(mainWindow,OptSample,ui[5]);int ids[]={OptArrival,OptIndicator,OptSlosh,OptKnob};int counts[]={9,9,4,3};const wchar_t* const* lists[]={opticalui::kArrival[lang],opticalui::kArrival[lang],opticalui::kSlosh[lang],opticalui::kKnob[lang]};for(int i=0;i<4;++i){HWND c=GetDlgItem(mainWindow,ids[i]);int keep=selection(c);SendMessageW(c,CB_RESETCONTENT,0,0);if(i==1)SendMessageW(c,CB_ADDSTRING,0,(LPARAM)ui[7]);for(int j=0;j<counts[i];++j)SendMessageW(c,CB_ADDSTRING,0,(LPARAM)lists[i][j]);SendMessageW(c,CB_SETCURSEL,keep<0?(i==0?4:i==3?2:0):keep,0);}{HWND shape=GetDlgItem(mainWindow,OptShape);if(shape){int keep=selection(shape);SendMessageW(shape,CB_RESETCONTENT,0,0);for(int j=0;j<4;++j)SendMessageW(shape,CB_ADDSTRING,0,(LPARAM)opticalui::kShape[lang][j]);SendMessageW(shape,CB_SETCURSEL,keep<0?0:keep,0);}updateLookLabels();}SetDlgItemTextW(mainWindow,OptNote,tr(L"设置自动保存。只要音量或亮度开关开启，就会应用于指示器。",L"Settings save automatically. They apply to the indicator whenever the Volume or Brightness switch is on."));}
+void localizeSystemMenu(){HMENU s=GetSystemMenu(mainWindow,FALSE);if(!s)return;ModifyMenuW(s,0x1f10,MF_BYCOMMAND|MF_STRING,0x1f10,tr(L"White · 冰蓝界面",L"White · Ice-blue interface"));ModifyMenuW(s,0x1f20,MF_BYCOMMAND|MF_STRING,0x1f20,tr(L"Dark · 深色界面",L"Dark · Dark interface"));ModifyMenuW(s,0x1f30,MF_BYCOMMAND|MF_STRING,0x1f30,tr(L"切换原有高级外观设置",L"Toggle the original advanced appearance settings"));}
 void localize(){
+    localizeSystemMenu();
     SetWindowTextW(mainWindow,L"Liquid Glass · v" LG_VERSION_W);
     struct Text{int id;const wchar_t*zh;const wchar_t*en;};
     const Text texts[]={

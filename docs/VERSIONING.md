@@ -84,3 +84,12 @@ box behind on some PCs, because the capsule's search through the taskbar
 missed them. It now takes them from the same row as the app icons and leaves
 out only Widgets, by its id. The engine log gets a "capsule row" line that
 lists what that row holds.
+
+0.14.0 is the first full release of the 0.14 line, after 0.14.0-beta.1 and
+beta.2. Its release page again carries only the portable ZIP. It draws the
+window straight to the GPU on one shared 60 Hz clock that stops when idle, and
+caches text layouts. It also fixes beta.2: the first launch follows the Windows
+display language, English, Polish and Vietnamese labels fit, the window menu,
+tray tooltip and connection status are translated, automatic tints follow a
+light/dark switch, calendar rules follow the Calendar switch, and the shell
+engine no longer leaks element handles when Explorer rebuilds a surface.

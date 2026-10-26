@@ -7,14 +7,17 @@
 #include <algorithm>
 namespace l10n {
 enum Language {English,Simplified,Traditional,Polish,Vietnamese,Count};
-inline Language current=Simplified;
+inline Language current=English;
 inline const wchar_t* codes[]={L"en",L"zh",L"zh-Hant",L"pl",L"vi"};
 inline const wchar_t* names[]={L"English",L"简体中文",L"繁體中文",L"Polski",L"Tiếng Việt"};
-inline Language read(const std::wstring&path){wchar_t code[32]{};GetPrivateProfileStringW(L"UI",L"Language",L"zh",code,32,path.c_str());for(int i=0;i<Count;++i)if(_wcsicmp(code,codes[i])==0)return (Language)i;if(_wcsicmp(code,L"zh-TW")==0||_wcsicmp(code,L"zh-HK")==0)return Traditional;if(_wcsicmp(code,L"zh-CN")==0)return Simplified;return English;}
+// First launch follows the Windows display language; anything not translated falls back to English.
+inline Language systemLanguage(){LANGID id=GetUserDefaultUILanguage();switch(PRIMARYLANGID(id)){case LANG_CHINESE:{WORD sub=SUBLANGID(id);return sub==SUBLANG_CHINESE_TRADITIONAL||sub==SUBLANG_CHINESE_HONGKONG||sub==SUBLANG_CHINESE_MACAU?Traditional:Simplified;}case LANG_POLISH:return Polish;case LANG_VIETNAMESE:return Vietnamese;default:return English;}}
+inline Language read(const std::wstring&path){wchar_t code[32]{};GetPrivateProfileStringW(L"UI",L"Language",L"",code,32,path.c_str());if(!code[0])return GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES?systemLanguage():Simplified; /* settings from an older version without a choice kept the old default */for(int i=0;i<Count;++i)if(_wcsicmp(code,codes[i])==0)return (Language)i;if(_wcsicmp(code,L"zh-TW")==0||_wcsicmp(code,L"zh-HK")==0)return Traditional;if(_wcsicmp(code,L"zh-CN")==0)return Simplified;return English;}
 inline void save(const std::wstring&path){WritePrivateProfileStringW(L"UI",L"Language",codes[current],path.c_str());}
 struct Text{const wchar_t*en;const wchar_t*pl;const wchar_t*vi;};
 inline const Text catalog[]={
 {L"Cannot start LGEngine preview. Error: ",L"Nie można uruchomić podglądu LGEngine. Błąd: ",L"Không thể mở bản xem trước LGEngine. Lỗi: "},
+{L"White · Ice-blue interface",L"Biały · lodowoniebieski interfejs",L"Trắng · giao diện xanh băng"},{L"Dark · Dark interface",L"Ciemny · ciemny interfejs",L"Tối · giao diện tối"},{L"Toggle the original advanced appearance settings",L"Przełącz oryginalne zaawansowane ustawienia wyglądu",L"Bật/tắt cài đặt giao diện nâng cao ban đầu"},
 {L"LGEngine motion and indicators",L"Animacje i wskaźniki LGEngine",L"Chuyển động và chỉ báo LGEngine"},
 {L"Volume / brightness OSD in background",L"Wskaźnik głośności / jasności w tle",L"Chỉ báo âm lượng / độ sáng trong nền"},
 {L"Settings save automatically. When enabled, the OSD also works on other pages and in the tray.",L"Ustawienia zapisują się automatycznie. Włączony wskaźnik działa też na innych stronach i w zasobniku.",L"Cài đặt tự động lưu. Khi bật, chỉ báo vẫn hoạt động ở trang khác và trong khay hệ thống."},
@@ -55,7 +58,7 @@ inline const Text catalog[]={
 {L"System glass resumes after the old theme is restored.",L"Szkło systemowe wznowi działanie po przywróceniu starego motywu.",L"Kính hệ thống sẽ tiếp tục sau khi khôi phục giao diện cũ."},
 {L"Nothing is applied yet: choose an app on the Apps & backdrop tab and press Apply.",L"Nic jeszcze nie zastosowano: wybierz aplikację na karcie Aplikacje i tło i naciśnij Zastosuj.",L"Chưa áp dụng gì: chọn ứng dụng ở thẻ Ứng dụng và nền rồi nhấn Áp dụng."},
 {L"No matching app window is open.",L"Brak otwartego pasującego okna aplikacji.",L"Không có cửa sổ ứng dụng phù hợp đang mở."},
-{L"Dock: %ld icons, %ld animated, pointer %ld",L"Dock: ikony %ld, animowane %ld, wskaźnik %ld",L"Dock: %ld biểu tượng, %ld hoạt ảnh, con trỏ %ld"},{L"Notification center and calendar",L"Powiadomienia i kalendarz",L"Thông báo và lịch"},{L"File Explorer",L"Eksplorator plików",L"Trình khám phá tệp"},
+{L"Dock: %ld icons, %ld animated, pointer %ld",L"Dock: ikony %ld, animowane %ld, wskaźnik %ld",L"Dock: %ld biểu tượng, %ld hoạt ảnh, con trỏ %ld"},{L"Search",L"Wyszukiwanie",L"Tìm kiếm"},{L"Shell host",L"Host powłoki",L"Máy chủ Shell"},{L"%ls ok",L"%ls: OK",L"%ls: OK"},{L"%ls: no connection (%ls)",L"%ls: brak połączenia (%ls)",L"%ls: không có kết nối (%ls)"},{L"%ls: matched",L"%ls: dopasowano",L"%ls: đã khớp"},{L"%ls: connected",L"%ls: połączono",L"%ls: đã kết nối"},{L"%ls: attaching",L"%ls: dołączanie",L"%ls: đang gắn"},{L"%ls: waiting",L"%ls: oczekiwanie",L"%ls: đang chờ"},{L"Notification center and calendar",L"Powiadomienia i kalendarz",L"Thông báo và lịch"},{L"File Explorer",L"Eksplorator plików",L"Trình khám phá tệp"},
 {L"Taskbar glass",L"Szkło paska zadań",L"Kính thanh tác vụ"},{L"Start menu glass",L"Szkło menu Start",L"Kính menu Bắt đầu"},
 {L"Notification center glass",L"Szkło powiadomień",L"Kính thông báo"},{L"Explorer glass",L"Szkło Eksploratora",L"Kính trình khám phá"},
 {L"On",L"Wł.",L"Bật"},{L"Off",L"Wył.",L"Tắt"},
