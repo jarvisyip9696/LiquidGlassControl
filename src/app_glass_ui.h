@@ -28,13 +28,14 @@ struct Theme {
 inline Theme theme(){return darkUi()?Theme{0x0b1220,0x111c2e,0x0f172a,0xf8fafc,0x94a3b8,0x64748b,0xffffff,0xffffff,0xffffff,0x1e3a8a,0x3b82f6,18.f/255,16.f/255}:Theme{0xf4f9ff,0xedf4fa,0xdeeaf9,0x20364b,0x61798f,0x7f93a6,0xffffff,0xffffff,0xd7e4f0,0xe9f2ff,0x9dc3f1,184.f/255,217.f/255};}
 struct Hit {int id;D2D1_RECT_F r;};
 enum {NavApp=1,NavSystem,NavSettings,RefreshButton,Row0,Row1,MaterialBox,CornerBox,RestoreButton,ApplyButton,TrayButton};
-inline const std::vector<Hit>&appHits(){static const std::vector<Hit> list={
+D2D1_RECT_F appButtonRect(int id);D2D1_RECT_F trayRect();
+inline const std::vector<Hit>&appHits(){static std::vector<Hit> items;items={
     {NavApp,{16,52,200,98}},{NavSystem,{16,106,200,152}},{NavSettings,{16,160,200,206}},
-    {RefreshButton,{721,140,828,178}},{Row0,{268,194,828,272}},{Row1,{268,280,828,358}},
+    {RefreshButton,appButtonRect(RefreshButton)},{Row0,{268,194,828,272}},{Row1,{268,280,828,358}},
     {MaterialBox,{268,523,540,561}},{CornerBox,{556,523,828,561}},
-    {RestoreButton,{632,575,713,613}},{ApplyButton,{721,575,828,613}},{TrayButton,{1138,808,1256,840}}};return list;}
+    {RestoreButton,appButtonRect(RestoreButton)},{ApplyButton,appButtonRect(ApplyButton)},{TrayButton,trayRect()}};return items;}
 int hot=0,pressed=0,focus=RefreshButton,firstRow=0;bool keyboard=false,legacy=false,sample=false;int sampleSelection=1;
-float scale=1,originX=0,originY=0;bool actionResult=false;
+float scale=1,originX=0,originY=0;std::wstring footerFor,footerShown;float footerForWidth=-1;
 bool active(){return !legacy&&(!selfTestMode||appReviewMode);}
 struct Renderer;void drawWorkspace(Renderer&);const std::vector<Hit>&hits();float dropdownRotation(int id);int snapshotOwner=0;
 struct Renderer {
@@ -84,16 +85,34 @@ struct Renderer {
         box(rect,9,fill,std::min(1.f,alpha+.1f*hover),mix(edge,0x2876db,hover),std::max(edgeAlpha,hover));
         if(pressed==id){color(0x2876db);target->DrawRoundedRectangle(D2D1::RoundedRect(rect,9,9),brush,1.5f);}
     }
+    IDWriteTextFormat* textFormat(float size,bool bold,bool latin){
+        std::wstring formatKey=std::to_wstring(size)+(bold?L"b":L"r")+(latin?L"i":L"n");auto&format=formats[formatKey];
+        if(!format){write->CreateTextFormat(latin?L"Inter":L"Noto Sans SC",fonts,bold?DWRITE_FONT_WEIGHT_BOLD:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"zh-CN",&format);if(format)format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);}
+        return format;
+    }
+    // Latin runs (ASCII plus Polish/Vietnamese letters and their marks) use Inter; the middle dot and CJK stay in Noto Sans SC.
+    static bool latinLetter(wchar_t c){return (c>=0x21&&c<=0x7e)||(c>=0xc0&&c<=0x24f)||(c>=0x300&&c<=0x36f)||(c>=0x1e00&&c<=0x1eff);}
+    static void latinRuns(IDWriteTextLayout*layout,const std::wstring&s){for(UINT32 at=0;at<s.size();){if(!latinLetter(s[at])){++at;continue;}UINT32 start=at;while(at<s.size()&&latinLetter(s[at]))++at;layout->SetFontFamilyName(L"Inter",DWRITE_TEXT_RANGE{start,at-start});}}
+    std::map<std::tuple<std::wstring,float,bool>,float> widths;
+    // Natural one-line width, so controls can grow for longer translations.
+    float textWidth(const std::wstring&s,float size,bool bold=false){if(legacy)return 0; // the native UI is showing: design widths, and no DirectWrite just to measure
+        auto key=std::make_tuple(s,size,bold);auto found=widths.find(key);if(found!=widths.end())return found->second;
+        if(!ensureFactory())return 0;auto format=textFormat(size,bold,false);if(!format)return 0;
+        IDWriteTextLayout*layout=nullptr;if(FAILED(write->CreateTextLayout(s.c_str(),(UINT32)s.size(),format,4096,size*2,&layout)))return 0;
+        latinRuns(layout,s);layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);DWRITE_TEXT_METRICS metrics{};float width=SUCCEEDED(layout->GetMetrics(&metrics))?metrics.width:0;drop(layout);
+        if(widths.size()>=64)widths.clear();widths[key]=width;return width;
+    }
     void label(const std::wstring&s,float x,float y,float width,float height,float size,UINT32 value,bool bold=false,bool latin=false,bool centered=false,float lineHeight=0,bool opticalCenter=false){
         LayoutKey key{s,width,height,size,bold,latin,centered,lineHeight,opticalCenter};auto found=layouts.find(key);
         if(found==layouts.end()){
             if(layouts.size()>=64)clearLayouts();
-            std::wstring formatKey=std::to_wstring(size)+(bold?L"b":L"r")+(latin?L"i":L"n");auto&format=formats[formatKey];
-            if(!format){write->CreateTextFormat(latin?L"Inter":L"Noto Sans SC",fonts,bold?DWRITE_FONT_WEIGHT_BOLD:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"zh-CN",&format);if(!format)return;format->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);}
+            auto format=textFormat(size,bold,latin);if(!format)return;
             Layout cached;if(FAILED(write->CreateTextLayout(s.c_str(),(UINT32)s.size(),format,width,height,&cached.text)))return;++layoutCreations;auto layout=cached.text;
-            if(!latin){for(UINT32 at=0;at<s.size();){if(s[at]<0x21||s[at]>0x7e){++at;continue;}UINT32 start=at;while(at<s.size()&&s[at]>=0x21&&s[at]<=0x7e)++at;layout->SetFontFamilyName(L"Inter",DWRITE_TEXT_RANGE{start,at-start});}}
+            if(!latin)latinRuns(layout,s);
             if(centered){layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);}
             if(lineHeight>0)layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM,lineHeight,size*.88f);
+            // A one-line box never breaks a word onto a clipped second line; overflow ends in an ellipsis.
+            else if(!opticalCenter&&height<size*2.2f&&s.find(L'\n')==std::wstring::npos){layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER,0,0};IDWriteInlineObject*ellipsis=nullptr;if(SUCCEEDED(write->CreateEllipsisTrimmingSign(format,&ellipsis))){layout->SetTrimming(&trimming,ellipsis);drop(ellipsis);}}
             if(opticalCenter){layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);cached.x=-6;DWRITE_OVERHANG_METRICS ink{};if(SUCCEEDED(layout->GetOverhangMetrics(&ink))){cached.x+=(ink.left-ink.right)/2;cached.y+=(ink.top-ink.bottom)/2;}}
             found=layouts.emplace(std::move(key),cached).first;
         }
@@ -142,8 +161,9 @@ struct Renderer {
         card({248,120,848,436});card({248,452,848,648});card({872,120,1248,772},true);
         label(tr(L"选择应用窗口",L"Choose an app window"),268,140,350,26,16,t.primary,true);
         size_t count=sample?2:entries.size();label(sample?tr(L"按进程名选择 · 示例 2 个窗口",L"Select by process · 2 sample windows"):tr(L"按进程名选择 · 检测到 ",L"Select by process · Found ")+std::to_wstring(count)+tr(L" 个窗口",L" windows"),268,168,380,18,11,t.tertiary);
-        button(RefreshButton,{721,140,828,178},tr(L"刷新窗口",L"Refresh windows"),L"refresh");
+        button(RefreshButton,appButtonRect(RefreshButton),tr(L"刷新窗口",L"Refresh windows"),L"refresh");
         int selected=sample?sampleSelection:(int)SendMessageW(list,LB_GETCURSEL,0,0);
+        firstRow=std::clamp(firstRow,0,std::max(0,(int)count-2)); // a refresh can shrink the list below the scrolled position
         for(int row=0;row<2;++row){int index=firstRow+row;float y=194.f+row*86;bool chosen=index==selected;if(index>=(int)count)continue;
             box({268,y,828,y+78},11,chosen?t.selected:0xffffff,chosen?1.f:darkUi()?.045f:.5f,chosen?t.selectedEdge:t.edge,chosen?1.f:darkUi()?.1f:1.f);
             box({284,y+21,320,y+57},9,chosen?0xffffff:darkUi()?0xffffff:0xebf2f8,darkUi()?.10f:1.f);
@@ -161,24 +181,39 @@ struct Renderer {
         label(tr(L"窗口材质",L"Window material"),268,472,560,25,15,t.primary,true);label(tr(L"材质类型",L"Material type"),268,504,272,18,11,t.secondary);label(tr(L"窗口边角",L"Window corners"),556,504,272,18,11,t.secondary);
         auto combo=[&](int id,D2D1_RECT_F r,HWND source){comboFrame(id,r,0xffffff,darkUi()?16.f/255:217.f/255,t.edge,darkUi()?26.f/255:1);const wchar_t*materialNames[]={L"Acrylic",L"Mica",L"Mica Alt",tr(L"关闭背景材质",L"No backdrop")};const wchar_t*cornerNames[]={tr(L"圆角",L"Rounded"),tr(L"小圆角",L"Small rounded"),tr(L"直角",L"Square")};int index=std::max(0,(int)SendMessageW(source,CB_GETCURSEL,0,0));label(id==MaterialBox?materialNames[std::min(index,3)]:cornerNames[std::min(index,2)],r.left+30,r.top,r.right-r.left-60,r.bottom-r.top,13,t.primary,false,id==MaterialBox,false,0,true);chevron(id,r.right-27,r.top+(r.bottom-r.top-14)/2);};
         combo(MaterialBox,{268,523,540,561},material);combo(CornerBox,{556,523,828,561},corners);
-        label(process,268,588,325,20,11,t.tertiary,false,true);button(RestoreButton,{632,575,713,613},tr(L"还原",L"Restore"),L"restore");button(ApplyButton,{721,575,828,613},tr(L"应用材质",L"Apply material"),L"check",true);
+        auto restoreRect=appButtonRect(RestoreButton);label(process,268,588,std::min(325.f,restoreRect.left-280),20,11,t.tertiary,false,true);button(RestoreButton,restoreRect,tr(L"还原",L"Restore"),L"restore");button(ApplyButton,appButtonRect(ApplyButton),tr(L"应用材质",L"Apply material"),L"check",true);
         box({248,664,848,772},16,darkUi()?0x1e3a8a:0xe8f1fb,darkUi()?.65f:.6f,darkUi()?0x3b82f6:0xd1e3f6,darkUi()?.45f:1);art(L"info",266,682,17,17);label(tr(L"关于应用兼容性",L"App compatibility"),295,681,535,22,12,t.primary,true);
         label(tr(L"其他应用仅尝试外框材质。Chrome / Electron 等应用的内容区域通常不受影响，可能仍保持不透明。",L"Other apps support frame materials only. Chrome and Electron content may remain opaque."),295,706,535,50,12,t.secondary,false,false,false,21);
         }else{drawWorkspace(*this);}if(currentPage!=2){label(tr(L"材质预览",L"Material preview"),892,140,230,24,15,t.primary,true);label(L"LIGHT · DEPTH · GLASS",892,166,260,18,10,t.tertiary,false,true);
-        box({1180,146,1228,166},6,darkUi()?0x1e3a8a:0xe3edfc);label(tr(L"仅预览",L"Preview only"),1180,146,48,20,10,0x2876db,false,false,true);
+        {const wchar_t*badge=tr(L"仅预览",L"Preview only");float badgeWidth=std::max(48.f,std::ceil(textWidth(badge,10)+12));box({1228-badgeWidth,146,1228,166},6,darkUi()?0x1e3a8a:0xe3edfc);label(badge,1228-badgeWidth,146,badgeWidth,20,10,0x2876db,false,false,true);}
         if(currentPage==1&&systemView==2){auto bitmap=image(darkUi()?L"dark-system-study":L"white-system-study");if(bitmap){auto size=bitmap->GetSize();D2D1_RECT_F source{0,0,size.width,std::min(70.f,size.height)};target->DrawBitmap(bitmap,{892,192,1228,534},1,D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,&source);}}else art(currentPage==1?L"system-study":L"study",892,192,336,342);if(currentPage==1&&systemView==2){box({920,297,1200,429},16,0xe5f5ff,.9f,0xffffff,.9f);label(tr(L"音量",L"Volume"),940,315,180,24,12,0x20364b,true);label(tr(L"仅示意",L"Illustration"),1120,315,60,24,10,0x61798f);box({940,365,1180,369},2,0xb4c4d3);box({940,365,1108,369},2,0x2876db);color(0xffffff);target->FillEllipse(D2D1::Ellipse({1108,367},7,7),brush);}const wchar_t*quality[]={tr(L"柔光漫射",L"Soft diffusion"),tr(L"边缘高光",L"Edge highlights"),tr(L"层次景深",L"Layered depth")};for(int i=0;i<3;++i){float x=892+i*114.6667f;label(quality[i],x,552,106.6667f,32,11,t.secondary,false,false,true);}
         line(892,602,1228,602,darkUi()?0xffffff:0xd7e4f0,darkUi()?.10f:1);art(L"scan",892,621,16,16);label(tr(L"在这里感受玻璃材质",L"A study in light and glass"),915,620,313,24,12,t.primary,true);
         label(tr(L"此区域仅展示材质与光学效果，不代表第三方应用的内容区域可以透明。实际效果取决于目标窗口。",L"This area previews materials and optics. Actual transparency depends on the target window."),892,654,336,78,12,t.secondary,false,false,false,22.2f);
         }target->SetTransform(D2D1::Matrix3x2F::Scale(scale,scale)*D2D1::Matrix3x2F::Translation(originX,originY));box({0,804,1280,848},0,darkUi()?0x0b1220:0xf8fbff,.5f);line(0,804,1280,804,0xffffff,darkUi()?.06f:.8f);
         bool connected=opticalPreview.connected();color(connected?0x358c84:t.tertiary);target->FillEllipse(D2D1::Ellipse({27,826},3,3),brush);
-        label(connected?tr(L"LGEngine 预览已连接",L"LGEngine preview connected"):tr(L"LGEngine 预览未连接",L"LGEngine preview disconnected"),39,817,160,22,11,t.secondary);line(208,820,208,832,darkUi()?0xffffff:0xd7e4f0,darkUi()?.10f:1);label(actionResult?statusText:tr(L"光学参数仅影响预览",L"Optical settings affect preview only"),222,817,890,22,11,t.tertiary);
-        art(L"tray",1144,819,14,14);label(tr(L"隐藏至托盘",L"Hide to tray"),1165,816,91,24,11,t.secondary);
+        const wchar_t*engineText=connected?tr(L"LGEngine 预览已连接",L"LGEngine preview connected"):tr(L"LGEngine 预览未连接",L"LGEngine preview disconnected");float engineWidth=std::max(160.f,std::ceil(textWidth(engineText,11)+2)),divider=39+engineWidth+9;auto trayBox=trayRect();
+        // Status from any page (engine errors, policy blocks, restore results) shows here; the native status control is hidden.
+        bool showStatus=!statusText.empty()&&statusPage==currentPage;
+        label(engineText,39,817,engineWidth,22,11,t.secondary);line(divider,820,divider,832,darkUi()?0xffffff:0xd7e4f0,darkUi()?.10f:1);float statusWidth=std::min(1112.f,trayBox.left-26)-divider-14;const std::wstring footerText=showStatus?statusText:std::wstring(tr(L"光学参数仅影响预览",L"Optical settings affect preview only"));
+        // A long status (an engine error and its remedy) gets two smaller lines instead of losing its second sentence to the ellipsis.
+        // More than two lines' worth is shortened once per message, so the second line ends in an ellipsis instead of being cut off below.
+        if(showStatus&&(footerFor!=footerText||footerForWidth!=statusWidth)){footerFor=footerText;footerForWidth=statusWidth;footerShown=footerText;float room=statusWidth*1.8f;if(textWidth(footerText,10)>room){size_t lo=0,hi=footerText.size();while(lo<hi){size_t mid=(lo+hi+1)/2;if(textWidth(footerText.substr(0,mid)+L"…",10)<=room)lo=mid;else hi=mid-1;}footerShown=footerText.substr(0,lo)+L"…";}}
+        if(showStatus&&textWidth(footerText,11)>statusWidth)label(footerShown,divider+14,809,statusWidth,30,10,t.tertiary);else label(footerText,divider+14,817,statusWidth,22,11,t.tertiary);
+        art(L"tray",trayBox.left+6,819,14,14);label(tr(L"隐藏至托盘",L"Hide to tray"),trayBox.left+27,816,trayBox.right-trayBox.left-27,24,11,t.secondary);
         if(keyboard&&GetFocus()==mainWindow)for(auto&hit:hits())if(hit.id==focus){auto r=hit.r;r.left-=3;r.top-=3;r.right+=3;r.bottom+=3;color(0x2876db);target->DrawRoundedRectangle(D2D1::RoundedRect(r,11,11),brush,2);}
         HRESULT result=target->EndDraw();lastDraw=result;if(result==D2DERR_RECREATE_TARGET){for(auto&v:images)drop(v.second);images.clear();drop(canvasGradient);drop(brush);target=nullptr;drop(dcTarget);drop(windowTarget);status=result;}
     }
 };
 #include "workspace_pages.h"
 inline Renderer&renderer(){static Renderer r;return r;}
+// Design widths fit the Chinese labels; a longer translation grows the button leftward instead of breaking a word.
+D2D1_RECT_F appButtonRect(int id){
+    auto width=[](const wchar_t*text,float design){float need=renderer().textWidth(text,13)+47;return need<=design?design:std::ceil(need+8);};
+    if(id==RefreshButton){float w=width(tr(L"刷新窗口",L"Refresh windows"),107);return {828-w,140,828,178};}
+    float apply=width(tr(L"应用材质",L"Apply material"),107);if(id==ApplyButton)return {828-apply,575,828,613};
+    float restore=width(tr(L"还原",L"Restore"),81);return {820-apply-restore,575,820-apply,613};
+}
+D2D1_RECT_F trayRect(){float width=std::max(91.f,std::ceil(renderer().textWidth(tr(L"隐藏至托盘",L"Hide to tray"),11)+2));return {1256-width-27,808,1256,840};}
 void clearTextLayouts(){renderer().clearLayouts();}
 void trimIdleUi(){
     if(uiAnimationTimers.count({mainWindow,4})){SetLayeredWindowAttributes(mainWindow,0,255,LWA_ALPHA);SetWindowLongPtrW(mainWindow,GWL_EXSTYLE,GetWindowLongPtrW(mainWindow,GWL_EXSTYLE)&~WS_EX_LAYERED);}
@@ -291,8 +326,9 @@ int showPopup(std::vector<MenuRow>&rows,POINT at,int width,int ownerId=0){
         TranslateMessage(&msg);DispatchMessageW(&msg);
     }
     if(GetCapture()==popup)ReleaseCapture();activePopup=nullptr;DestroyWindow(popup);if(!selfTestMode&&(!IsWindowVisible(mainWindow)||IsIconic(mainWindow)))trimIdleUi();invalidate();
-    auto log=directory()+L"dropdown-motion.log";HANDLE file=CreateFileW(log.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,0,nullptr);
-    if(file!=INVALID_HANDLE_VALUE){char line[360]{};int length=snprintf(line,sizeof(line),"control=%d animated=%d openFrames=%d closeFrames=%d firstFrameMs=%.1f alpha=%d..%d slidePx=%d errors=%d clock=%s result=%d\r\n",ownerId,animate?1:0,state.openingFrames,state.closingFrames,state.firstFrameDelay,state.minAlpha,state.maxAlpha,state.maxY>=state.minY?state.maxY-state.minY:0,state.presentationErrors,useClock?"shared":"window",state.result);DWORD written=0;WriteFile(file,line,length,&written,nullptr);CloseHandle(file);}
+    // Motion diagnostics are for the self-test and review runs; normal use doesn't grow a log beside the exe.
+    if(selfTestMode||appReviewMode){auto log=directory()+L"dropdown-motion.log";HANDLE file=CreateFileW(log.c_str(),FILE_APPEND_DATA,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_ALWAYS,0,nullptr);
+    if(file!=INVALID_HANDLE_VALUE){char line[360]{};int length=snprintf(line,sizeof(line),"control=%d animated=%d openFrames=%d closeFrames=%d firstFrameMs=%.1f alpha=%d..%d slidePx=%d errors=%d clock=%s result=%d\r\n",ownerId,animate?1:0,state.openingFrames,state.closingFrames,state.firstFrameDelay,state.minAlpha,state.maxAlpha,state.maxY>=state.minY?state.maxY-state.minY:0,state.presentationErrors,useClock?"shared":"window",state.result);DWORD written=0;WriteFile(file,line,length,&written,nullptr);CloseHandle(file);}}
     if(IsWindow(previous)&&GetForegroundWindow()==mainWindow)SetFocus(previous);return state.result;
 }
 void showCombo(HWND source){
@@ -313,24 +349,26 @@ void choose(HWND source,int controlId,int hitId){
 }
 void invoke(int id){
     if(id==GeneralTab||id==AboutTab){startSegment(true,settingsAbout?1:0,id==AboutTab?1:0);settingsAbout=id==AboutTab;invalidate();return;}
-    if(id==CombinedNotification||id==CombinedIndicator){bool on=id==CombinedIndicator?volumeOn&&brightnessOn:shellOn[2]&&(glassExtraFeatures&glass::Calendar)!=0;int first=id==CombinedIndicator?VolumeOn:NotificationToggle,second=id==CombinedIndicator?BrightnessOn:CalendarToggle;for(int control:{first,second}){bool checked=control==VolumeOn?volumeOn:control==BrightnessOn?brightnessOn:control==NotificationToggle?shellOn[2]:(glassExtraFeatures&glass::Calendar)!=0;if(checked==on)SendMessageW(mainWindow,WM_COMMAND,MAKEWPARAM(control,BN_CLICKED),(LPARAM)GetDlgItem(mainWindow,control));}invalidate();return;}
+    if(id==CombinedNotification||id==CombinedIndicator){bool on=id==CombinedIndicator?volumeOn||brightnessOn:shellOn[2]||(glassExtraFeatures&glass::Calendar)!=0;/* either half on reads as On, so a click turns both off */int first=id==CombinedIndicator?VolumeOn:NotificationToggle,second=id==CombinedIndicator?BrightnessOn:CalendarToggle;for(int control:{first,second}){bool checked=control==VolumeOn?volumeOn:control==BrightnessOn?brightnessOn:control==NotificationToggle?shellOn[2]:(glassExtraFeatures&glass::Calendar)!=0;if(checked==on)SendMessageW(mainWindow,WM_COMMAND,MAKEWPARAM(control,BN_CLICKED),(LPARAM)GetDlgItem(mainWindow,control));}invalidate();return;}
     if(id>=Slider&&id<Slider+1000)return;
     if(id>=Combo&&id<Combo+1000){showCombo(GetDlgItem(mainWindow,id-Combo));invalidate();return;}
-    if(id>=Command&&id<Command+1000){int control=id-Command;if(HWND h=GetDlgItem(mainWindow,control);h&&!IsWindowEnabled(h)){statusText=tr(L"当前功能尚不可用，请检查引擎连接或恢复状态。",L"This feature is unavailable. Check the engine connection or restore status.");actionResult=true;invalidate();return;}if(control==OpticalPreview)SendMessageW(mainWindow,WM_COMMAND,SystemEngineTab,0);SendMessageW(mainWindow,WM_COMMAND,MAKEWPARAM(control,BN_CLICKED),(LPARAM)GetDlgItem(mainWindow,control));invalidate();return;}
+    if(id>=Command&&id<Command+1000){int control=id-Command;if(HWND h=GetDlgItem(mainWindow,control);h&&!IsWindowEnabled(h)){message(tr(L"当前功能尚不可用，请检查引擎连接或恢复状态。",L"This feature is unavailable. Check the engine connection or restore status."));invalidate();return;}if(control==OpticalPreview)SendMessageW(mainWindow,WM_COMMAND,SystemEngineTab,0);SendMessageW(mainWindow,WM_COMMAND,MAKEWPARAM(control,BN_CLICKED),(LPARAM)GetDlgItem(mainWindow,control));invalidate();return;}
     if(id==NavSystem||id==NavSettings){SendMessageW(mainWindow,WM_APP+50,id==NavSystem?1:2,0);return;}
     if(id==NavApp){SendMessageW(mainWindow,WM_APP+50,0,0);return;}
     if(id==Row0||id==Row1){int index=firstRow+id-Row0;if(sample)sampleSelection=std::min(1,index);else if(index<(int)entries.size()){SendMessageW(list,LB_SETCURSEL,index,0);SendMessageW(mainWindow,WM_COMMAND,MAKEWPARAM(List,LBN_SELCHANGE),(LPARAM)list);}invalidate();return;}
     if(id==MaterialBox){choose(material,Material,id);return;}if(id==CornerBox){choose(corners,Corners,id);return;}
-    if(id==TrayButton){if(appReviewMode){statusText=tr(L"界面评审窗口不注册托盘；正式运行沿用原有托盘逻辑。",L"Review mode does not register a tray icon.");actionResult=true;invalidate();}else ShowWindow(mainWindow,SW_HIDE);return;}
-    if(appReviewMode){if(id==RefreshButton)sample=true;if(id==ApplyButton||id==RestoreButton){statusText=tr(L"界面评审使用示例数据，未修改任何目标窗口。",L"Review uses sample data and leaves target windows unchanged.");actionResult=true;}invalidate();return;}
+    if(id==TrayButton){if(appReviewMode){message(tr(L"界面评审窗口不注册托盘；正式运行沿用原有托盘逻辑。",L"Review mode does not register a tray icon."));invalidate();}else ShowWindow(mainWindow,SW_HIDE);return;}
+    if(appReviewMode){if(id==RefreshButton)sample=true;if(id==ApplyButton||id==RestoreButton){message(tr(L"界面评审使用示例数据，未修改任何目标窗口。",L"Review uses sample data and leaves target windows unchanged."));}invalidate();return;}
     int command=id==RefreshButton?Refresh:id==RestoreButton?Restore:id==ApplyButton?Apply:0;
-    if(command){actionResult=id==ApplyButton||id==RestoreButton;auto previousLanguage=l10n::current;l10n::current=l10n::Simplified;SendMessageW(mainWindow,WM_COMMAND,MAKEWPARAM(command,BN_CLICKED),(LPARAM)GetDlgItem(mainWindow,command));l10n::current=previousLanguage;}invalidate();
+    if(command){SendMessageW(mainWindow,WM_COMMAND,MAKEWPARAM(command,BN_CLICKED),(LPARAM)GetDlgItem(mainWindow,command));}invalidate();
 }
 bool key(WPARAM key){
     if(!active())return false;
     if(key==VK_TAB){keyboard=true;int index=0;for(size_t i=0;i<hits().size();++i)if(hits()[i].id==focus)index=(int)i;index=(index+(GetKeyState(VK_SHIFT)<0?-1:1)+(int)hits().size())%(int)hits().size();focus=hits()[index].id;invalidate();return true;}
     if(key==VK_RETURN||key==VK_SPACE){keyboard=true;invoke(focus);return true;}
-    if((key==VK_UP||key==VK_DOWN)&&(focus==Row0||focus==Row1)){keyboard=true;focus=key==VK_UP?Row0:Row1;invoke(focus);return true;}
+    if((key==VK_UP||key==VK_DOWN)&&(focus==Row0||focus==Row1)){keyboard=true;int count=sample?2:(int)entries.size(),current=sample?sampleSelection:(int)SendMessageW(list,LB_GETCURSEL,0,0);
+        int next=std::clamp(current<0?firstRow+focus-Row0:current+(key==VK_UP?-1:1),0,std::max(0,count-1));if(next<firstRow)firstRow=next;else if(next>firstRow+1)firstRow=next-1; // scroll so the new selection stays in the two visible rows
+        focus=Row0+std::clamp(next-firstRow,0,1);invoke(focus);return true;}
     if(key==VK_F5&&currentPage==0){invoke(RefreshButton);return true;}
     if(focus>=Slider&&focus<Slider+1000&&(key==VK_LEFT||key==VK_RIGHT||key==VK_HOME||key==VK_END)){HWND h=GetDlgItem(mainWindow,focus-Slider);int lo=(int)SendMessageW(h,TBM_GETRANGEMIN,0,0),hi=(int)SendMessageW(h,TBM_GETRANGEMAX,0,0),v=(int)SendMessageW(h,TBM_GETPOS,0,0);v=key==VK_HOME?lo:key==VK_END?hi:std::clamp(v+(key==VK_LEFT?-1:1),lo,hi);SendMessageW(h,TBM_SETPOS,TRUE,v);SendMessageW(mainWindow,WM_HSCROLL,TB_ENDTRACK,(LPARAM)h);invalidate();return true;}
     if((key==VK_DOWN&&GetKeyState(VK_MENU)<0)||key==VK_F4){if(focus==MaterialBox||focus==CornerBox||(focus>=Combo&&focus<Combo+1000)){invoke(focus);return true;}}

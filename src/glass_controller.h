@@ -173,10 +173,11 @@ public:
     bool wantsWindow(HWND h){return data&&data->features&&target(h);}
     void discoverWindow(HWND h){if(!wantsWindow(h))return;DWORD pid=0;GetWindowThreadProcessId(h,&pid);wchar_t cls[128]{};GetClassNameW(h,cls,128);if(notificationHostWindow(process(pid),cls))rediscoverPackage(pid);attachWindow(h,true);EnumChildWindows(h,observedChild,reinterpret_cast<LPARAM>(this));}
     // Short per-host state for the UI status line, e.g. "Start ok · Notification center: no connection (5)".
-    std::wstring hostSummary()const{if(!status)return L"";static const wchar_t*names[SlotCount]={L"Taskbar",L"Start",L"Search",L"Notification center",L"Shell host",L"File Explorer"};std::wstring out;
+    // The caller passes the translated host names and one format per state (ok, no connection, matched, connected, attaching, waiting).
+    std::wstring hostSummary(const wchar_t*const names[SlotCount],const wchar_t*const formats[6])const{if(!status)return L"";std::wstring out;
         for(int h=0;h<SlotCount;++h){LONG stage=status->hostStage[h],error=status->hostError[h];if(stage>=2)error=0;if(!stage&&!error&&h!=SlotStart&&h!=SlotShellExperience)continue;std::wstring text;wchar_t code[24]{};
             if(HRESULT_FACILITY(error)==FACILITY_WIN32||(error>=0&&error<65536))swprintf(code,24,L"%lu",(unsigned long)(error&0xffff));else swprintf(code,24,L"0x%08lx",(unsigned long)error);
-            if(stage>=4)text=std::wstring(names[h])+L" ok";else if(error)text=std::wstring(names[h])+L": no connection ("+code+L")";else text=std::wstring(names[h])+(stage==3?L": matched":stage==2?L": connected":stage==1?L": attaching":L": waiting");
+            wchar_t line[256]{};swprintf(line,256,formats[stage>=4?0:error?1:stage==3?2:stage==2?3:stage==1?4:5],names[h],code);text=line;
             if(!out.empty())out+=L" · ";out+=text;}return out;}
     LONG dockIcons()const{return status?status->dockIcons:0;}
     LONG dockBound()const{return status?status->dockBound:0;}

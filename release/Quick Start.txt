@@ -1,5 +1,5 @@
-Liquid Glass Control 0.14.0-beta.2 - Performance Refresh
-Windows 11 x64 - Portable prerelease
+Liquid Glass Control 0.14.0 - Performance Refresh
+Windows 11 x64 - Portable release
 
 1. Extract the complete ZIP to a writable folder and run LiquidGlassControl.exe.
    Keep art/, fonts/, and lgengine/ beside the controller.

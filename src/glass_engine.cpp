@@ -332,11 +332,13 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         if(host==0&&!modern&&c.tint==4&&!states.empty())try{
             auto previous=n.watchers.find(L"ImportedCommonStates");if(previous!=n.watchers.end()){previous->second();n.watchers.erase(previous);}
             auto p=from(h);winrt::Windows::Foundation::IInspectable object{nullptr};if(p)winrt::copy_from_abi(object,p.p);auto element=object.try_as<winrt::Windows::UI::Xaml::FrameworkElement>();
-            if(element){auto&t=thread();auto cancel=imported_glass::watchCommonStates(element,[this,&t,h,states](std::wstring state){auto found=t.nodes.find(h);if(found==t.nodes.end())return;glass::Config current;if(snapshot(current)!=Read::Ok||!(current.features&glass::Taskbar))return;auto&node=found->second;const auto&selected=current.looks[glass::family(node.surface)];if(selected.tint!=4)return;current.opacity=selected.opacity;current.blur=selected.blur;current.radius=selected.radius;current.tint=selected.tint;
+            if(element){auto&t=thread();auto cancel=imported_glass::watchCommonStates(element,[this,&t,key=n.key,states](std::wstring state){auto found=t.nodes.find(key);if(found==t.nodes.end())return;glass::Config current;if(snapshot(current)!=Read::Ok||!(current.features&glass::Taskbar))return;auto&node=found->second;const auto&selected=current.looks[glass::family(node.surface)];if(selected.tint!=4)return;
+                // The apply-time handle is released shortly after; register a fresh one, and mute the property watchers so they don't re-apply the base look over the state.
+                Ptr<IInspectable> live;if(node.weak)node.weak->Resolve(__uuidof(IInspectable),live.put());InstanceHandle handle=0;if(!live||FAILED(diag->RegisterInstance(live.p,&handle)))return;auto release=[&]{releaseLater(t,handle);};struct Released{decltype(release)&run;~Released(){run();}} released{release};struct Muted{bool&flag;bool old;~Muted(){flag=old;}} muted{t.updating,t.updating};t.updating=true;current.opacity=selected.opacity;current.blur=selected.blur;current.radius=selected.radius;current.tint=selected.tint;
                 bool background=false,border=false;for(auto rule:states){std::wstring property,value;if(!imported_glass::assignment(rule,property,value))continue;auto at=property.find(L'@');if(at==property.npos||property.substr(at+1)!=state)continue;property.resize(at);value=imported_glass::resolve(imported_glass::TaskbarSource,value);
                     auto look=current;if(value.find(L"TintOpacity=\"0.4\"")!=value.npos)look.opacity=40;else if(value.find(L"TintOpacity=\"0.2\"")!=value.npos)look.opacity=20;
-                    applyImportedRule(node,h,look,property,value);background|=property==L"Background";border|=property==L"BorderBrush";
-                }if(!background)restoreNamed(node,h,{L"Background"});if(!border)restoreNamed(node,h,{L"BorderBrush"});note(L"taskbar native CommonStates="+state);
+                    applyImportedRule(node,handle,look,property,value);background|=property==L"Background";border|=property==L"BorderBrush";
+                }if(!background)restoreNamed(node,handle,{L"Background"});if(!border)restoreNamed(node,handle,{L"BorderBrush"});note(L"taskbar native CommonStates="+state);
                 for(auto&entry:t.nodes)if(entry.second.taskbarOptics)entry.second.taskbarOptics->invalidateContents();
             });if(cancel){n.watchers[L"ImportedCommonStates"]=std::move(cancel);note(L"taskbar source LiquidGlass CommonStates attached");}}
         }catch(...){trace("taskbar source visual states",winrt::to_hresult());}
@@ -366,7 +368,7 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
                 using Element=winrt::Windows::UI::Xaml::FrameworkElement;
                 Element root=host;bool taskbar=false;
                 for(int depth=0;root&&depth<16;++depth){if(winrt::get_class_name(root)==L"Taskbar.TaskbarFrame"){taskbar=true;break;}root=Tree::GetParent(root).try_as<Element>();}
-                if(taskbar&&!n.watchers.count(L"CapsuleLayout")){auto&t=thread();auto token=root.LayoutUpdated([&t,h](auto const&,auto const&){if(t.updating)return;auto i=t.nodes.find(h);if(i==t.nodes.end()||i->second.capsuleDirty)return;i->second.capsuleDirty=true;scheduleUpdate(t);});auto weak=winrt::make_weak(root);n.watchers[L"CapsuleLayout"]=[weak,token]{try{if(auto e=weak.get())e.LayoutUpdated(token);}catch(...){}};}
+                if(taskbar&&!n.watchers.count(L"CapsuleLayout")){auto&t=thread();auto token=root.LayoutUpdated([&t,key=n.key](auto const&,auto const&){if(t.updating)return;auto i=t.nodes.find(key);if(i==t.nodes.end()||i->second.capsuleDirty)return;i->second.capsuleDirty=true;scheduleUpdate(t);});auto weak=winrt::make_weak(root);n.watchers[L"CapsuleLayout"]=[weak,token]{try{if(auto e=weak.get())e.LayoutUpdated(token);}catch(...){}};}
                 double left=width,right=0;bool joined=false;std::vector<std::pair<double,double>> auxiliary;
                 Element trayElement{nullptr};std::vector<Element> layoutIcons;winrt::Windows::UI::Xaml::DependencyObject appRow{nullptr};
                 Element scanRoot=root;if(taskbar)for(unsigned depth=0;depth<8;++depth){auto parent=Tree::GetParent(scanRoot).try_as<Element>();if(!parent)break;scanRoot=parent;}
@@ -434,6 +436,15 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
         if(modern)return keyboardPanelTree<winrt::Microsoft::UI::Xaml::FrameworkElement,winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper>(object.try_as<winrt::Microsoft::UI::Xaml::FrameworkElement>());
         return keyboardPanelTree<winrt::Windows::UI::Xaml::FrameworkElement,winrt::Windows::UI::Xaml::Media::VisualTreeHelper>(object.try_as<winrt::Windows::UI::Xaml::FrameworkElement>());
     }catch(...){return false;}}
+    // Imported rules inside the calendar flyout belong to the Calendar switch, not to Notifications.
+    template<class Element,class Tree>bool insideCalendarTree(Element const&start){
+        if(!start)return false;if(start.Name()==L"CalendarCenterGrid")return true;
+        auto node=Tree::GetParent(start);for(int depth=0;node&&depth<48;++depth){if(auto e=node.template try_as<Element>();e&&e.Name()==L"CalendarCenterGrid")return true;node=Tree::GetParent(node);}return false;
+    }
+    bool insideCalendar(InstanceHandle h){try{auto p=from(h);if(!p)return false;winrt::Windows::Foundation::IInspectable object{nullptr};winrt::copy_from_abi(object,p.p);
+        if(modern)return insideCalendarTree<winrt::Microsoft::UI::Xaml::FrameworkElement,winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper>(object.try_as<winrt::Microsoft::UI::Xaml::FrameworkElement>());
+        return insideCalendarTree<winrt::Windows::UI::Xaml::FrameworkElement,winrt::Windows::UI::Xaml::Media::VisualTreeHelper>(object.try_as<winrt::Windows::UI::Xaml::FrameworkElement>());
+    }catch(...){return false;}}
     void clearKeyboardBacking(Node&n,InstanceHandle h){
         if(modern)return;
         try{
@@ -482,7 +493,9 @@ if(required&&!(n.surface==glass::TaskbarFill&&thread().taskbarPanel)&&glass::fea
             }}catch(...){trace("keyboard actual theme",winrt::to_hresult());}
             c.tint=light?1:2;c.opacity=std::max<DWORD>(c.opacity,82);
         }
-        DWORD signature=1|(c.opacity<<1)|(c.radius<<8)|(c.tint<<13)|(c.economy?1u<<27:0)|(c.blur<<16)|((c.features&glass::Capsule)?1u<<24:0)|((c.features&glass::Taskbar)?1u<<25:0)|((n.surface==glass::TaskbarRoot&&thread().unifiedCapsule)?1u<<26:0);
+        // Automatic tints follow the Windows light/dark setting, so a theme switch must not look like an unchanged look.
+        DWORD themeBits=0;if(c.tint==0||c.tint==4){DWORD system=1,apps=1,size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"SystemUsesLightTheme",RRF_RT_REG_DWORD,nullptr,&system,&size);size=4;RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",L"AppsUseLightTheme",RRF_RT_REG_DWORD,nullptr,&apps,&size);themeBits=(system?1u<<28:0)|(apps?1u<<29:0);}
+        DWORD signature=themeBits|1|(c.opacity<<1)|(c.radius<<8)|(c.tint<<13)|(c.economy?1u<<27:0)|(c.blur<<16)|((c.features&glass::Capsule)?1u<<24:0)|((c.features&glass::Taskbar)?1u<<25:0)|((n.surface==glass::TaskbarRoot&&thread().unifiedCapsule)?1u<<26:0);
         // Unchanged parameters are not written again, but the controller may have cleared its status after a rediscovery; repeat the last result so status matches the live surface.
         if(n.appliedSignature==signature){if(n.surface==glass::TaskbarFill&&n.capsuleDirty&&(c.features&glass::Capsule))applyCapsule(n,h,c);if(n.reported)report(n.lastReport,glass::feature(n.surface));if(n.capsuleReported&&(c.features&glass::Capsule))report(n.lastCapsule,glass::Capsule);return;}
         if(n.surface==glass::TaskbarFill||n.surface==glass::TaskbarOverlay){
@@ -626,7 +639,7 @@ public:
 
                 glass::Config diagnosticConfig;bool keyboardDiagnostics=(host==0||host==3)&&snapshot(diagnosticConfig)==Read::Ok&&(diagnosticConfig.features&glass::Keyboard);if(surface!=glass::NoSurface||((host==2||keyboardDiagnostics)&&element.Name&&*element.Name))note(L"match surface="+std::to_wstring((int)surface)+L" host="+std::to_wstring(host)+L" exe="+hostExe()+L" type="+(element.Type?element.Type:L"")+L" name="+(element.Name?element.Name:L""));
                 auto target=from(element.Handle);auto imported=target&&imported_glass::candidate(imported_glass::theme(host),{element.Type?element.Type:L"",element.Name?element.Name:L""})?importedStyles(target.p):std::vector<const wchar_t*>{};
-                if(!imported.empty()&&surface==glass::NoSurface)surface=host==1?glass::StartPlate:host==2?glass::NotificationAuxiliary:host==3?glass::ExplorerPlate:glass::TaskbarAuxiliary;
+                if(!imported.empty()&&surface==glass::NoSurface)surface=host==1?glass::StartPlate:host==2?(insideCalendar(element.Handle)?glass::CalendarAuxiliary:glass::NotificationAuxiliary):host==3?glass::ExplorerPlate:glass::TaskbarAuxiliary;
                 if(surface!=glass::NoSurface){hostStageSet(slot,3);everMatched=true;auto p=std::move(target);Ptr<IWeakReferenceSource> source;if(p&&SUCCEEDED(p->QueryInterface(__uuidof(IWeakReferenceSource),reinterpret_cast<void**>(source.put())))){
                     Node n;if(host==2&&element.Name){if(wcscmp(element.Name,L"NotificationCenterGrid")==0)n.notificationRoot=0;else if(wcscmp(element.Name,L"CalendarCenterGrid")==0)n.notificationRoot=1;if(n.notificationRoot>=0)t.notificationRoots[n.notificationRoot]=element.Handle;}n.key=element.Handle;n.imported=std::move(imported);n.surface=surface;source->GetWeakReference(n.weak.put());auto old=t.nodes.find(element.Handle);
                     // A new Advise lists the whole tree again: an element already wearing its material keeps it (restoring first snapped the capsule back for a frame).

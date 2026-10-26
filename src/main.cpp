@@ -108,6 +108,7 @@ void expandSystemRow(int row);void expandTitleRow(bool open);void placePage();vo
 bool indicatorOpen(){return currentPage==1&&(systemOpen==0||systemOpen==1);} // Volume and Brightness share the LGEngine indicator panel
 bool exitAfterRestore=false;
 void restoreAll(bool exit=false);
+void show();
 void updateCompatibility();
 void refresh(bool recollect);
 void releaseAppList();
@@ -243,7 +244,7 @@ bool ensureEngine(){
     auto runtimeDir=engineDir();engineReady=engine.initialize(runtimeDir,nativeProbeMode);
     // Clean up copies that 0.13.0-beta.5 and earlier extracted beside the EXE.
     if(_wcsicmp(runtimeDir.c_str(),settingsDir().c_str())!=0)glass::Controller::sweepEngines(settingsDir(),L"");
-    if(!engineReady){message(engine.policyBlocked()?tr(L"Windows 应用程序控制策略阻止了引擎，请使用受信任签名或管理员批准的版本。",L"Windows application-control policy blocked the engine. A trusted signed or administrator-approved build is required."):tr(L"独立引擎无法加载，请检查 AppData\\Local\\LiquidGlassControl\\Engine 是否可写。",L"Standalone engine could not load. Check that AppData\\Local\\LiquidGlassControl\\Engine is writable."));engine.shutdown();}
+    if(!engineReady){message(engine.policyBlocked()?tr(L"Windows 应用程序控制策略阻止了引擎，请使用受信任签名或管理员批准的版本。",L"Windows application-control policy blocked the engine. A trusted signed or administrator-approved build is required."):tr(L"独立引擎无法加载，请检查 AppData\\Local\\LiquidGlassControl\\Engine 是否可写。",L"Standalone engine could not load. Check that AppData\\Local\\LiquidGlassControl\\Engine is writable."),1);engine.shutdown();}
     return engineReady;
 }
 bool shellBackupExists(){for(int i=0;i<3;++i)if(full_themes::pending(i,settingsDir())||shell_materials::exists(i,settingsDir()))return true;return false;}
@@ -494,7 +495,9 @@ void updateDiagnostics(){
     if(!mainWindow||currentPage!=1||!IsWindowVisible(mainWindow))return;
     std::wstring text;
     if(engineReady&&glassConfig.features){
-        text=engine.hostSummary();
+        const wchar_t*hosts[]={tr(L"任务栏",L"Taskbar"),tr(L"开始菜单",L"Start menu"),tr(L"搜索",L"Search"),tr(L"通知中心",L"Notification center"),tr(L"Shell 主机",L"Shell host"),tr(L"文件资源管理器",L"File Explorer")};
+        const wchar_t*states[]={tr(L"%ls：正常",L"%ls ok"),tr(L"%ls：未连接（%ls）",L"%ls: no connection (%ls)"),tr(L"%ls：已匹配",L"%ls: matched"),tr(L"%ls：已连接",L"%ls: connected"),tr(L"%ls：正在附加",L"%ls: attaching"),tr(L"%ls：等待中",L"%ls: waiting")};
+        text=engine.hostSummary(hosts,states);
         if(dockOn){wchar_t dock[128]{};swprintf(dock,128,tr(L"Dock：%ld 个图标，%ld 个已动画，指针 %ld",L"Dock: %ld icons, %ld animated, pointer %ld"),(long)engine.dockIcons(),(long)engine.dockBound(),(long)engine.dockPointer());if(!text.empty())text+=L"\r\n";text+=dock;}
     }
     if(text!=diagText){diagText=text;refreshStatus();}
@@ -548,8 +551,8 @@ void restoreApps(){
 }
 void restoreAll(bool exit){
     if(migrationJob){message(tr(L"正在恢复旧主题……",L"Restoring the old theme..."));return;}
-    setRulesActive(false);restoreWindows();if(!originals.empty())return;appWrite(L"Active",0); // the windows are back: no startup reapply, even if the taskbar restore below fails
-    if(!nativeProbeMode&&!taskbar_recovery::restore(iniPath)){message(tr(L"任务栏恢复失败，恢复记录已保留。",L"Taskbar restore failed; recovery record retained."));return;}appWrite(L"ExplorerByApp",0);appWrite(L"TitleOn",0);CheckDlgButton(mainWindow,TitleOn,BST_UNCHECKED);observeForeground();syncTitleGlass();opticalSuspended=true;opticalPreview.stop();KillTimer(mainWindow,16);opticalStartup=0;updateOpticalButtons();if(persistent()){WritePrivateProfileStringW(L"LGEngine",L"VolumeOn",L"0",iniPath.c_str());WritePrivateProfileStringW(L"LGEngine",L"BrightnessOn",L"0",iniPath.c_str());WritePrivateProfileStringW(L"LGEngine",L"IndicatorOn",L"0",iniPath.c_str());}dockOn=false;WritePrivateProfileStringW(L"Taskbar",L"AutoHide",L"0",iniPath.c_str());volumeOn=brightnessOn=explorerOn=explorerByApp=keyboardOn=false;for(bool&on:shellOn)on=false;glassConfig.features=0;glassExtraFeatures=0;WritePrivateProfileStringW(L"Glass",L"Features",L"0",iniPath.c_str());WritePrivateProfileStringW(L"Glass",L"Calendar",L"0",iniPath.c_str());applyGlass(false);
+    setRulesActive(false);restoreWindows();if(!originals.empty()){if(!IsWindowVisible(mainWindow))show();return;}appWrite(L"Active",0); // the windows are back: no startup reapply, even if the taskbar restore below fails
+    if(!nativeProbeMode&&!taskbar_recovery::restore(iniPath)){if(!IsWindowVisible(mainWindow))show();message(tr(L"任务栏恢复失败，恢复记录已保留。",L"Taskbar restore failed; recovery record retained."));return;}appWrite(L"ExplorerByApp",0);appWrite(L"TitleOn",0);CheckDlgButton(mainWindow,TitleOn,BST_UNCHECKED);observeForeground();syncTitleGlass();opticalSuspended=true;opticalPreview.stop();KillTimer(mainWindow,16);opticalStartup=0;updateOpticalButtons();if(persistent()){WritePrivateProfileStringW(L"LGEngine",L"VolumeOn",L"0",iniPath.c_str());WritePrivateProfileStringW(L"LGEngine",L"BrightnessOn",L"0",iniPath.c_str());WritePrivateProfileStringW(L"LGEngine",L"IndicatorOn",L"0",iniPath.c_str());}dockOn=false;WritePrivateProfileStringW(L"Taskbar",L"AutoHide",L"0",iniPath.c_str());volumeOn=brightnessOn=explorerOn=explorerByApp=keyboardOn=false;for(bool&on:shellOn)on=false;glassConfig.features=0;glassExtraFeatures=0;WritePrivateProfileStringW(L"Glass",L"Features",L"0",iniPath.c_str());WritePrivateProfileStringW(L"Glass",L"Calendar",L"0",iniPath.c_str());applyGlass(false);
     if(migrationNeeded()){exitAfterRestore=exit;migrateLegacy();return;}
     message(tr(L"已还原所有效果。",L"All effects restored."));if(exit)DestroyWindow(mainWindow);
 }
@@ -702,7 +705,7 @@ int selfTest(){
     // Exercise first launch and saved preferences without touching the user's INI.
     auto userIni=iniPath;auto userLanguage=l10n::current;
     iniPath=userIni+L".language-test-"+std::to_wstring(GetCurrentProcessId());
-    passed=passed&&l10n::read(iniPath)==l10n::Simplified;
+    passed=passed&&l10n::read(iniPath)==l10n::systemLanguage();
     for(int i=0;i<l10n::Count;++i){l10n::current=(l10n::Language)i;saveLanguage();passed=passed&&l10n::read(iniPath)==l10n::current;}
     passed=DeleteFileW(iniPath.c_str())&&passed;iniPath=userIni;l10n::current=userLanguage;
     record("language preference round trips");
@@ -855,7 +858,7 @@ int selfTest(){
         selectPage(1);appui::invoke(appui::Command+SystemMaterialTab);saveUiProof(mainWindow,settingsDir()+L"workspace-slider-test.bmp");int savedPosition=(int)SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETPOS,0,0);auto at=[&](int x,int y){return MAKELPARAM((int)(appui::originX+x*appui::scale),(int)(appui::originY+y*appui::scale));};appui::dragSlider(appui::Slider+LookOpacity,at(268,276),true);passed=SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETPOS,0,0)==SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETRANGEMIN,0,0);appui::dragSlider(appui::Slider+LookOpacity,at(828,276),true);passed=passed&&SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETPOS,0,0)==SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETRANGEMAX,0,0);SendDlgItemMessageW(mainWindow,LookOpacity,TBM_SETPOS,TRUE,savedPosition);record("custom material slider maps pointer endpoints to existing native ranges");
         {bool savedVolume=volumeOn,savedBrightness=brightnessOn;appReviewMode=false;volumeOn=brightnessOn=false;appui::invoke(appui::CombinedIndicator);passed=volumeOn&&brightnessOn;appui::invoke(appui::CombinedIndicator);passed=passed&&!volumeOn&&!brightnessOn;volumeOn=savedVolume;brightnessOn=savedBrightness;appReviewMode=true;record("combined indicator switch dispatches both existing backend switches");}
         {auto previousPath=iniPath;auto previousConfig=glassConfig;bool linked[glass::FamilyCount];std::copy(std::begin(glassLookLinked),std::end(glassLookLinked),linked);iniPath=settingsDir()+L"workspace-slider-save-test.ini";appReviewMode=false;selectPage(1);SendMessageW(mainWindow,WM_COMMAND,SystemMaterialTab,0);SendDlgItemMessageW(mainWindow,SystemSurface,CB_SETCURSEL,0,0);SendMessageW(mainWindow,WM_COMMAND,MAKEWPARAM(SystemSurface,CBN_SELCHANGE),0);appui::dragSlider(appui::Slider+LookOpacity,at(828,276),true);passed=GetPrivateProfileIntW(L"Glass.Taskbar",L"Opacity",0,iniPath.c_str())==(UINT)SendDlgItemMessageW(mainWindow,LookOpacity,TBM_GETRANGEMAX,0,0);DeleteFileW(iniPath.c_str());iniPath=previousPath;glassConfig=previousConfig;std::copy(std::begin(linked),std::end(linked),glassLookLinked);loadLookPanel();appReviewMode=true;record("custom slider release saves through the existing per-surface config handler");}
-        appReviewMode=false;appui::sample=false;appui::keyboard=false;appui::actionResult=false;l10n::current=savedLanguage;applyColorTheme(savedTheme,false);localize();selectPage(0);
+        appReviewMode=false;appui::sample=false;appui::keyboard=false;l10n::current=savedLanguage;applyColorTheme(savedTheme,false);localize();selectPage(0);
     }
     passed=allPassed;
     std::wstring report=iniPath.substr(0,iniPath.find_last_of(L"\\")+1)+L"self-test.txt";
@@ -930,7 +933,7 @@ LRESULT CALLBACK proc(HWND h,UINT msg,WPARAM w,LPARAM l){
     {int look=l?GetDlgCtrlID((HWND)l)-OptLook1:-1;if(look>=0&&look<8){updateLookLabels();syncOpticalControls();if(LOWORD(w)!=TB_THUMBTRACK)saveLookSlider(OptLook1+look);return 0;}}
     {int id=l?GetDlgCtrlID((HWND)l):0;bool dock=id==DockScale||id==DockSpread||id==DockSpeed||id==DockBounce;if(dock||id==LookOpacity||id==LookBlur||id==LookRadius){updatePanelLabels();if(LOWORD(w)==TB_THUMBTRACK)previewPanel(dock);else if(LOWORD(w)!=TB_THUMBPOSITION)savePanel(dock);}}return 0; // a release sends THUMBPOSITION then ENDTRACK: save once
     case WM_POWERBROADCAST:if(w==PBT_POWERSETTINGCHANGE||w==PBT_APMPOWERSTATUSCHANGE){refreshUiPreferences();applyGlass(false);}return TRUE;
-    case WM_SETTINGCHANGE:case WM_THEMECHANGED:case WM_SYSCOLORCHANGE:syncOpticalPreview();refreshUiPreferences();applyColorTheme(colorTheme,false);if(engineReady)applyGlass(false);break;
+    case WM_SETTINGCHANGE:case WM_THEMECHANGED:case WM_SYSCOLORCHANGE:syncOpticalPreview();refreshUiPreferences();applyColorTheme(colorTheme,false);if(engineReady&&(msg!=WM_SETTINGCHANGE||w==SPI_SETCLIENTAREAANIMATION||(l&&lstrcmpW(reinterpret_cast<const wchar_t*>(l),L"ImmersiveColorSet")==0)))applyGlass(false);break;
     case glass::HostExitedMessage:if(engine.hostExited((DWORD)w)){confirmedMaterials&=~(glass::Start|glass::Notifications);fallbackMaterials&=~(glass::Start|glass::Notifications);updateNativeInfo();SetTimer(h,18,250,nullptr);SetTimer(h,6,3500,nullptr);}return 0;
     case WM_TIMER:if(w==76){appui::tickSwitches();return 0;}if(w==73){appui::tickSegments();return 0;}if(w==61&&appReviewMode){KillTimer(h,61);saveUiProof(h,settingsDir()+(darkUi()?L"app-dark-running.bmp":L"app-white-running.bmp"));saveAppWindowProof(h,settingsDir()+(darkUi()?L"app-dark-window.bmp":L"app-white-window.bmp"));std::wstring proofTheme=darkUi()?L"dark":L"white";selectPage(1);for(int view=0;view<3;++view){SendMessageW(h,WM_COMMAND,SystemEffectsTab+view,0);finishPageMotion();RedrawWindow(h,nullptr,nullptr,RDW_INVALIDATE|RDW_UPDATENOW);saveAppWindowProof(h,settingsDir()+L"workspace-"+proofTheme+L"-"+std::to_wstring(view)+L".bmp");}selectPage(2);appui::settingsAbout=false;finishPageMotion();RedrawWindow(h,nullptr,nullptr,RDW_INVALIDATE|RDW_UPDATENOW);saveAppWindowProof(h,settingsDir()+L"workspace-"+proofTheme+L"-settings.bmp");selectPage(0);return 0;}if(w==kMotionTimer){tickControlMotion();return 0;}if(w==31){KillTimer(h,31);panelApplyTime=GetTickCount64();glassPreviewOnly=true;applyGlass(false);glassPreviewOnly=false;return 0;}if(w==21){KillTimer(h,21);engine.retryPackages();return 0;}if(w==20){engine.tick();updateDiagnostics();return 0;}if(w==23){reassertApps();return 0;}if(w==18){KillTimer(h,18);if(UINT next=engine.recoverHosts())SetTimer(h,18,next,nullptr);return 0;}if(w==22){KillTimer(h,22);syncOpticalPreview();return 0;}if(w==16){if(opticalPreview.connected()&&!opticalPreview.synchronized())syncOpticalPreview();if(opticalPreview.synchronized()){KillTimer(h,16);opticalConnectedMessage();updateOpticalButtons();}else if(!opticalStartup)KillTimer(h,16);else if(!opticalPreview.running()||GetTickCount64()-opticalStartup>15000)opticalFailed(tr(L"LGEngine 预览未能连接，请检查适配器及 Windows 应用控制状态。",L"LGEngine preview did not connect. Check the adapter and Windows application control."));return 0;}
         if(w==14){bool discover=glassPendingDiscover;applyGlass(discover);}else if(w==12){tickColorTheme();}else if(w==13){tickPageMotion();}else if(w==4){float t=std::min(1.f,float((uiNow()-startupTime)/220)),ease=1-powf(1-t,4);SetLayeredWindowAttributes(h,0,(BYTE)(255*ease),LWA_ALPHA);if(t>=1){stopUiAnimationTimer(h,4);SetWindowLongPtrW(h,GWL_EXSTYLE,GetWindowLongPtrW(h,GWL_EXSTYLE)&~WS_EX_LAYERED);RedrawWindow(h,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);}}else if(w==3){KillTimer(h,3);windowScanPending=false;auto windows=std::move(pendingWindows);pendingWindows.clear();syncPending(windows);if(glassConfig.features)for(auto window:windows)if(IsWindow(window))engine.discoverWindow(window);}else if(w==2)pollMigration();else if(w==5){KillTimer(h,5);engine.expireHooks(true);}else if(w==6){KillTimer(h,6);failedMaterials|=glassConfig.features&~pausedFeatures&~confirmedMaterials&~(glass::Volume|glass::Brightness);updateNativeInfo();if(failedMaterials)message(tr(L"部分区域尚未连接，已标记为未生效；打开对应区域后可重试。",L"Some surfaces are not connected and are marked Not applied; open them and retry."),1);}return 0;
@@ -972,7 +975,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR commandLine,int){
     bool backgroundStart=wcscmp(commandLine,L"--background")==0;
     if(*commandLine&&!testing&&!backgroundStart&&!nativeProbeMode&&!uiPreview&&!appReviewMode)return 10;
     HANDLE mutex=CreateMutexW(nullptr,FALSE,testing?L"Local\\LiquidGlass.Control.SelfTest":InstanceName);if(!mutex)return 1;
-    if(GetLastError()==ERROR_ALREADY_EXISTS){auto old=FindWindowW(ClassName,nullptr);if(old)PostMessageW(old,WM_APP+2,0,0);CloseHandle(mutex);return 0;}
+    if(GetLastError()==ERROR_ALREADY_EXISTS){auto old=FindWindowW(ClassName,nullptr);if(old){DWORD pid=0;GetWindowThreadProcessId(old,&pid);if(pid)AllowSetForegroundWindow(pid);PostMessageW(old,WM_APP+2,0,0);}CloseHandle(mutex);return 0;}
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);dpi=uiPreview?96:workspaceDpi(GetDpiForSystem());
     CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
     INITCOMMONCONTROLSEX common{};common.dwSize=sizeof(common);common.dwICC=ICC_TAB_CLASSES|ICC_BAR_CLASSES;InitCommonControlsEx(&common);
@@ -997,7 +1000,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR commandLine,int){
     sizeDesignWindow();
     // Keep the window inside the monitor work area. Default placement could put its bottom under the taskbar, hiding the lower controls; only the position changes, never the size or the taskbar layout.
     {MONITORINFO mi{};mi.cbSize=sizeof(mi);RECT w{};GetWindowRect(mainWindow,&w);if(GetMonitorInfoW(MonitorFromWindow(mainWindow,MONITOR_DEFAULTTONEAREST),&mi)){int width=w.right-w.left,height=w.bottom-w.top,x=w.left,y=w.top;if(y+height>mi.rcWork.bottom)y=mi.rcWork.bottom-height;if(y<mi.rcWork.top)y=mi.rcWork.top;if(x+width>mi.rcWork.right)x=mi.rcWork.right-width;if(x<mi.rcWork.left)x=mi.rcWork.left;SetWindowPos(mainWindow,nullptr,x,y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);}}
-    buildUI();SetWindowTextW(mainWindow,L"Liquid Glass · v" LG_VERSION_W);themeWindow(mainWindow);{HMENU system=GetSystemMenu(mainWindow,FALSE);AppendMenuW(system,MF_SEPARATOR,0,nullptr);AppendMenuW(system,MF_STRING,0x1f10,L"White · 冰蓝界面");AppendMenuW(system,MF_STRING,0x1f20,L"Dark · 深色界面");AppendMenuW(system,MF_STRING,0x1f30,L"切换原有高级外观设置");}if(nativeProbeMode){SetWindowTextW(mainWindow,L"Liquid Glass — native content probe (no material overrides)");selectPage(1);}
+    buildUI();SetWindowTextW(mainWindow,L"Liquid Glass · v" LG_VERSION_W);themeWindow(mainWindow);{HMENU system=GetSystemMenu(mainWindow,FALSE);AppendMenuW(system,MF_SEPARATOR,0,nullptr);AppendMenuW(system,MF_STRING,0x1f10,L"");AppendMenuW(system,MF_STRING,0x1f20,L"");AppendMenuW(system,MF_STRING,0x1f30,L"");localizeSystemMenu();}if(nativeProbeMode){SetWindowTextW(mainWindow,L"Liquid Glass — native content probe (no material overrides)");selectPage(1);}
     if(appReviewMode){
         l10n::current=l10n::Simplified;localize();appui::sample=true;applyColorTheme(wcscmp(commandLine,L"--review-app-dark")==0?7:0,false);
         SendMessageW(material,CB_SETCURSEL,0,0);SendMessageW(corners,CB_SETCURSEL,0,0);appui::sync();
@@ -1023,7 +1026,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,PWSTR commandLine,int){
     if(!nativeProbeMode&&!taskbar_recovery::restore(iniPath)){message(tr(L"任务栏恢复失败，恢复记录已保留。",L"Taskbar restore failed; recovery record retained."));}
     updateNativeInfo();loadAppGlass();
     powerNotification=RegisterPowerSettingNotification(mainWindow,&PowerSavingStatus,DEVICE_NOTIFY_WINDOW_HANDLE);acNotification=RegisterPowerSettingNotification(mainWindow,&GUID_ACDC_POWER_SOURCE,DEVICE_NOTIFY_WINDOW_HANDLE);
-    tray.cbSize=sizeof(tray);tray.hWnd=mainWindow;tray.uID=1;tray.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;tray.uCallbackMessage=WM_APP+1;tray.hIcon=c.hIconSm?c.hIconSm:c.hIcon;tray.uVersion=NOTIFYICON_VERSION_4;
+    tray.cbSize=sizeof(tray);tray.hWnd=mainWindow;tray.uID=1;tray.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP|NIF_SHOWTIP;tray.uCallbackMessage=WM_APP+1;tray.hIcon=c.hIconSm?c.hIconSm:c.hIcon;tray.uVersion=NOTIFYICON_VERSION_4;
     if(!Shell_NotifyIconW(NIM_ADD,&tray)){MessageBoxW(mainWindow,tr(L"无法创建托盘图标，程序将退出。",L"Cannot create tray icon; exiting."),L"Liquid Glass",MB_ICONERROR);DestroyWindow(mainWindow);}else{Shell_NotifyIconW(NIM_SETVERSION,&tray);if(!backgroundStart)show();if(migrationNeeded())PostMessageW(mainWindow,WM_APP+5,0,0);else if(glassConfig.features)applyGlass();}
     MSG msg;while(nextUiMessage(&msg)>0){if(msg.message==WM_KEYDOWN&&appui::active()&&appui::key(msg.wParam))continue;if(msg.message==WM_KEYDOWN&&msg.wParam==VK_TAB&&(msg.hwnd==mainWindow||IsChild(mainWindow,msg.hwnd)))revealTabTarget(GetKeyState(VK_SHIFT)<0); // scroll the next tab stop into view before the dialog manager moves focus to it
         if(msg.message==WM_MOUSEWHEEL&&msg.hwnd!=mainWindow&&IsChild(mainWindow,msg.hwnd)){ // with "Scroll inactive windows" the wheel goes to the control under the cursor: unfocused sliders and combos must not change, and the app list hands the wheel back at its ends
