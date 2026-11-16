@@ -85,6 +85,11 @@ missed them. It now takes them from the same row as the app icons and leaves
 out only Widgets, by its id. The engine log gets a "capsule row" line that
 lists what that row holds.
 
+0.14.1 is a maintenance release for source readability. It standardizes formatting,
+clarifies selected local variable names, removes duplicate test guards, and makes
+translation verification independent of source whitespace. Application behavior,
+settings, and the pinned LGEngine 2.7.16.0 host remain unchanged.
+
 0.14.0 is the first full release of the 0.14 line, after 0.14.0-beta.1 and
 beta.2. Its release page again carries only the portable ZIP. It draws the
 window straight to the GPU on one shared 60 Hz clock that stops when idle, and

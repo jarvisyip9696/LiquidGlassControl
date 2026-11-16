@@ -10,6 +10,14 @@ Thank you for contributing to Liquid Glass Control. Keep changes focused, preser
 - Do not add a Windhawk runtime dependency. The application uses its own embedded engine; imported material code retains its original license.
 - File Explorer styling is no longer a supported feature. Do not reactivate it through old settings or application-wide controls.
 
+## Code style
+
+Use `.clang-format` with clang-format 20.1.8 for the project's C++ and C# code in `src/`, `tests/`, and `integrations/LGEngine/`. Leave vendored code in `third_party/` unchanged.
+
+Keep control flow on separate lines and use descriptive names for values whose meaning is not clear from context. Comments should explain Windows quirks, ownership, recovery requirements, or algorithm choices. Preserve public names, protocol layouts, settings keys, and translation strings when making readability changes.
+
+Run `clang-format -i <changed-files>` before submitting a change. Keep formatting changes separate from behavior changes so reviewers can follow both.
+
 ## Build
 
 Use Windows 11 x64 with either Visual Studio 2022 Build Tools and the Windows SDK, or a compatible MinGW clang++ toolchain. PowerShell is required for the project scripts.

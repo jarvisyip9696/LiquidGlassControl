@@ -5,7 +5,7 @@ $version = [regex]::Match([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'src/a
 function Expand-UiLiterals([string]$text) { return ($text.Replace('LG_VERSION_W', 'L"' + $version + '"') -replace '"\s+L"', '') }
 $catalog = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'src/localization.h'))
 $catalog = Expand-UiLiterals $catalog
-$entries = [regex]::Matches($catalog, '\{L"' + $literal + '",L"' + $literal + '",L"' + $literal + '"\}')
+$entries = [regex]::Matches($catalog, '\{\s*L"' + $literal + '"\s*,\s*L"' + $literal + '"\s*,\s*L"' + $literal + '"\s*\}')
 $translations = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
 foreach ($entry in $entries) {
     $english = $entry.Groups[1].Value
@@ -18,15 +18,15 @@ foreach ($name in @('src/main.cpp', 'src/control_ui.h', 'src/ui_style.h', 'src/a
     $source = [IO.File]::ReadAllText((Join-Path $PSScriptRoot $name))
     $source = Expand-UiLiterals $source
     $patterns = @(
-        ('\btr\(L"' + $literal + '",\s*L"' + $literal + '"\)'),
-        ('\{\w+,L"' + $literal + '",\s*L"' + $literal + '"\}')
+        ('\btr\(\s*L"' + $literal + '"\s*,\s*L"' + $literal + '"\s*\)'),
+        ('\{\s*\w+\s*,\s*L"' + $literal + '"\s*,\s*L"' + $literal + '"\s*\}')
     )
     foreach ($pattern in $patterns) {
         foreach ($match in [regex]::Matches($source, $pattern)) {
             if ($match.Groups[1].Value -ne $match.Groups[2].Value) { [void]$required.Add($match.Groups[2].Value) }
         }
     }
-    foreach ($array in [regex]::Matches($source, 'const wchar_t\*en\[\]=\{([^}]+)\}')) {
+    foreach ($array in [regex]::Matches($source, 'const\s+wchar_t\s*\*\s*en\s*\[\s*\]\s*=\s*\{([^}]+)\}')) {
         foreach ($match in [regex]::Matches($array.Groups[1].Value, 'L"' + $literal + '"')) { [void]$required.Add($match.Groups[1].Value) }
     }
 }
