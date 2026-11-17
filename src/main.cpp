@@ -6,6 +6,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <array>
 #include <objbase.h>
 #include <gdiplus.h>
 #include <memory>
