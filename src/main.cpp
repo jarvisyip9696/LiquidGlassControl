@@ -2673,7 +2673,7 @@ int selfTest() {
     passed = passed && wcscmp(text, L"音量玻璃") == 0;
     GetWindowTextW(GetDlgItem(mainWindow, StartHeading), text, 256);
     passed = passed && wcsncmp(text, L"开始菜单", wcslen(L"开始菜单")) == 0;
-    const wchar_t* expected[] = {L"Apply", L"应用", L"應用", L"Zastosuj", L"Áp dụng"};
+    const wchar_t* expected[] = {L"Apply", L"应用", L"應用"};
     for (int i = 0; i < l10n::Count; ++i) {
         l10n::current = (l10n::Language)i;
         localize();
@@ -2694,7 +2694,7 @@ int selfTest() {
         passed && nativeValues.size() == 4 && wcscmp(native_osd::Target, L"Grid#ConfirmatorMainGrid") == 0;
     passed = passed && font && headingFont && actionFont && !GetDlgItem(mainWindow, MotionText) &&
              !GetDlgItem(mainWindow, CompatText);
-    record("five-language controls, icons and legacy compatibility");
+    record("three-language controls, icons and legacy compatibility");
     // Exercise control geometry and font recreation at common monitor DPIs,
     // including a round trip. This does not change the user's display settings.
     {
@@ -2933,7 +2933,7 @@ int selfTest() {
                 DeleteObject(bitmap);
             if (dc)
                 DeleteDC(dc);
-            record("dropdown glyphs visually centered in all five languages at 96/144/192 DPI");
+            record("dropdown glyphs visually centered in all three languages at 96/144/192 DPI");
         }
         for (int theme : {0, 7}) {
             applyColorTheme(theme, false);
@@ -3341,8 +3341,8 @@ int selfTest() {
     const char* result =
         passed
             ? (supported
-                   ? "PASS: embedded standalone engine, COM factory and GPU blur graph; legacy taskbar recovery; isolated feature masks; bounded material controls; five-language compact switches; legacy-theme restore/conflicts; isolated shell apply/restore/conflicts; native motion rule; v1/v2 backup compatibility; zero duplicate DWM writes; restore.\r\n"
-                   : "PASS: embedded standalone engine, COM factory and GPU blur graph; legacy taskbar recovery; isolated feature masks; bounded material controls; five-language compact switches; legacy-theme restore/conflicts; isolated shell apply/restore/conflicts; native motion rule; v1/v2 backup compatibility. SKIP: DWM backdrop unavailable.\r\n")
+                   ? "PASS: embedded standalone engine, COM factory and GPU blur graph; legacy taskbar recovery; isolated feature masks; bounded material controls; three-language compact switches; legacy-theme restore/conflicts; isolated shell apply/restore/conflicts; native motion rule; v1/v2 backup compatibility; zero duplicate DWM writes; restore.\r\n"
+                   : "PASS: embedded standalone engine, COM factory and GPU blur graph; legacy taskbar recovery; isolated feature masks; bounded material controls; three-language compact switches; legacy-theme restore/conflicts; isolated shell apply/restore/conflicts; native motion rule; v1/v2 backup compatibility. SKIP: DWM backdrop unavailable.\r\n")
             : "FAIL: UI, caching, backup compatibility, or restoration check.\r\n";
     HANDLE file =
         CreateFileW(report.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);

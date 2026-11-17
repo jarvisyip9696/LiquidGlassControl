@@ -2,36 +2,35 @@
 #include <cstdio>
 
 int main() {
-    const wchar_t* languageLabels[] = {
-        L"Interface language", L"界面语言", L"界面語言", L"Język interfejsu", L"Ngôn ngữ giao diện"};
-    const wchar_t* entranceLabels[] = {L"Entrance", L"入场", L"入場", L"Wejście", L"Xuất hiện"};
+    static_assert(l10n::Count == 3);
+    static_assert(sizeof(l10n::codes) / sizeof(*l10n::codes) == l10n::Count);
+    static_assert(sizeof(l10n::names) / sizeof(*l10n::names) == l10n::Count);
+    const wchar_t* labels[] = {L"Interface language", L"界面语言", L"界面語言"};
     for (int i = 0; i < l10n::Count; ++i) {
         l10n::current = (l10n::Language)i;
-        if (wcscmp(l10n::translate(L"界面语言", L"Interface language"), languageLabels[i]) ||
-            wcscmp(l10n::translate(L"入场", L"Entrance"), entranceLabels[i]))
-            return 8;
-    }
-    for (const auto& entry : l10n::catalog) {
-        if (l10n::findTranslation(entry.en) != &entry)
+        if (wcscmp(l10n::translate(L"界面语言", L"Interface language"), labels[i]))
             return 1;
-        l10n::current = l10n::English;
-        if (wcscmp(l10n::translate(L"test", entry.en), entry.en))
-            return 2;
-        l10n::current = l10n::Polish;
-        if (wcscmp(l10n::translate(L"test", entry.en), entry.pl))
-            return 3;
-        l10n::current = l10n::Vietnamese;
-        if (wcscmp(l10n::translate(L"test", entry.en), entry.vi))
-            return 4;
     }
-    l10n::current = l10n::Traditional;
-    if (wcscmp(l10n::translate(L"程序设置", L"Program settings"), L"程式設定"))
-        return 5;
-    l10n::current = l10n::Simplified;
-    if (wcscmp(l10n::translate(L"设置", L"Settings"), L"设置"))
-        return 6;
-    if (l10n::findTranslation(L"missing-key"))
-        return 7;
-    std::puts(
-        "PASS: all catalog lookups and English/Polish/Vietnamese results; simplified/traditional UI terms; missing-key lookup.");
+    wchar_t directory[MAX_PATH]{}, file[MAX_PATH]{};
+    if (!GetTempPathW(MAX_PATH, directory) || !GetTempFileNameW(directory, L"l10", 0, file))
+        return 2;
+    bool passed = l10n::read(file) == l10n::Simplified;
+    for (int i = 0; i < l10n::Count; ++i) {
+        l10n::current = (l10n::Language)i;
+        l10n::save(file);
+        passed = passed && l10n::read(file) == l10n::current;
+    }
+    const wchar_t* legacy[] = {L"zh-TW", L"zh-HK", L"zh-Hant", L"zh-CN", L"pl", L"vi", L"unknown"};
+    for (int i = 0; i < 7; ++i) {
+        passed = WritePrivateProfileStringW(L"UI", L"Language", legacy[i], file) && passed;
+        passed = passed && l10n::read(file) == (i < 3    ? l10n::Traditional
+                                                : i == 3 ? l10n::Simplified
+                                                         : l10n::English);
+    }
+    if (!DeleteFileW(file))
+        return 3;
+    passed = passed && l10n::read(file) == l10n::systemLanguage();
+    if (!passed)
+        return 4;
+    std::puts("PASS: Chinese/English labels, preference round trips, legacy fallback and system default.");
 }

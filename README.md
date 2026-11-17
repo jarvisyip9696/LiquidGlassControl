@@ -13,7 +13,7 @@ A native desktop utility for system glass materials, animated controls, and LGEn
 - Dock hover animation and a capsule-style taskbar appearance.
 - Smooth switch motion and dropdown interaction, targeting 60 fps while animations are active. Idle controls stop requesting frames.
 - LGEngine entrance styles, separate indicator entrance settings, knob styles, slosh, replay, and a sample indicator.
-- English, Simplified Chinese, Traditional Chinese, Polish, and Vietnamese interfaces.
+- English, Simplified Chinese, and Traditional Chinese interfaces.
 - Saved settings, tray operation, and restoration of managed effects.
 
 **File Explorer styling has been removed.** This application does not make arbitrary application content transparent. The material illustrations are previews, not guarantees of transparency in other windows.

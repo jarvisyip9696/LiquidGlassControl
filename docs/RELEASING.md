@@ -4,7 +4,7 @@ The repository and v0.9 preview downloads are public. The owner's and DK's origi
 
 1. Merge the intended changes to `main`; confirm Windows CI is green.
 2. Update `LG_VERSION` in `src/app_version.h`; captions/About, packaging and CI use it. Follow VERSIONING.md and do not reuse a tag.
-3. Build and verify on Windows 11. Test all five UI languages and live effect restoration. CI factory/unit tests do not verify live XAML styling. Complete the validation in ARCHITECTURE.md before release.
+3. Build and verify on Windows 11. Test all three UI languages and live effect restoration. CI factory/unit tests do not verify live XAML styling. Complete the validation in ARCHITECTURE.md before release.
 4. Commit version changes, then push a tag matching the package version, for example `v0.9`:
 
    ```powershell

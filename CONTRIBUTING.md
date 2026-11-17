@@ -50,7 +50,7 @@ The interface needs the generated build's `art/` and `fonts/` directories. LGEng
 
 - Run `./verify-localization.ps1` and the controller self-test.
 - Test the affected behavior and restoration path. Include reduced-motion behavior and rapid repeated input when changing animation.
-- Keep English, Simplified Chinese, Traditional Chinese, Polish, and Vietnamese supported. Custom-rendered text must use the same translation path as native controls.
+- Keep English, Simplified Chinese, and Traditional Chinese supported. Custom-rendered text must use the same translation path as native controls.
 - Verify menus with mouse and keyboard input, multiple DPI scales, and both interface themes.
 - Self-tests use isolated fixtures. Do not test recovery code against a user's real registry settings or recovery journals.
 - Record live Windows testing separately from unit tests. Do not claim measured frame rates, complete transparency, or hardware energy savings without evidence.

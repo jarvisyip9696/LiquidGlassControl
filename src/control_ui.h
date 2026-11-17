@@ -262,9 +262,7 @@ void localize() {
     lstrcpynW(tray.szTip, tr(L"Liquid Glass · 原生提示条", L"Liquid Glass · Native indicators"), 128);
     if (tray.hWnd)
         Shell_NotifyIconW(NIM_MODIFY, &tray);
-    combo(language,
-          {l10n::names[0], l10n::names[1], l10n::names[2], l10n::names[3], l10n::names[4]},
-          int(l10n::current));
+    combo(language, {l10n::names[0], l10n::names[1], l10n::names[2]}, int(l10n::current));
     createFonts();
     fitTabItems(tabs);
     refresh(entries.empty());
@@ -805,9 +803,7 @@ void buildUI() {
     settingsBlock.height = 424;
     control(L"STATIC", L"", 0, LanguageLabel, 40, 6, 210, 28);
     language = control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, Language, 272, 0, 440, 220);
-    combo(language,
-          {l10n::names[0], l10n::names[1], l10n::names[2], l10n::names[3], l10n::names[4]},
-          int(l10n::current));
+    combo(language, {l10n::names[0], l10n::names[1], l10n::names[2]}, int(l10n::current));
     control(L"STATIC", L"", 0, ColorThemeLabel, 40, 46, 210, 28);
     control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, ColorTheme, 272, 40, 440, 260);
     control(L"BUTTON", L"", BS_AUTOCHECKBOX | WS_TABSTOP, StartupAnimation, 40, 80, 690, 34);
